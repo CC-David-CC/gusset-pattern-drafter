@@ -36,10 +36,10 @@ test("view settings: the switches in their four groups, their defaults, and what
   reset();
   const group = (g) => VIEW.filter(v => v[2] === g).map(v => v[0]);
   assert.deepStrictEqual(group("sewing"), ["sewing", "sewLen" /* (Round r20 / 3: Show 2D Sewing Lengths) */, "topstitch", "puckering"]);
-  assert.deepStrictEqual(group("garment"), ["baseline", "sa", "grading", "reference", "symmetric", "links", "pins"]);
+  assert.deepStrictEqual(group("garment"), ["baseline", "sa", "grading", "reference", "symmetric", "links", "pins", "shrink3" /* (POST8 FIX-7 / B: Show Simulation Shrinkage, off at first) */]);
   assert.deepStrictEqual(group("info"), ["name", "annotations", "length", "angle", "grainline", "measurements", "ruler", "guides"]);
   // (Round build-1: Lock All Internal Lines, Lock All Baselines (on from the start) and Lock All Guidelines are built)
-  assert.deepStrictEqual(group("lock"), ["lockAll", "lockInt", "lockBase", "lockGuide"]); assert.strictEqual(VIEW.length, 23);
+  assert.deepStrictEqual(group("lock"), ["lockAll", "lockInt", "lockBase", "lockGuide"]); assert.strictEqual(VIEW.length, 24);      // (POST8 FIX-7 / B: 24 with Show Simulation Shrinkage)
   assert.strictEqual(VIEW_DEFAULT.lockAll, false, "patterns start unlocked");
   assert.deepStrictEqual(Object.keys(VIEW_DEFAULT).sort(), VIEW.map(v => v[0]).sort(), "a default for every switch");
   assert.deepStrictEqual(loadView(), VIEW_DEFAULT);

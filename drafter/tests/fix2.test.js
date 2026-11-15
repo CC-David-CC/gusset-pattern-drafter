@@ -34,7 +34,7 @@ test("FIX-2 / B: the menus the audit found missing are there, with only built ro
     assert.deepStrictEqual(m.fabric, ["Texture", "Texture ▸ Edit Texture (2D)", "Texture ▸ Edit Texture (3D)"], k);      // (Round FIX-4b / A, beta.8 gate G9: the 2D row moves the grainline only and is named as its toolbar button)
     const meas = m.avatar.filter(n => n.startsWith("Measurement ▸ "));
     assert.deepStrictEqual(meas, ["Measurement ▸ Edit Measure (Avatar)", "Measurement ▸ Basic Tape Measure (Avatar)", "Measurement ▸ Surface Tape Measure (Avatar)", "Measurement ▸ Height Measure (Avatar)",
-      "Measurement ▸ Basic Circumference Measure (Avatar)", "Measurement ▸ Surface Circumference Measure (Avatar)"], k + ": the built tapes only");
+      "Measurement ▸ Basic Circumference Measure (Avatar)", "Measurement ▸ Surface Circumference Measure (Avatar)", "Measurement ▸ Attach to Measure (Avatar)" /* (run 14c, 3.A16: built) */], k + ": the built tapes only");
     assert.deepStrictEqual(m.d3.filter(n => n.startsWith("Garment Resolution ▸ ")), ["Garment Resolution ▸ Hi-Res Garment", "Garment Resolution ▸ Low-Res Garment", "Garment Resolution ▸ Custom Resolution"], k);
     assert.ok(m.d3.includes("Measurement ▸ Volume Measure (Garment/Bag)") && m.d3.includes("Measurement ▸ Edit Volume Measure (Garment/Bag)"), k);
     assert.ok(m.d2.includes("Create ▸ Dart"), k + ": 2D ▸ Create ▸ Dart");

@@ -38,7 +38,7 @@ test("D1: the display switches in the recording's lists: an Avatar list (Show Av
     out.keys = ["render3:front", "render3:mono", "render3:random", "show3:avatar", "arr_points"].map(id => app.keyOf(id));
     return out;` }).result;
   assert.deepStrictEqual(o.avatar, ["# Avatar Display", "Show Avatar", "Show Arrangement Points", "Show Bounding Volumes" /* (built in Round r18 / 8) */, "Show Avatar Joints" /* (built in Round r17b / 3) */, "Show Avatar Measures" /* (Round r18 / 8) */,
-    "Show 3D Pen (Avatar) (not built yet)", "Show NURBS Curves (not built yet)", "Show Avatar Fitting Suit" /* (Round r18 / 8) */, "Show Scene and Props (not built yet)", "Show Collision Mesh"], "W25, with ours' collision mesh at the end");
+    "Show 3D Pen (Avatar)" /* (run 14c, 1.T45: built) */, "Show NURBS Curves (not built yet)", "Show Avatar Fitting Suit" /* (Round r18 / 8) */, "Show Scene and Props (not built yet)", "Show Collision Mesh"], "W25, with ours' collision mesh at the end");
   assert.deepStrictEqual(o.render3, ["# Garment Rendering Style", "Thick Textured Surface", "Textured Surface", "Thick Monochrome Surface", "Monochrome Surface",
     "Translucent Surface", "Thick Textured Surface (Back)", "Random Color Surface", "# Garment Rendering Option", "Show Wireframe", "# More", "Strain Map", "Fit Map", "Stress Map", "Pressure Map"], "W26 (and this program's own under More: Round r9; the Fit Map since Round r14 / 7; every row built since Round r17b / 3; Stress and Pressure since Round r20 continued (4))");
   assert.ok(!o.garment3.includes("Show Avatar"), "Show Avatar has moved to the Avatar list"); assert.deepStrictEqual(o.garment3.slice(0, 5), ["Show Garment", "Show Seamlines", "Show Threads", "Show Internal Lines", "Show Baselines"]);      // (Show Threads since Round r14 / 8)
@@ -46,7 +46,7 @@ test("D1: the display switches in the recording's lists: an Avatar list (Show Av
   assert.deepStrictEqual(o.alt4, ["mono", "front", "3D window: Monochrome Surface"]); assert.strictEqual(o.alt9, "random");
   assert.deepStrictEqual(o.alt1, ["thick", "3D window: Thick Textured Surface"]);      // (built in Round r17b / 3)
   assert.deepStrictEqual(o.twoD, ["mono", "thick"], "the two windows have a style each");      // (Alt+1 picks Thick Textured Surface since Round r17b / 3)
-  assert.deepStrictEqual(o.avatarOff, ["# Avatar Display", "Show Avatar", "Show Arrangement Points", "Show Bounding Volumes", "Show Avatar Joints", "Show Avatar Measures", "Show Avatar Fitting Suit", "Show Collision Mesh"]);      // (Show Avatar Joints since Round r17b / 3; Show Bounding Volumes, Show Avatar Measures, Show Avatar Fitting Suit since Round r18 / 8)
+  assert.deepStrictEqual(o.avatarOff, ["# Avatar Display", "Show Avatar", "Show Arrangement Points", "Show Bounding Volumes", "Show Avatar Joints", "Show Avatar Measures", "Show 3D Pen (Avatar)", "Show Avatar Fitting Suit", "Show Collision Mesh"]);      // (Show 3D Pen (Avatar) built in run 14c, 1.T45; Show Avatar Joints since Round r17b / 3; Show Bounding Volumes, Show Avatar Measures, Show Avatar Fitting Suit since Round r18 / 8)
   assert.deepStrictEqual(o.render3Off, ["# Garment Rendering Style", "Thick Textured Surface", "Textured Surface", "Thick Monochrome Surface", "Monochrome Surface", "Translucent Surface", "Thick Textured Surface (Back)", "Random Color Surface", "# Garment Rendering Option", "Show Wireframe", "# More", "Strain Map", "Fit Map", "Stress Map", "Pressure Map"]);      // (Stress and Pressure since Round r20 continued (4); the Fit Map since Round r14 / 7; every style and Show Wireframe since Round r17b / 3)
   assert.ok(!o.render2Off.some(n => /not built/.test(n)));
   assert.deepStrictEqual(o.keys, ["Alt+2", "Alt+4", "Alt+9", "Shift+A", "Shift+F"]);
@@ -76,9 +76,10 @@ test("D2: the 3D, 2D and Materials/UV menus list every tool as W48 to W50 do, in
     subOf(app.MENUS["2d"](), "Edit").find(x => x.n === "Delete All Baselines").f(); out.bases = [A.bases.length, S.undo.length];
     return out;` }).result;
   // (Round r33 / 7) Simulation Quality under Simulate
-  assert.deepStrictEqual(o.top3, ["Simulate", "Simulation Quality >", "Garment Resolution >" /* (Round FIX-2 / B: W48 has it; the three resolution tools) */, "---", "Select >", "Pin >", "Ripping >", "Styleline >", "3D pen >", "Press (not built yet)", "Fold >", "---", "Arrangement >", "---", "Measurement >"]);
+  assert.deepStrictEqual(o.top3, ["Simulate", "Simulation Quality >", "Garment Resolution >" /* (Round FIX-2 / B: W48 has it; the three resolution tools) */, "---", "Select >", "Pin >", "Ripping >", "Styleline >", "3D pen >", "Press" /* (run 14c, 3.E4: built) */, "Fold >", "---", "Arrangement >", "---", "Measurement >"]);
   assert.deepStrictEqual(o.top2.slice(0, 7), ["Pattern Drafter", "Pattern Information", "Create >", "Edit >", "Trace", "Lock >", "Pleats >"]);
-  assert.deepStrictEqual(o.topM, ["UV Editor (not built yet)", "Graphics >", "Button >", "Zipper >", "Piping >", "Binding >", "Topstitch >", "Puckering >", "Steam >", "Seam Taping" /* (Round BETA8-1 / E: built, on the selected lines) */, "Gluing >"]);
+  // (Round UV-1 / B: the UV Editor built)
+  assert.deepStrictEqual(o.topM, ["UV Editor", "Graphics >", "Button >", "Zipper >", "Piping >", "Binding >", "Topstitch >", "Puckering >", "Steam >", "Seam Taping" /* (Round BETA8-1 / E: built, on the selected lines) */, "Gluing >"]);
   /* (Round FIX-4 / B: the three Select Mesh tools built) */ assert.deepStrictEqual(o.select, [["Select/Move", "Q", true, false], ["Select Mesh (Brush)", "", true, false], ["Select Mesh (Box)", "", true, false], ["Select Mesh (Lasso)", "", true, false]]);
   assert.deepStrictEqual(o.edit.slice(0, 3), [["Transform Pattern", "A"], ["Transform Point/Segment", ""], ["Edit Pattern", "Z"]]);
   assert.ok(o.edit.some(e => e[0] === "Fullness (Point)") && o.edit.some(e => e[0] === "Add Point/Split Line" && e[1] === "X"));
@@ -86,7 +87,7 @@ test("D2: the 3D, 2D and Materials/UV menus list every tool as W48 to W50 do, in
   assert.strictEqual(o.picked, "rectangle");
   assert.deepStrictEqual(o.selectOff, ["Select/Move", "Select Mesh (Brush)", "Select Mesh (Box)", "Select Mesh (Lasso)"]);      // (Round FIX-4 / B: built, so shown with the switch off too)
   // (Round r10 / 3: Styleline and 3D pen hold built tools now, Edit Style Line and the pens, so they stay)
-  assert.ok(!o.shownOff.some(n => /Press/.test(n)), "submenus with nothing built are left out: " + o.shownOff);      // (Round FIX-4 / A: Ripping holds Edit Rip and Seamline Rip, built)
+  assert.ok(o.shownOff.includes("Press"), "Press built (run 14c, 3.E4): shown with the switch off too: " + o.shownOff);      // (Round FIX-4 / A: Ripping holds Edit Rip and Seamline Rip, built)
   assert.ok(o.shownOff.some(n => /^Select/.test(n)) && o.shownOff.some(n => /^Arrangement/.test(n)) && o.shownOff.some(n => /^Styleline/.test(n)) && o.shownOff.some(n => /^3D pen/.test(n)));
   assert.deepStrictEqual(o.bases, [0, 1]);
 });
@@ -110,11 +111,23 @@ test("D3: the File menu in the recording's shape (W40) without the online servic
     return out;` }).result;
   assert.deepStrictEqual(o.top, ["New Project", "New Garment (not built yet)", "New from Starter Pattern", "Open >", "Add >", "Save Project", "Save As >", "---", "Import >", "Import (Add) >", "Export >", "---",
     "Snapshot >", "---", "Plotter…", "---", "Information >", "---", "New Block…", "Library…", "Save to Library…", "Open Example >", "---", "Recent (not built yet)", "Quit (not built yet)"]);      // (Round desk-1: Open Example, this program's own row, beside Library; Round r20 / 8: Plotter… is built, it opens the Plotter box)
-  assert.deepStrictEqual(o.open, [["Project", "Ctrl+O"], ["Avatar", "Ctrl+Shift+A"], ["Pose", "Ctrl+Shift+P"]]);
-  assert.deepStrictEqual(o.saveAs, [["Project", "Ctrl+Shift+S"]]);
+  // (POST8 FIX-7 / C: Open ▸ Tool Set… and Save As ▸ Tool Set… are built, Customize Tools' file)
+  // (POST8 FIX-8 / C2: Open ▸ Accessory is built, Register Accessory's file)
+  // (run 14d, FMT-1 / B: Open ▸ Garment… and Pattern… are built, a pattern file through the Open Garment box)
+  // (run 14d, FMT-1 / C: Hand Pose…, Render Properties…, Camera Projection…, Camera Transformation… and User Setting… are built, our JSON)
+  assert.deepStrictEqual(o.open, [["Project", "Ctrl+O"], ["Garment…", null], ["Pattern…", null], ["Avatar", "Ctrl+Shift+A"], ["Accessory", null], ["Pose", "Ctrl+Shift+P"],
+    ["Hand Pose…", null], ["Render Properties…", null], ["Camera Projection…", null], ["Camera Transformation…", null], ["Tool Set…", null], ["User Setting…", null]]);
+  // (POST8 FIX-8 / C1: Save As ▸ Pose… is built, the avatar's pose as our JSON; FIX-8 / C2: Save As ▸ Accessory…, the selected accessory as OBJ)
+  // (run 14d, FMT-1 / B: Save As ▸ Garment…, Garment (Selected)… (greyed with nothing selected; the starter's pattern is) and Pattern… are built)
+  // (run 14d, FMT-1 / C: and Surface Textures…, every picture the project uses as one .zip)
+  // (run 15 / part 1: Save As ▸ Project (with Other Files)… and Avatar… are built, the maintainer's answer to run 14d's Q1)
+  assert.deepStrictEqual(o.saveAs, [["Project", "Ctrl+Shift+S"], ["Project (with Other Files)…", null], ["Garment…", null], ["Garment (Selected)…", null], ["Pattern…", null], ["Avatar…", null], ["Accessory…", null], ["Pose…", null],
+    ["Hand Pose…", null], ["Render Properties…", null], ["Camera Projection…", null], ["Camera Transformation…", null], ["Surface Textures…", null], ["Tool Set…", null], ["User Setting…", null]]);
   // (Round r25 follow-up: the Import submenu gains Re-read Grainlines from Original File…, a row of our own under Ours)
-  assert.deepStrictEqual(o.imp, [["DXF", "Ctrl+Shift+D"], ["# Animation", ""], ["# Script", ""], ["# Ours", ""], ["Import .zprj / .zpac…", ""], ["Pattern File (.pdraft, .json)…", ""], ["Re-read Grainlines from Original File…", ""]]);
-  assert.deepStrictEqual(o.exp, ["DXF", "PDF", "Plotter (PLT)", "BOM (XML)", "Tech Pack (JSON)", "OBJ", "OBJ (Selected)", "SVG, true size", "Print or PDF…"], "Round CF: PDF, BOM (XML) and Tech Pack (JSON) are built; Round r20: OBJ, Plotter (PLT)");
+  // (run 14c, FMT-1 / A: OBJ…, FBX… and glTF 2.0 (GLTF/GLB)… are built, a mesh file brought in as what it is for)
+  assert.deepStrictEqual(o.imp, [["DXF", "Ctrl+Shift+D"], ["OBJ…", ""], ["FBX…", ""], ["glTF 2.0 (GLTF/GLB)…", ""], ["# Animation", ""], ["# Script", ""], ["# Ours", ""], ["Import .zprj / .zpac…", ""], ["Pattern File (.pdraft, .json)…", ""], ["Re-read Grainlines from Original File…", ""]]);
+  // (run 14d, FMT-1 / D: FBX and USD are built, the garment as draped)
+  assert.deepStrictEqual(o.exp, ["DXF", "PDF", "Plotter (PLT)", "BOM (XML)", "Tech Pack (JSON)", "OBJ", "OBJ (Selected)", "FBX", "USD", "SVG, true size", "Print or PDF…"], "Round CF: PDF, BOM (XML) and Tech Pack (JSON) are built; Round r20: OBJ, Plotter (PLT)");
   assert.strictEqual(o.named, false, "no other program, no online service, no Video Capture (never seen opened)");
   assert.deepStrictEqual(o.topOff, ["New Project", "New from Starter Pattern", "Open >", "Add >", "Save Project", "Save As >", "---", "Import >", "Import (Add) >", "Export >", "---", "Snapshot >", "---", "Plotter…", "---", "Information >" /* (Round r20 / 11: Garment and File History are built) */, "---", "New Block…", "Library…Y", "Save to Library…", "Open Example >"], "as drawn with the switch off: Information is empty and left out (the key Y written at the row's end; Round r20 / 8: Plotter… is built)");
 });
@@ -186,7 +199,9 @@ test("D5: the minimal library: the shipped blocks and the user's own patterns in
     out.menu = app.MENUS.file().filter(x => x && /Library/.test(x.n)).map(x => [x.n, x.k || ""]);
     return out; })();` }).result;
   assert.deepStrictEqual(o.shipped, [["skirt-straight", "Straight skirt", 4]]);
-  assert.deepStrictEqual(o.dialog, { blocks: 1, mine: 0 }); assert.ok(/<h3>Blocks<\/h3>/.test(o.html) && /Straight skirt/.test(o.html) && /<h3>My Patterns<\/h3>/.test(o.html) && /Save to Library/.test(o.html));
+  // (Round LIB-1 / B: the library is the panel now: Garment's folders as tiles (Blocks, Examples; My Garments once there is one) and Save to
+  // Library…; the block itself is a tile in Garment ▸ Blocks, checked in lib1.test.js)
+  assert.deepStrictEqual(o.dialog, { blocks: 1, mine: 0 }); assert.ok(/data-f="blocks"/.test(o.html) && /Blocks/.test(o.html) && !/data-f="mine"/.test(o.html) && /Save to Library/.test(o.html), o.html.slice(0, 400));
   assert.deepStrictEqual(o.key, ["library", "Y"]);
   assert.deepStrictEqual(o.opened[0], ["Skirt front", "Skirt back", "Skirt back (mirror)", "Skirt waistband"]); assert.strictEqual(o.opened[1], 8 + 4, "its seams and its darts' legs (Round F / 7); the waistband closed (Round r17a / 4)"); assert.ok(/^Opened Straight skirt/.test(o.opened[2]), o.opened[2]);
   assert.deepStrictEqual(o.added, [8, 2*(8 + 4), 1]);      // (Round r17a / 4: each skirt one seam more, its waistband closed)
@@ -227,7 +242,8 @@ test("D6: the bill of materials, counted from the document (Q15): per fabric its
   assert.deepStrictEqual(o.zippers, [["Zipper 1", 100]]); assert.deepStrictEqual(o.stitches, [["Hem stitch", 200]]);
   assert.ok(o.buttons >= 1, "the library's buttons are listed, none placed");
   assert.strictEqual(o.view, true); assert.ok(/BOM Editor/.test(o.html) && /Update/.test(o.html) && /Cotton, in all/.test(o.html) && /0[.]040 m²/.test(o.html), "the table");
-  assert.deepStrictEqual(o.menu, ["Colorway (not built yet) O", "BOM", "---", "Grading Review (3D) (not built yet)", "Grading Review (2D) (Beta)"], "W51's Production menu");
+  // (Round CW-1 / B: Colorway built, its key O)
+  assert.deepStrictEqual(o.menu, ["Colorway O", "BOM", "---", "Grading Review (3D) (not built yet)", "Grading Review (2D) (Beta)"], "W51's Production menu");
 });
 
 /* ---------- D7 ---------- */
@@ -249,7 +265,7 @@ test("D7: Settings ▸ Display as W31: the twelve lists, Isolate Selection, Cust
     return out;` }).result;
   assert.deepStrictEqual(o.settings, ["Language >", "User Settings…", "---", "Log Out (not built yet)", "---", "Display >", "Preferences >"]);
   assert.deepStrictEqual(o.lists, ["Viewpoint >", "3D Garment >", "3D Trims >", "2D Pattern >", "2D Information >", "Sewing >", "Avatar >", "Environment >", "Avatar Rendering Style >", "3D Garment Rendering Style >",
-    "2D Pattern Rendering Style >", "Fit Maps >", "Isolate Selection", "Format 3D Background…" /* (built in Round r20 / 11) */, "Add Background Image (not built yet)", "Customize Tools >", "Window >"]);
+    "2D Pattern Rendering Style >", "Fit Maps >", "Isolate Selection", "Format 3D Background…" /* (built in Round r20 / 11) */, "Add Background Image…" /* (built in POST8 FIX-7 / B) */, "Customize Tools >", "Window >"]);
   assert.deepStrictEqual(o.view.slice(0, 8), [["Front", "2"], ["3/4 Left", "3"], ["Back", "8"], ["Left", "6"], ["Right", "4"], ["Top", "5"], ["Bottom", "0"], ["3/4 Right", "1"]]);
   assert.deepStrictEqual(o.view.slice(-2), [["Focus Zoom", "F"], ["Zoom Extents All", ""]]);
   assert.deepStrictEqual(o.garment3.slice(0, 6), [["Show Garment", "Shift+W", true], ["Show Archived Pattern", "", false] /* (built in Round r20 / 9, off at first) */, ["Show Pins", "", true], ["Show Pattern Name", "", false] /* (built in Round r20 / 9, off at first) */, ["Show Seamlines", "Shift+S", true], ["Show Internal Lines", "", true]]);
@@ -262,7 +278,8 @@ test("D7: Settings ▸ Display as W31: the twelve lists, Isolate Selection, Cust
   assert.ok(o.window.includes("BOM Editor") && o.window.includes("Library") && o.window.includes("History") && o.window.includes("Reset to Default Layout"));
   assert.ok(!o.window.some(n => /Omniverse/.test(n)), "a row named after another program is left out");
   // (Round r13 / 1: Fit Maps holds the strain map, a real row, so it stays with the switch off)
-  assert.ok(o.listsOff.includes("Fit Maps") && !o.listsOff.includes("Customize Tools") && !o.listsOff.some(n => /not built/.test(n)) && o.listsOff.includes("Environment"), "with the switch off: " + o.listsOff);
+  // (POST8 FIX-7 / A: Customize Tools is built, Group Tools, Rearrange Tools, Reset to Default, so it stays with the switch off too; it was left out while its rows were not built)
+  assert.ok(o.listsOff.includes("Fit Maps") && o.listsOff.includes("Customize Tools") && !o.listsOff.some(n => /not built/.test(n)) && o.listsOff.includes("Environment"), "with the switch off: " + o.listsOff);
 });
 
 /* ---------- D8 ---------- */
@@ -278,13 +295,13 @@ test("D8: Settings ▸ Preferences as W31: Gizmo (World Coordinate is ours), Sma
     S.ui.unbuilt = false; out.off = pref().map(x => x.sep ? "---" : x.n); S.ui.unbuilt = true;
     return out;` }).result;
   assert.deepStrictEqual(o.rows, ["Gizmo >", "---", "3D Grid Brightness…" /* (built in Round r20 / 9) */, "Smart Guide [x]", "Snap to Pattern [x]", "Snap to Grid", "Grid Properties…", "---", "History for New Projects >" /* (Round H1b / 3) */, "Show Tool Hints", "Keep the Old Future Without Asking" /* (Round H1c / A) */, "Keep Cloth at Branch Points" /* (Round H1b / 1) */, "Open Files with Their Display Settings", "---",      /* (Round r17b: Grid Properties built, the display settings of a file) */
-    "Camera Properties >", "Simulation Properties…", "---", "Fit Properties (not built yet)"]);
+    "Camera Properties >", "Simulation Properties…"]);      // (POST8 FIX-6 / B: changed on purpose, Fit Properties dropped with its separator, guess post8/21)
   // (Round r15 / 8: the three coordinates are built, Screen the default; Round UI-1 / C: World the default, the maintainer's decision)
   assert.deepStrictEqual(o.gizmo, ["Screen Coordinate", "Local Coordinate", "World Coordinate [x]", "Size: Small (110 px)", "Size: Medium (165 px) [x]", "Size: Large (220 px)"], "(Round F / 6: its size as well)");
   assert.strictEqual(o.smart, false, "the tick switches the setting");
   assert.deepStrictEqual([o.grid1, o.grid0], [10, 0]);
   assert.strictEqual(o.sim, "Simulation Settings");
-  assert.deepStrictEqual(o.off, ["Gizmo", "---", "3D Grid Brightness…" /* (Round r20 / 9) */, "Smart Guide", "Snap to Pattern", "Snap to Grid", "Grid Properties…", "---", "History for New Projects" /* (Round H1b / 3) */, "Show Tool Hints", "Keep the Old Future Without Asking" /* (Round H1c / A) */, "Keep Cloth at Branch Points" /* (Round H1b / 1) */, "Open Files with Their Display Settings", "---", "Camera Properties", "Simulation Properties…", "---"]);      // (Round r17b: the two built rows)
+  assert.deepStrictEqual(o.off, ["Gizmo", "---", "3D Grid Brightness…" /* (Round r20 / 9) */, "Smart Guide", "Snap to Pattern", "Snap to Grid", "Grid Properties…", "---", "History for New Projects" /* (Round H1b / 3) */, "Show Tool Hints", "Keep the Old Future Without Asking" /* (Round H1c / A) */, "Keep Cloth at Branch Points" /* (Round H1b / 1) */, "Open Files with Their Display Settings", "---", "Camera Properties", "Simulation Properties…"]);      // (Round r17b: the two built rows; POST8 FIX-6 / B: changed on purpose, the separator before the dropped Fit Properties gone too)
 });
 
 module.exports = T;

@@ -245,7 +245,8 @@ test("r11 / 3: Piping (3D): a click on a seam on the cloth opens its box (cord d
     })();` }).result;
   assert.strictEqual(o.miss, true); assert.ok(/into a seam/.test(o.missSaid), o.missSaid);
   assert.strictEqual(o.hit, true);
-  assert.deepStrictEqual(o.asked.slice(0, 2), ["Piping \u2014 seam 1", [["d", 4, "mm"], ["t0", 0, "%"], ["t1", 100, "%"]]]); assert.deepStrictEqual(o.asked[2].map(c => c[0]), ["fabric", "side"]);
+  // (Round PIPE-1b: the box also asks its strip's seam allowance, the document's 10 mm, and its grain, bias by default)
+  assert.deepStrictEqual(o.asked.slice(0, 2), ["Piping \u2014 seam 1", [["d", 4, "mm"], ["t0", 0, "%"], ["t1", 100, "%"], ["sa", 10, "mm"], ["grain", "bias", null]]]); assert.deepStrictEqual(o.asked[2].map(c => c[0]), ["fabric", "side"]);
   assert.deepStrictEqual(o.pipings.map(t => [t.id, t.seam, t.d, t.t0, t.t1, t.side, t.name]), [[1, 1, 5, 0.1, 0.9, "in", "Piping 1"]]); assert.deepStrictEqual(o.steps, ["Piping"]);
   assert.ok(o.tube.length === 1 && o.tube[0][0] === "piping" && o.tube[0][1] > 50, "a tube in 3D: " + JSON.stringify(o.tube));
   assert.ok(/Piping 1/.test(o.ob) && /\u00d8 5/.test(o.ob) && /inside/.test(o.ob), "listed: " + o.ob);
@@ -320,7 +321,10 @@ test("r11 / 4: Binding (3D): a click on a free edge on the cloth opens its box (
     })();` }).result;
   assert.deepStrictEqual(o.sewn.slice(0, 2), [true, null]); assert.ok(/sewn/.test(o.sewn[2]), o.sewn[2]);
   assert.strictEqual(o.hit, true);
-  assert.deepStrictEqual(o.asked, ["Binding \u2014 Front", [["w", 10, "mm"]], ["fabric"], [["runOn", "Run on along the free edge (1 line)", true]]]);
+  // (Round PIPE-1b: the box makes one strip: it also asks its seam allowance (the document's), grain (bias) and Reduction (0 % on the
+  // bias), and offers PIPE-1's two strips as Two-piece, off)
+  assert.deepStrictEqual(o.asked, ["Binding \u2014 Front", [["w", 10, "mm"], ["sa", 10, "mm"], ["grain", "bias", null], ["red", 0, "%"]], ["fabric"],
+    [["runOn", "Run on along the free edge (1 line)", true], ["two", "Two-piece binding (outside and inside strips cut to the edge's curve)", false]]]);
   assert.deepStrictEqual(o.b1, [[1, 12, [2]]]); assert.deepStrictEqual(o.steps, ["Binding"]);
   assert.strictEqual(o.back, true); assert.deepStrictEqual(o.b2, [[2, 3, 0]], "the hem, then the free left side and the top, in the outline's order (the right side is sewn)");
   assert.deepStrictEqual(o.b3, [[8, [1]]], "run on unticked: the one line");

@@ -15,8 +15,8 @@ function three() {
     navigator: { userAgent: "node" }, atob, btoa };
   ctx.globalThis = ctx; ctx.self = ctx; ctx.window = ctx;
   vm.createContext(ctx);
-  for (const f of ["three.min.js", "three-loaders.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "vendor", f), "utf8"), ctx, { filename: f });
-  return (env = { THREE: ctx.THREE, THREE_LOADERS: ctx.THREE_LOADERS });
+  for (const f of ["three.min.js", "three-loaders.js", "three-hdr.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "vendor", f), "utf8"), ctx, { filename: f });
+  return (env = { THREE: ctx.THREE, THREE_LOADERS: ctx.THREE_LOADERS, THREE_HDR: ctx.THREE_HDR });
 }
 
 /* A rigged body of boxes, one box per bone, every corner of a box held by that bone

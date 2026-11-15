@@ -18,11 +18,18 @@ function inTemp(dir) {
   const rel = path.relative(win ? t.toLowerCase() : t, win ? d.toLowerCase() : d);
   return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
-function fresh(tag) {
+// (POST8 batch 0o) how a check's windows behave (desktop/main.js TEST_WIN): "hidden" unless asked otherwise; "inactive" on the screen
+// without the focus, on PDRAFT_TEST_DISPLAY (else the last display); PDRAFT_TEST_SHOW=1 shows them as the app does. A mode the caller's
+// own environment already names (PDRAFT_TEST_WINDOWS) is kept
+function testWindows(env, mode) {
+  if (!env.PDRAFT_TEST_WINDOWS) env.PDRAFT_TEST_WINDOWS = mode === "inactive" ? "inactive" : "hidden";
+  return env;
+}
+function fresh(tag, opt) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdraft-" + (tag || "check") + "-"));
   const data = path.join(dir, "data");
   fs.mkdirSync(data);
-  const env = { ...process.env, PDRAFT_USER_DATA: data };
+  const env = testWindows({ ...process.env, PDRAFT_USER_DATA: data }, opt && opt.windows);
   delete env.ELECTRON_RUN_AS_NODE;
   return { dir, data, env };
 }
@@ -31,4 +38,4 @@ function remove(dir) {
   if (!inTemp(dir)) throw new Error("refused to delete " + dir + ": not inside the system's temp folder " + os.tmpdir());
   fs.rmSync(dir, { recursive: true, force: true });
 }
-module.exports = { fresh, remove, inTemp };
+module.exports = { fresh, remove, inTemp, testWindows };

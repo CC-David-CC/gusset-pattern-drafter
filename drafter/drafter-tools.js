@@ -36,7 +36,7 @@ var TOOL_REGISTRY = (function () {
     ["notch", "2D", "Markings"], ["allowance", "2D", "Markings"], ["annotation", "2D", "Markings"], ["measure", "2D", "Markings"], ["grade", "2D", "Markings"],
     ["edit_sew", "2D", "Sewing"], ["seg_sew", "2D", "Sewing"], ["free_sew", "2D", "Sewing"], ["check_sew", "2D", "Sewing"],
     ["topstitch", "2D", "Stitch"], ["puckering", "2D", "Stitch"],
-    ["texture", "2D", "Material"], ["graphic2", "2D", "Material"], ["button2", "2D", "Material"], ["glue2", "2D", "Material"], ["layer", "2D", "Material"], ["drafter", "2D", "Material"],
+    ["texture", "2D", "Material"], ["graphic2", "2D", "Material"], ["button2", "2D", "Material"], ["glue2", "2D", "Material"], ["lace2", "2D", "Material"], ["layer", "2D", "Material"], ["drafter", "2D", "Material"],
     // ---- 3D window ----
     ["simulate", "3D", "Simulate"], ["select3", "3D", "Simulate"], ["mesh", "3D", "Simulate"], ["pin", "3D", "Simulate"],
     // (Round r33 / 5, the maintainer's brief) Fold Arrangement and the two resets each a button of their own; "arrange" keeps the
@@ -116,7 +116,7 @@ var TOOL_REGISTRY = (function () {
     ["seamline_puckering", "Seamline Puckering", "", "puckering", "built", "pucker+sew", "Puckering along a sewn seam."],
     // ---------------- 2D: material ----------------
     ["edit_texture", "Edit Texture (2D)", "T", "texture", "built", "grain", "Move and turn the grainline, and the fabric's texture laid along it."],      // (Round BETA8-1 / C, 2.C24: the texture follows the grainline; FIX-4b's G9 had named it "(Grainline)")
-    ["edit_uv", "Edit UV", "", "texture", "unbuilt", "uv", "Lay patterns out for texture export."],
+    ["edit_uv", "Edit UV", "", "texture", "partly", "uv", "Lay patterns out for texture export.", { via: "Here it is a window: Materials/UV ▸ UV Editor (also Window ▸ UV Editor)." }],      // (Round UV-1 / B)
     ["transform_graphic", "Transform Graphic", "", "graphic2", "built", "image+box", "Move, scale and turn a placed graphic."],
     ["graphic", "Graphic", "", "graphic2", "built", "image", "Place an image on a pattern."],
     ["button2d", "Button", "", "button2", "built", "button", "Place a button on a pattern."],
@@ -139,7 +139,8 @@ var TOOL_REGISTRY = (function () {
     // ---------------- 3D: arrange ----------------
     // (Round r33 / 5) Show Arrangement Points is no longer a toolbar button: Settings ▸ Display ▸ Avatar, the Avatar display list, Shift+F
     ["fold_arrangement", "Fold Arrangement", "", "fold_arr", "built", "foldline", "Fold the cloth along an internal line, a baseline or a seam: a handle a side, the drape kept."],
-    ["fold_garment", "Fold 3D Garment", "", "arrange", "later", "foldshirt", "Fold a finished garment."],
+    // (Round POST8 / FIX-5 E) built: Lay Flat, Rotate X-Axis, Flip Horizontally, Fold, Fold (Selected)
+    ["fold_garment", "Fold 3D Garment", "", "arrange", "built", "foldshirt", "Lay the finished garment flat on the floor, turn it over and fold it."],
     ["auto_arrangement", "Auto 3D Arrangement", "", "arrange", "later", "body+plus", "Place patterns round the avatar automatically."],
     // (Round r33b / 4) built: a button of its own beside the resets
     ["redrape", "Re-drape 3D Arrangement", "", "redrape", "built", "body+reset", "Simulate the garment again from where it hangs after the avatar's size or pose changed."],
@@ -154,11 +155,11 @@ var TOOL_REGISTRY = (function () {
     ["mn_segment_sewing_3d", "M:N Segment Sewing (3D)", "", "seg_sew3", "built", "sew+mn", "M:N sewing on the garment."],
     ["free_sewing_3d", "Free Sewing (3D)", "", "free_sew3", "built", "sewfree", "Free sewing on the garment."],
     ["mn_free_sewing_3d", "M:N Free Sewing (3D)", "", "free_sew3", "built", "sewfree+mn", "M:N free sewing on the garment."],
-    ["auto_sewing", "Auto Sewing", "", "auto_sew", "later", "sew+plus", "Sew patterns from where they are arranged."],
+    ["auto_sewing", "Auto Sewing", "", "auto_sew", "built", "sew+plus", "Sew the selected patterns (none: all) where lines match in length, shape and notches; only seams it is sure of, selected to check."],
     ["tack", "Tack", "", "tack", "built", "tack", "Hold two spots of the garment together."],
     ["tack_avatar", "Tack on Avatar", "", "tack", "built", "tack+body", "Hold a spot of the garment to the avatar."],
     ["edit_tack", "Edit Tack", "", "tack", "built", "tack+edit", "Select, move or delete tacks."],
-    ["press", "Press", "", "press", "later", "iron", "Press two sewn layers flat at the edge."],
+    ["press", "Press", "", "press", "built", "iron", "Click one layer, then the layer it is sewn to: the seam between them pressed flat."],
     ["steam", "Steam", "", "press", "built", "iron+brush", "Brush over the cloth to shrink it there (or relax it, Strength below 0)."],      // (Round BETA8-1 / E, roadmap 3.A18)
     // the 2D tools picked on the cloth (Round r10 / 3; not in the reference's 3D toolbar list: compare in the other program)
     ["edit_topstitch_3d", "Edit Topstitch (3D)", "", "stitch3", "built", "stitch+edit", "Edit Topstitch on the garment: the 2D tool, picked on the cloth."],
@@ -169,9 +170,10 @@ var TOOL_REGISTRY = (function () {
     ["pen_garment", "3D Pen (Garment)", "", "pen_garment", "built", "pen", "Draw lines on the garment."],
     ["edit_pen_garment", "Edit 3D Pen (Garment)", "", "pen_garment", "built", "pen+edit", "Edit lines drawn on the garment."],
     ["base_pen", "3D Base Pen", "", "pen_garment", "built", "pen+dash", "Draw baselines over the garment."],
-    ["pen_avatar", "3D Pen (Avatar)", "", "pen_avatar", "later", "pen+body", "Draw shapes on the avatar."],
-    ["edit_pen_avatar", "Edit 3D Pen (Avatar)", "", "pen_avatar", "later", "body+edit", "Edit shapes drawn on the avatar."],
-    ["flatten", "Flatten", "", "pen_avatar", "later", "flatten", "Turn shapes on the avatar into flat patterns."],
+    ["pen_avatar", "3D Pen (Avatar)", "", "pen_avatar", "built", "pen+body", "Draw lines on the avatar's skin; they follow its pose and size."],
+    ["edit_pen_avatar", "Edit 3D Pen (Avatar)", "", "pen_avatar", "built", "body+edit", "Select and move the lines drawn on the avatar."],
+    ["pencil_avatar", "3D Pencil (Avatar)", "", "pen_avatar", "built", "pencil+body", "Sketch on the avatar's skin, then turn the strokes into 3D Pen lines."],
+    ["flatten", "Flatten", "", "pen_avatar", "built", "flatten", "Turn closed shapes drawn on the avatar into flat patterns, draped where they were drawn."],
     ["edit_style_line", "Edit Style Line", "", "style_line", "built", "shirt+edit", "Move outline points directly on the garment."],
     ["scale_style_line", "Scale Style Line", "", "style_line", "later", "shirt+box", "Scale part of the garment's outline."],
     ["add_style_line", "Add Style Line", "", "style_line", "later", "shirt+plus", "Add a line to the garment's outline."],
@@ -189,7 +191,7 @@ var TOOL_REGISTRY = (function () {
     ["edit_piping", "Edit Piping", "", "piping", "built", "piping+edit", "Select a piping to change or delete it."],
     ["binding", "Binding", "", "piping", "built", "binding", "A strip of fabric wrapped round a free edge."],
     ["select_binding", "Select Binding", "", "piping", "built", "binding+edit", "Select a binding to change or delete it."],
-    ["seam_taping", "Seam Taping", "", "bond", "later", "tape", "Tape edges so they keep their length."],
+    ["seam_taping", "Seam Taping", "", "bond", "built", "tape", "Click a line on the garment to tape it, so it keeps its length."],
     ["gluing", "Gluing", "", "bond", "built", "drop", "Bond two layers over an area, or a seam instead of stitching it."],
     ["glue_fill", "Glue Fill", "", "bond", "built", "drop+box", "Click a piece lying on another pattern: it is glued where it overlaps. Shift+click: Subtract."],
     // (Round FIX-2 / C1, the maintainer's brief "glue also in 2D") the same three tools on the 2D toolbar: each hands over to the tool of the
@@ -197,10 +199,15 @@ var TOOL_REGISTRY = (function () {
     ["glue_fill_2d", "Glue Fill", "", "glue2", "built", "drop+box", "Click a piece lying on another pattern: it is glued where it overlaps. Shift+click: Subtract."],
     ["sticker_2d", "Sticker", "", "glue2", "built", "drop+plus", "Click a piece, then where it goes on another pattern: it is glued there."],
     ["edit_gluing_2d", "Edit Gluing", "", "glue2", "built", "drop+edit", "Select a glue to move, turn, scale or delete it, and set its strength."],
+    // (POST8 FIX-4b) Lacing on the 2D toolbar, as the reference has it: the same tools as the 3D toolbar's (TOOL_ALIAS)
+    ["lacing_2d", "Lacing", "", "lace2", "built", "lace", "Click eyelets in order, then Enter: a cord threaded through them."],
+    ["edit_lacing_2d", "Edit Lacing", "", "lace2", "built", "lace+edit", "Select a lacing to change its length, curvature or fabric; click its eyelet to reverse it there."],
     ["glue_brush", "Glue Brush", "", "bond", "built", "drop+brush", "Paint over the cloth where it is glued to the layer under it."],      // (Round BETA8-1 / D, roadmap 3.C5)
     ["sticker", "Sticker", "", "bond", "built", "drop+plus", "Click a piece, then where it goes on another pattern: it is glued there."],
     ["edit_gluing", "Edit Gluing", "", "bond", "built", "drop+edit", "Select a glue to move, turn, scale or delete it, and set its strength."],
-    ["lacing", "Lacing", "", "bond", "later", "lace", "Thread a lace through holes."],
+    // (POST8 FIX-4b, roadmap 1.T19) built: one tool in both windows, its twins on the 2D toolbar (TOOL_ALIAS)
+    ["lacing", "Lacing", "", "bond", "built", "lace", "Click eyelets in order, then Enter: a cord threaded through them."],
+    ["edit_lacing", "Edit Lacing", "", "bond", "built", "lace+edit", "Select a lacing to change its length, curvature or fabric; click its eyelet to reverse it there."],
     ["graphic_3d", "Graphic (3D)", "", "graphic3", "built", "image", "Place an image on the garment."],
     ["transform_graphic_3d", "Transform Graphic (3D)", "", "graphic3", "built", "image+box", "Move a graphic on the garment."],
     ["edit_texture_3d", "Edit Texture (3D)", "", "graphic3", "built", "grain", "Move the fabric texture on the garment."],
@@ -215,10 +222,10 @@ var TOOL_REGISTRY = (function () {
     ["circ_garment", "Circumference Measure (Garment)", "", "measure_garment", "built", "ring+shirt", "A girth of the garment."],
     ["volume_measure", "Volume Measure (Garment/Bag)", "", "measure_garment", "built", "cube", "The space patterns enclose."],
     ["edit_volume_measure", "Edit Volume Measure (Garment/Bag)", "", "measure_garment", "built", "cube+edit", "A volume's target, tolerance and measurement mesh."],
-    ["avatar_tape_linear", "Linear Avatar Tape", "", "avatar_tape", "later", "tape+body", "A tape on the avatar to fix seams to."],
-    ["avatar_tape_circ", "Circumference Avatar Tape", "", "avatar_tape", "later", "ring+dash", "A tape round the avatar."],
-    ["edit_avatar_tape", "Edit Avatar Tape", "", "avatar_tape", "later", "tape+edit", "Select or delete avatar tapes."],
-    ["attach_to_measure", "Attach to Measure", "", "avatar_tape", "later", "tape+sew", "Fix a seam or edge to an avatar tape."],
+    ["avatar_tape_linear", "Linear Avatar Tape", "", "avatar_tape", "built", "tape+body", "A tape on the avatar's skin to hold a pattern's line to."],
+    ["avatar_tape_circ", "Circumference Avatar Tape", "", "avatar_tape", "built", "ring+dash", "A tape round the avatar, through three places."],
+    ["edit_avatar_tape", "Edit Avatar Tape", "", "avatar_tape", "built", "tape+edit", "Select, move or delete avatar tapes."],
+    ["attach_to_measure", "Attach to Measure", "", "avatar_tape", "built", "tape+sew", "Hold a pattern's line onto an avatar tape or measurement while simulating."],
   ];
 
   // Line drawings, 24 × 24, drawn with one stroke. Each is SVG path data.
@@ -275,6 +282,7 @@ var TOOL_REGISTRY = (function () {
     tack: "M7 8a2 2 0 1 0 .01 0M17 14a2 2 0 1 0 .01 0M8.700 9l6.600 4",
     iron: "M4 17h16l-2-7H9.500A5.500 5.500 0 0 0 4 15.500zM12 10V7h5",
     pen: "M4 20l4-1L19 8l-3-3L5 16zM14 7l3 3",
+    pencil: "M5 17.500L15.500 7l2.500 2.500L7.500 20H5zM13.500 9l2.500 2.500M3 21c2-1.500 4 1 6-.500",
     flatten: "M4 13c4-8 12-8 16 0M4 19h16M12 9v6M10 13l2 2 2-2",
     shirt: "M9 4L4 7l2 4 2.500-1.500V20h7V9.500L18 11l2-4-5-3a3 3 0 0 1-6 0z",
     rip: "M3 12h5l2-4 2.500 8 2-4H21",

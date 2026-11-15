@@ -52,7 +52,8 @@ test("r32 / 1: the shell: the splash made as soon as the old folder is brought o
   const ready = MAIN.slice(MAIN.indexOf("app.whenReady().then("));
   assert.ok(ready.indexOf("bringOver();") < ready.indexOf("showSplash();") && ready.indexOf("showSplash();") < ready.indexOf("loadLists();"), "the splash right after the copy");
   const up = MAIN.slice(MAIN.indexOf("function pageUp(w, late) {"), MAIN.indexOf("\n}", MAIN.indexOf("function pageUp(w, late) {")));
-  assert.ok(/if \(!w\.isVisible\(\)\) w\.show\(\);\s*if \(splash\) splash\.destroy\(\);/.test(up), "shown and closed together: " + up);
+  // (POST8 batch 0o: a check's run shows it without the focus, TEST_WIN; a person's start shows it as before, in the same moment)
+  assert.ok(/else if \(!TEST_WIN && !w\.isVisible\(\)\) w\.show\(\);\s*if \(splash\) splash\.destroy\(\);/.test(up), "shown and closed together: " + up);
   assert.ok(/Math\.max\(0, SPLASH_MIN - \(Date\.now\(\) - splashAt\)\)/.test(up) && /if \(late\) w\.webContents\.send\("start-late", SPLASH_LATE\/1000\)/.test(up));
   assert.ok(/const ready = \(e\) => \{ if \(e\.sender !== w\.webContents\) return; ipcMain\.removeListener\("app:ready", ready\); clearTimeout\(late\);/.test(MAIN), "only its own page, once");
   assert.ok(/const w = win, late = setTimeout\(\(\) => pageUp\(w, true\), SPLASH_LATE\);/.test(MAIN));

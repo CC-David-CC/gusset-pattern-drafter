@@ -97,7 +97,8 @@ test("I1 a zipper's tapes are not cut patterns: they are skipped and named; the 
   const zipper = MK.list([MK.map({ qsName: MK.str("Zip_7") })]), graphics = MK.list([MK.map({ qsName: MK.str("logo") })]);
   const r = await read([SQUARE, { ...SQUARE, name: "ZipperPattern_5", annotation: undefined, tape: true }], { listZipper: zipper, listMVGraphic: graphics, listTrimObject: MK.list([]) });
   assert.strictEqual(r.pieces.length, 1); assert.strictEqual(r.total, 2);
-  assert.deepStrictEqual(r.skipped, [{ index: 1, name: "ZipperPattern_5", reason: "a zipper tape: zippers are not imported", kind: "tape" }]);
+  // (run 16, IMP-1 rest / B: a zipper whose tapes can be followed now comes in as a zipper seam, so the tape's reason says so)
+  assert.deepStrictEqual(r.skipped, [{ index: 1, name: "ZipperPattern_5", reason: "a zipper tape: its zipper comes in as a zipper seam where its tapes can be followed", kind: "tape" }]);
   assert.deepStrictEqual(r.others, { zippers: ["Zip_7"], graphics: 1, trims: 0 });
 });
 
@@ -113,7 +114,8 @@ test("I1 in the app: the report's first line is 'Imported N of M patterns; skipp
   assert.deepStrictEqual(out.errors, []);
   const o = out.result;
   assert.deepStrictEqual(o.names, ["Sleeve"]); assert.strictEqual(o.undo, 1);
-  assert.strictEqual(o.summary, "Imported 1 of 3 patterns; skipped: Lost (missing key listPoint), ZipperPattern_5 (a zipper tape: zippers are not imported); defaults used: fSAStartOffset × 4, fSAEndOffset × 4");
+  // (run 16: the tape's reason reworded, as above)
+  assert.strictEqual(o.summary, "Imported 1 of 3 patterns; skipped: Lost (missing key listPoint), ZipperPattern_5 (a zipper tape: its zipper comes in as a zipper seam where its tapes can be followed); defaults used: fSAStartOffset × 4, fSAEndOffset × 4");
   const m = out.modals[0];
   assert.strictEqual(m.title, "Imported swim.zprj");
   for (const part of ["Imported 1 of 3 patterns", "Skipped:", "Lost (missing key listPoint)", "Defaults used where the file has no value:", "fSAStartOffset × 4: seam allowance 0", "1 zipper (Zip_7)", "not imported"]) assert.ok(m.text.includes(part), part + " in: " + m.text);

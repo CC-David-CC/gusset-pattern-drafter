@@ -73,10 +73,11 @@ test("r24 splash, desktop: its own window, made after the old folder is brought 
   assert.ok(at("bringOver();") < at("showSplash();") && at("showSplash();") < at("loadLists();") && at("loadLists();") < at("createWindow();"));
   const min = +/const SPLASH_MIN = (\d+)/.exec(MAIN)[1], late = +/SPLASH_LATE = (\d+)/.exec(MAIN)[1];
   assert.ok(min >= 1000 && min <= 1500 && late === 30000, min + " / " + late);
-  assert.ok(MAIN.includes("show: !splash,"), "the page's window hidden while the splash is up");
+  // (POST8 batch 0o: and never shown at creation in a check's run, TEST_WIN; a person's start as before)
+  assert.ok(MAIN.includes("show: !splash && !TEST_WIN,"), "the page's window hidden while the splash is up");
   assert.ok(!/"ready-to-show", up/.test(MAIN) && !/SPLASH_FADE/.test(MAIN), "no longer shown at its first paint, no fade");
   assert.ok(/Math\.max\(0, SPLASH_MIN - \(Date\.now\(\) - splashAt\)\)/.test(MAIN), "kept up only as long as the shortest time, never longer");
-  assert.ok(/skipTaskbar: true, alwaysOnTop: true, show: true, backgroundColor: "#1F1F1F"/.test(MAIN));
+  assert.ok(/skipTaskbar: true, alwaysOnTop: !TEST_WIN, show: !TEST_WIN, focusable: !TEST_WIN, backgroundColor: "#1F1F1F"/.test(MAIN))      // (POST8 batch 0o: on top and shown as before; never in a check's run, TEST_WIN);
   assert.ok(/webPreferences: \{ contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: false \}/.test(MAIN), "no preload, no bridge");
   const page = fs.readFileSync(path.join(ROOT, "drafter", "splash.html"), "utf8");
   assert.ok(page.includes("<body>") && !/onclick/.test(page), "(Round r32) a click no longer closes it: there would be nothing on the screen");

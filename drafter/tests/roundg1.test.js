@@ -57,7 +57,8 @@ test("G1 one outline line (W56), two lines (the screenshot), a point and a curve
   assert.deepStrictEqual(o.one, ["Delete Line [Delete]", "—", "Copy [Ctrl+C]", "Paste [Ctrl+V]", "Mirror Paste [Ctrl+R]", "—", "Delete All Curve Points", "Lock", "—", "Split", "Change Length", "Add Perpendicular Internal Line [▸]",
     "Offset as Internal Line", "Offset as Seamless Block Line" /* (Round r34 / 3: built; it was not built) */, "Offset Pattern Outline", "Optimize Curve Points [no curve points to spare]", "—",      /* (Round build-1: built; greyed on a straight line, saying why) */ "Merge [select two lines]", "—", "Unfold", "Unfold Pattern Outline Only", "Unfold Symmetric Editing (with Sewing)",
     "Duplicate as Mirrored Internal Line", "Add Guideline along Points", "—", "Roll Up", "—", "Trace as Point of Measure", "Link Lines [U]", "—", "More [▸]"], "W56");
-  assert.deepStrictEqual(o.oneMore, ["Distribute Internal Lines between Segments…", "Fullness (Line)…", "Pleats…"], "this program's own, nowhere else");
+  // (Round PIPE-1: Binding… on a free outline line, this program's own way to bind an edge from 2D)
+  assert.deepStrictEqual(o.oneMore, ["Binding…", "Distribute Internal Lines between Segments…", "Fullness (Line)…", "Pleats…"], "this program's own, nowhere else: " + JSON.stringify(o.oneMore));
   assert.deepStrictEqual(o.two, ["Delete Line [Delete]", "—", "Copy [Ctrl+C]", "Paste [Ctrl+V]", "Mirror Paste [Ctrl+R]", "—", "Lock", "—", "Split", "Change Length", "Offset as Internal Line", "Offset as Seamless Block Line" /* (Round r34 / 3: built) */, "Offset Pattern Outline", "—",
     "Merge", "Unfold", "Unfold Pattern Outline Only", "Unfold Symmetric Editing (with Sewing)", "Duplicate as Mirrored Internal Line", "Add Guideline along Points", "—", "Align [▸]", "Match Up [▸]", "Roll Up", "—",
     "Trace as Point of Measure", "Link Lines [U]", "—", "More [▸]"], "the screenshot line_selection_data_field");
@@ -123,6 +124,8 @@ test("G1 Edit Sewing's menu on a sewing line is W75; Add Notch on a point puts t
   assert.deepStrictEqual(o.sew, ["Select All with Same Property [▸]", "Apply Turned Sewing Line Type" /* (built in Round r17b / 1) */, "Reverse Sewing [Ctrl+B]", "Delete Sewing [Delete]", "—", "Merge [select another first]" /* (built in Round r20 / 3) */, "—",
     "Add Point to Pattern on Start [a point is there]", "Add Point to Pattern on End [a point is there]", "—", "Add Seamline Topstitch", "Add Seamline Rip" /* (built in Round FIX-4 / A) */, "—", "Deactivate Sewing (Selected)", "—",
     "Hide Sewing (Selected)", "Show Sewing (All) [none hidden]", "—", "Link Line" /* (Round r34 / 5: built) */, "—", "More [▸]"], "W75");      // (Hide / Show Sewing built in Round r13 / 8; Add Seamline Topstitch in Round r14 / 4)
+  // (Round PIPE-1: Piping… under More first, this program's own way to put piping into a seam from 2D)
+  assert.deepStrictEqual(o.sewMore.slice(0, 1), ["Piping…"], JSON.stringify(o.sewMore)); o.sewMore.shift();
   assert.deepStrictEqual(o.sewMore, ["Check Sewing Length", "Check Sewing Length Settings…"].map((n, k) => k ? n : "  " + n));
   assert.deepStrictEqual(o.notch, [[0], "Add Notch"]);
   assert.deepStrictEqual(o.again, [1, "There is a notch there already"]);
@@ -144,7 +147,7 @@ test("G1 the 3D window's menus: a pattern's is W18, the background's W17, with t
   // (Deactivate, Freeze, Strengthen and Hide 3D Pattern built in Round r14 / 6)
   assert.deepStrictEqual(o.pat, ["Copy [Ctrl+C]", "Paste [Ctrl+V]", "Mirror Paste [Ctrl+R]", "—", "Deactivate (Pattern Only) [Ctrl+J]", "Deactivate (Pattern & Sewing)", "—",
     "Freeze [Ctrl+K]", "Strengthen [Ctrl+H]", "Solidify [Ctrl+E]" /* (Round build-1 / 5: built) */, "Flip Normal", "—", "Archive" /* (Flip Normal and Archive built in Round r20 / 9) */, "Hide 3D Pattern [Shift+Q]", "—",
-    "Convert [▸]", "Mesh Type [▸]", "—", "Symmetric Arrangement" + NB, "Smart Arrangement" + NB, "Superimpose [▸]", "—", "Reset 2D Arrangement (Selected)", "Reset 3D Arrangement (Selected) [Ctrl+F]", "Move to Ground Center" /* (built in Round r20 / 9) */, "—",
+    "Convert [▸]", "Mesh Type [▸]", "—", "Symmetric Arrangement" /* (Round POST8 / FIX-5 A: built) */, "Smart Arrangement" /* (POST8 third session: built) */, "Superimpose [▸]", "—", "Reset 2D Arrangement (Selected)", "Reset 3D Arrangement (Selected) [Ctrl+F]", "Move to Ground Center" /* (built in Round r20 / 9) */, "—",
     "Flip [▸]", "Reverse-Arrange [▸]", "—", "Focus Zoom [F]" /* (built in Round r20 / 9) */, "Zoom Extents All", "—", "Export To USD Layer" + NB, "Refresh Textures" /* (Round BETA8-1 / E, 3.B6: built) */, "—", "Create History Group…" /* (Round FIX-2 / B, as on the 2D pattern menu) */, "—", "More [▸]"], "W18");
   assert.deepStrictEqual(o.patMore, ["3D Placement…", "Lay Flat (no curve)"]);
   assert.deepStrictEqual(o.bg.slice(0, 11), ["Front [2]", "3/4 Left [3]", "Back [8]", "Left [6]", "Right [4]", "3/4 Right [1]", "Top [5]", "Bottom [0]", "Custom View [▸]" /* (Round r34 / 6: the Render workspace's custom views; it was not built) */, "—", "Gizmo [▸]"], "W17");

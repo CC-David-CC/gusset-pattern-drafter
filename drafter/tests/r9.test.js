@@ -232,8 +232,11 @@ test("r9 / 3: every cloth point on either side of a seam gets its partner; a fab
   // a strip pinned at its top and pulled down at its bottom by the pointer as hard as it pulls (1 N): with its fabric's
   // limit it stretches a little, without it several times as much (REC-SHORT: the pull as it was, a spring; the pointer's own pull
   // now pins the place and frees the held pattern from its limit, as the reference's does: recshort / B6)
+  // (Round PULL-3b: the program's pull is capped at 5 N now, dragMax; this test of the limit keeps its own 1 N, given here. At 5 N the
+  // whole pull goes up this one strip, 30 rows to its pinned top, and the limit's passes cannot carry it that far within a step: the
+  // worst edge 0.45. On a garment the pull spreads, and the stretch at the hand stays near the limit: the PULL-3b report)
   const pulled = (maxStretch) => {
-    const m = sheet(100, 300, 10), sim = C.clothBuild({ pieces: [{ xy: m.xy, tri: m.tri, X: lay(m, (x, y) => [x, 1500 - y, 0]), fab: { ...FAB, maxStretch } }], pins: edge(m, (x, y) => y < 1e-6).map(v => ({ p: 0, v })), opt: { dragPin: false, dragRelease: 0, dragLimitIters: 12, ground: false, self: false } });
+    const m = sheet(100, 300, 10), sim = C.clothBuild({ pieces: [{ xy: m.xy, tri: m.tri, X: lay(m, (x, y) => [x, 1500 - y, 0]), fab: { ...FAB, maxStretch } }], pins: edge(m, (x, y) => y < 1e-6).map(v => ({ p: 0, v })), opt: { dragPin: false, dragRelease: 0, dragLimitIters: 12, dragMax: 1e6, ground: false, self: false } });
     const bot = edge(m, (x, y) => y > 300 - 1e-6);
     for (let f = 0; f < 120; f++) { C.clothDrag(sim, { i: bot, to: [50, 600, 0] }); C.clothStep(sim, 1/60); }
     let lo = Infinity; for (let i = 0; i < sim.n; i++) lo = Math.min(lo, sim.x[3*i+1]);

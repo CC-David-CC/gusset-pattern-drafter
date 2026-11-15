@@ -500,7 +500,7 @@ test("Phase 8 in the booted app: the View menu flips and saves switches, a saved
     return out;` });
   assertUp(r, "script");
   const o = r.result;
-  assert.deepStrictEqual(o.items.map(t => t.replace(/^[✓  ]+/, "")), ["Sewing", "2D Sewing Lengths" /* (Round r20 / 3) */, "Topstitch", "Puckering", "Baseline", "Seam Allowance", "Grading", "Reference Line", "Symmetric/Instance Lines", "Link Lines", "Pins",
+  assert.deepStrictEqual(o.items.map(t => t.replace(/^[✓  ]+/, "")), ["Sewing", "2D Sewing Lengths" /* (Round r20 / 3) */, "Topstitch", "Puckering", "Baseline", "Seam Allowance", "Grading", "Reference Line", "Symmetric/Instance Lines", "Link Lines", "Pins", "Simulation Shrinkage" /* (POST8 FIX-7 / B) */,
     "Pattern Name", "Annotations", "Line Length", "Angle", "Grainline", "2D Measurements", "Ruler", "Guideline", "Lock All Pattern Outlines", "Lock All Internal Lines", "Lock All Baselines", "Lock All Guidelines", "Show All", "Reset to Defaults"]);      // (Round build-1: Lock All Internal Lines, Lock All Baselines (on from the start) and Lock All Guidelines are built)
   assert.deepStrictEqual(o.show, { angle: true, grainline: true });      // (Round FIX-2 / C8: the grain line starts hidden, so the click shows it)
   // (Round r17a / 3: Show Sewing is off whenever the program starts: one tick fewer than the sixteen before)

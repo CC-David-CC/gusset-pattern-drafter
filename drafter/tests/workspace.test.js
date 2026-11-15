@@ -87,7 +87,7 @@ test("the selectors in the booted app: each lists its switches, a choice is save
   const o = r.result;
   assert.deepStrictEqual(o.heads, ["Sewing", "2D Pattern", "2D Information", "2D Pattern Rendering Style", "Pattern Lock"]);
   assert.deepStrictEqual(o.groups[0], ["Show Sewing", "Show 2D Sewing Lengths" /* (Round r20 / 3) */, "Show Topstitch", "Show Puckering"]);
-  assert.deepStrictEqual(o.groups[1], ["Show Baseline", "Show Seam Allowance", "Show Grading", "Show Reference Line", "Show Symmetric/Instance Lines", "Show Link Lines", "Show Pins", "Avatar Outline" /* (Round FIX-2 / B: the avatar's outline in the 2D window's own button, the maintainer's brief) */]);
+  assert.deepStrictEqual(o.groups[1], ["Show Baseline", "Show Seam Allowance", "Show Grading", "Show Reference Line", "Show Symmetric/Instance Lines", "Show Link Lines", "Show Pins", "Show Simulation Shrinkage" /* (POST8 FIX-7 / B: a switch of the 2D Pattern list now) */, "Avatar Outline" /* (Round FIX-2 / B: the avatar's outline in the 2D window's own button, the maintainer's brief) */]);
   assert.deepStrictEqual(o.groups[2], ["Show Pattern Name", "Show Annotations", "Show Line Length", "Show Angle", "Show Grainline", "Show 2D Measurements", "Show Ruler", "Show Guideline"]);
   assert.deepStrictEqual(o.groups[3], ["Front Texture Surface", "Monochrome Surface", "Translucent Surface", "Transparent Surface", "Show Mesh", "Back Texture Surface", "Random Color Surface"], "the reference's list, every row built (Round r17b / 2; greyed as not built since Round D / D1, Q13)");
   // (Round build-1: Lock All Internal Lines, Lock All Baselines (on from the start) and Lock All Guidelines are built)

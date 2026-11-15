@@ -161,7 +161,9 @@ test("a dart that is not trued up is cut out of the cloth: two legs of equal len
 test("settings and placements are cleaned when read: junk is dropped, a placement's turn is made unit length", () => {
   assert.deepStrictEqual(normCloth(null), { res: 20, substeps: 20, self: true, worker: true }); assert.deepStrictEqual(normCloth({ res: 1, substeps: 99, self: 0 }), { res: 20, substeps: 20, self: true, worker: true }); assert.deepStrictEqual(normCloth({ res: "12", substeps: 6.4, self: false }), { res: 12, substeps: 6, self: false, worker: true });
   assert.strictEqual(normP3(null), null); assert.strictEqual(normP3({ pos: [1, 2], q: [0, 0, 0, 1] }), null); assert.strictEqual(normP3({ pos: [1, 2, 3], q: [0, 0, 0, 0] }), null); assert.strictEqual(normP3({ pos: [1, NaN, 3], q: [0, 0, 0, 1] }), null);
-  assert.deepStrictEqual(normP3({ pos: [1, 2, 3], q: [0, 0, 0, 2], r: -5, pt: 7, junk: 1 }), { pos: [1, 2, 3], q: [0, 0, 0, 1], r: 0 });
+  // (Round POST8 / FIX-5 A) a curve below 0 is kept now: Reverse-Arrange curves a pattern toward its face; junk is still dropped
+  assert.deepStrictEqual(normP3({ pos: [1, 2, 3], q: [0, 0, 0, 2], r: -5, pt: 7, junk: 1 }), { pos: [1, 2, 3], q: [0, 0, 0, 1], r: -5 });
+  assert.deepStrictEqual(normP3({ pos: [1, 2, 3], q: [0, 0, 0, 1], r: "x" }), { pos: [1, 2, 3], q: [0, 0, 0, 1], r: 0 });
   assert.deepStrictEqual(normP3({ pos: [1, 2, 3], q: [0, 1, 0, 0], r: 180, pt: "chest_front" }), { pos: [1, 2, 3], q: [0, 1, 0, 0], r: 180, pt: "chest_front" });
 });
 

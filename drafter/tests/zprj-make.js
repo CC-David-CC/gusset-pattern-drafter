@@ -73,6 +73,9 @@ function pattern(d) {
   o.listDummyShape = list((d.dummy || []).map(s => map({ bSeamAllowanceShape: bool(s.sa), qsDummyShapeName: str(s.name || "Baseline"), mapShape2D: map({ listPoint: pointList(s.points), listLine: lineList(s.lines) }) })));
   if (d.tape) o.mapNewTape = map({ fTapeWidth: f32(5) });
   if (d.prints) o.listPrintTexture = list(d.prints.map(x => printTexture(x, x.file)));
+  // (run 16) more: { key: a node } added to the pattern, shapeMore the same for its outline's mapShape2D (listDecorStitch, …)
+  Object.assign(o, d.more || {});
+  if (d.shapeMore) o.mapShape2D = map({ ...shape, ...d.shapeMore });
   for (const k of d.dropP || []) delete o[k];
   return map(o);
 }
@@ -93,7 +96,14 @@ const pac = (patterns, extra, more) => {
   const ed = { mapPatternList: map(plist), ...(more.seams ? { mapSeamLinePairGroup: map({ listSeamLinePairGroup: list(more.seams.map(seam)) }) } : {}), ...(extra || {}) };
   // avatar (Round I3 / 2): { id, cm } -> mapAvatar with its height as the first body measurement, in centimetres
   if (more.avatar) more.root = { ...(more.root || {}), mapAvatar: map({ qsAvatarID: str(more.avatar.id || "Avatar"), mapResizingAvatar: map({ listFeatureValues: list([f32(more.avatar.cm), f32(90), f32(80)]) }) }) };
-  const root = { qsEncKey: str("owner-tag"), mapPatternEditor: map(ed), ...(more.fabrics ? { listFabric: list(more.fabrics.map(f => map({ qsName: str(f.name), fabricType: str(f.type || "Woven"), fabricContent: str(f.content || "") }))) } : {}), ...(more.root || {}) };
+  // (Round IMP-1 / A) a fabric's faces' colours ({ color, back, side }: [r, g, b] 0 to 1, v3BaseColor of type 0x0b) and its density (g/mm²) and thickness
+  const face = (k, c) => map({ enMaterialFaceType: i32(k), v3BaseColor: node(0x0b, buf(12, b => c.forEach((v, j) => b.writeFloatLE(v, j*4)))) });
+  const look = (f) => ({ ...(f.color || f.back || f.side ? { mapColorwayInfo: map({ uiCurrentCoordinationIndex: u32(0), listColorwayInfo: list([map({ listFaceMaterial: list([["color", 0], ["back", 1], ["side", 2]].filter(([k]) => f[k]).map(([k, n]) => face(n, f[k]))) })]) }) } : {}),
+    // (run 16) f.phys: more keys of mapPhysical, { key: a number } each written as a float (fSuK, fBuK_v2, fFriction, …)
+    ...(f.density || f.thickness || f.phys ? { mapPhysical: map({ ...(f.density ? { fDensity: f32(f.density) } : {}), ...(f.thickness ? { fThickness: f32(f.thickness) } : {}), ...Object.fromEntries(Object.entries(f.phys || {}).map(([k, v]) => [k, f32(v)])) }) } : {}) });
+  const root = { qsEncKey: str("owner-tag"), mapPatternEditor: map(ed), ...(more.fabrics ? { listFabric: list(more.fabrics.map(f => map({ qsName: str(f.name), fabricType: str(f.type || "Woven"), fabricContent: str(f.content || ""), ...look(f),
+    // (run 16) f.tex: { file, w, h } the front's picture (listTexture[0]) and one repeat in mm
+    ...(f.tex ? { mapMaterial2D: map({ listFaceMaterial: list([map({ enMaterialFaceType: i32(0), listTexture: list([map({ qsFileName: str(f.tex.file), v2Size: v2(f.tex.w, f.tex.h) })]) })]) }) } : {}) }))) } : {}), ...(more.root || {}) };
   return map(root).bytes;
 };
 

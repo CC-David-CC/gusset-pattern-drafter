@@ -20,9 +20,8 @@ function boot(opt) {
   return o;
 }
 // the tools Batch 0 put out of this stage's scope (category C of the report)
-const LATER = [/* (Round FIX-4 / B: the three Select Mesh tools built) */ "fold_garment", "auto_arrangement", /* "redrape": built in Round r33b / 4 */ "auto_sewing", "press", "pen_avatar", "edit_pen_avatar",
-  "flatten", "scale_style_line", "add_style_line", /* "seamline_rip": built in Round FIX-4 / A */ "seam_taping", "lacing", "avatar_tape_linear",
-  "avatar_tape_circ", "edit_avatar_tape", "attach_to_measure"];      // (Round r11 built Piping, Edit Piping, Binding, Select Binding and Gluing)
+const LATER = [/* (Round FIX-4 / B: the three Select Mesh tools built) */ "auto_arrangement", /* "redrape": built in Round r33b / 4; "auto_sewing": built in Round POST8 (second session); "fold_garment": built in POST8 (fourth session) */ /* "press": built in run 14c (3.E4) */ /* "pen_avatar", "edit_pen_avatar": built in run 14c (roadmap 1.T45) */
+  /* "flatten": built in run 14c (3.E4) */ "scale_style_line", "add_style_line", /* "seamline_rip": built in Round FIX-4 / A */ /* "seam_taping": built in run 14c (3.E4); "lacing": built in POST8 FIX-4b; "avatar_tape_linear", "avatar_tape_circ", "edit_avatar_tape", "attach_to_measure": built in run 14c (3.A16) */];      // (Round r11 built Piping, Edit Piping, Binding, Select Binding and Gluing)
 
 /* ---------- 0 ---------- */
 test("r10 / 0: the tools out of this stage's scope are kept in the registry as \"later\" and are on no toolbar unless the feature flag is on; the menus still name them as not built yet", () => {
@@ -31,15 +30,15 @@ test("r10 / 0: the tools out of this stage's scope are kept in the registry as \
     const out = {}, shown = app.ev("shownTools");
     const rail = (win) => app.GROUPS.filter(g => g.win === win).flatMap(g => shown(g)).map(t => t.id);
     out.on = rail("3D"); app.setUnbuilt(false); out.off = rail("3D"); app.setUnbuilt(true);
-    out.menu = JSON.stringify(app.ev("menu3D")());
+    out.menu = JSON.stringify(app.ev("menuFlat")(app.ev("menu3D")()).map(r => r && r.n));      // (run 14c: its submenus too: the rows left are in Styleline ▸ and Arrangement ▸)
     return out;`;
   const o = boot({ script }).result;
   for (const id of LATER) { assert.ok(!o.on.includes(id), id + " is hidden"); assert.ok(!o.off.includes(id)); }
   assert.ok(o.on.includes("select_move") && o.on.includes("tack"), "the tools that work are there");
-  assert.ok(/Press [(]not built yet[)]/.test(o.menu), "a menu still lists it, greyed");
+  assert.ok(/Auto 3D Arrangement [(]not built yet[)]/.test(o.menu), "a menu still lists it, greyed");      // (Press was the example until run 14c built it, 3.E4)
   const f = boot({ storage: { "pdraft:flags": JSON.stringify({ later: true }) }, script }).result;
   for (const id of LATER.filter(id => REG.tools.find(t => t.id === id).win === "3D")) assert.ok(f.on.includes(id), id + " is back with the flag on");
-  assert.ok(!f.off.includes("press"), "and still a placeholder: hidden while Show Tools That Are Not Built Yet is off");
+  assert.ok(!f.off.includes("auto_arrangement"), "and still a placeholder: hidden while Show Tools That Are Not Built Yet is off");      // (Press was the example until run 14c built it)
 });
 
 // two rectangles in front of each other in 3D, the front facing the camera: Front 0,0 to 300,400 and Back 400,0 to 700,400 (2D)

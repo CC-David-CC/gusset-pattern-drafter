@@ -17,7 +17,8 @@
      ZprjError                    what it throws: .code is "not-zprj", "encrypted" or "unknown"
    Reads ONLY the user's own pattern data: outlines (straight and curved), seam allowance,
    cut line, notches, internal lines, reference lines, names and 2D-window placement.
-   Fabrics, textures, avatar, simulation and 3D are not looked at.
+   Fabrics, textures, avatar, simulation and 3D are not looked at (since then: the fabrics' names, types, colours, weight and
+   thickness, the avatar's height, the 3D placement and drape, graphics: each where its block says so).
    A file that is encrypted or protected is refused. Nothing here tries to get round that.
 
    Units: millimetres. Coordinates are piece-local; piece.transform places the piece in the
@@ -555,6 +556,8 @@ function extractPiece(R, p, index) {
   });
   return {
     index,
+    stitches: stitchesOf(R, sh),    // (run 16) the topstitches on its outline
+    buttonholes: buttonholesOf(R, p, index),      // (run 16) its buttonholes
     name: nameOf(R, p),
     annotation: annoOf(R, p),     // the name shown on the piece
     transform,
@@ -569,6 +572,90 @@ function extractPiece(R, p, index) {
     internalLines, referenceLines, left,
   };
 }
+/* (run 16, IMP-1 rest / B) WHAT LIES ON A PATTERN BESIDE ITS LINES, as the maintainer's test files hold it (one example of each).
+   A topstitch: the shape's mapShape2D.listDecorStitch[] (the outline's on the pattern's own mapShape2D): its name and id (mapElement
+   .qsName, .uiID), the stretch it runs along (mapParamLine: uiStartIndex .. uiEndIndex, fRatioStart .. fRatioEnd, bDirection, as a seam's
+   side), fThickOffset. Its style is tied to it by the colorway's assignment (stylesOf()). -> [{ name, id, from, to, r0, r1, forward, off }] */
+const paramLine = (R, m) => { m = asMap(m); const r0 = R.may(m, 'fRatioStart', num(f32), 0), r1 = R.may(m, 'fRatioEnd', num(f32), 1); return { pattern: R.may(m, 'uiSelfIndex', u32, 0), from: R.need(m, 'uiStartIndex', u32), to: R.need(m, 'uiEndIndex', u32), r0, r1, forward: R.may(m, 'bDirection', bool, r0 <= r1) }; };
+function stitchesOf(R, sh) {
+  const out = [];
+  for (const d of R.may(sh, 'listDecorStitch', asList, [])) {
+    if (!isMapV(d)) continue;
+    try {
+      const el = R.may(d, 'mapElement', asMap, {});
+      out.push({ name: R.txt(el, 'qsName', '') || 'Topstitch', id: R.may(el, 'uiID', u32, null), ...paramLine(R, R.need(d, 'mapParamLine', asMap)), off: R.may(d, 'fThickOffset', num(f32), 0) });
+    } catch (e) {}
+  }
+  return out;
+}
+/* A buttonhole: a pattern's listPrintTexture[] whose own bButtonHole is set: its middle mapButtoneBase.listButtonSewingArea[0].mapCenter
+   (uiPatternSelfIndex, v2LocalPosition in that pattern's own frame, as its points), its size mapPrintTexture.v2TextureSize (mm, length ×
+   width), its turn fAngle (degrees), its style uiButtonHeadStyleIndex. -> [{ name, pattern, at: [x, y], w, h, angle }] */
+function buttonholesOf(R, p, index) {
+  const out = [];
+  for (const t of R.may(p, 'listPrintTexture', asList, [])) {
+    if (!isMapV(t) || !R.may(t, 'bButtonHole', bool, false)) continue;
+    try {
+      const base = R.need(t, 'mapButtoneBase', asMap), area = R.need(base, 'listButtonSewingArea', asList)[0], c = R.need(asMap(area), 'mapCenter', asMap);
+      const pt = R.may(t, 'mapPrintTexture', asMap, {}), sz = R.may(pt, 'v2TextureSize', asPt, [23, 6]);
+      out.push({ name: R.txt(R.may(pt, 'mapElement', asMap, {}), 'qsName', '') || 'Buttonhole', pattern: R.may(c, 'uiPatternSelfIndex', u32, index), at: R.need(c, 'v2LocalPosition', asPt), w: sz[0], h: sz[1], angle: R.may(t, 'fAngle', num(f32), 0) });
+    } catch (e) {}
+  }
+  return out;
+}
+/* A button is a pattern of its own in the file's list: one with listButtonSewingArea (its middle, mapCenter: the pattern it is sewn on,
+   uiPatternSelfIndex, and its place there, v2LocalPosition) and uiButtonHeadStyleIndex (its style); it has no lines of its own. */
+function buttonOf(R, p) {
+  const area = R.may(p, 'listButtonSewingArea', asList, null);
+  if (!area || !area.length) return null;
+  try { const c = R.need(asMap(area[0]), 'mapCenter', asMap); return { name: nameOf(R, p), style: R.may(p, 'uiButtonHeadStyleIndex', u32, 0), pattern: R.need(c, 'uiPatternSelfIndex', u32), at: R.need(c, 'v2LocalPosition', asPt) }; }
+  catch (e) { return null; }
+}
+/* The styles the placed things name. Topstitch: listTopStitchStyleProperty[] (mapElement.uiID, .qsName; fAddtionalOffset (mm off the
+   line, an inch's sixteenth by default); mapMultiStitch.listStitch[] its rows, those with bEnableFlag: fStitchLength (mm: 1.814 is 14 to the
+   inch), fThreadThickness (mm), fStitchDistance (mm between rows), the row's colour), tied to a placed topstitch by the colorway's
+   mapAssign.listThickParametricLineToTopStitchStyle[] (uiItemID the topstitch, uiStyleID the style). Button: listButtonHeadStyleMap[k]
+   .mapButtonStyleBase (fObjWidth mm, fThickness mm), named by listButtonHeadStyle[k].qsName. Zipper: listZipperStyle[] (uiID, qsName,
+   fTeethWidth, fTapeWidth mm). A trim: listTrimObjectStyle[].qsName. */
+function stylesOf(R, root) {
+  const colour = (m) => { try { const f = R.may(R.may(m, 'mapMaterial2DList', asMap, {}), 'listMaterial2D', asList, [])[0]; const fm = R.may(asMap(f), 'listFaceMaterial', asList, [])[0]; return R.may(asMap(fm), 'v3BaseColor', colorOf, null); } catch (e) { return null; } };
+  const topstitch = R.may(root, 'listTopStitchStyleProperty', asList, []).filter(isMapV).map(s => {
+    const el = R.may(s, 'mapElement', asMap, {}), ms = R.may(s, 'mapMultiStitch', asMap, {});
+    const rows = R.may(ms, 'listStitch', asList, []).filter(x => isMapV(x) && R.may(x, 'bEnableFlag', bool, false)).map(x => ({ length: R.may(x, 'fStitchLength', num(f32), 3), thread: R.may(x, 'fThreadThickness', num(f32), 0.3), distance: R.may(x, 'fStitchDistance', num(f32), 0), color: colour(x) }));
+    return { id: R.may(el, 'uiID', u32, null), name: R.txt(el, 'qsName', '') || 'Topstitch', offset: R.may(ms, 'fAddtionalOffset', num(f32), 0), rows };
+  });
+  const assign = [];
+  for (const cw of R.may(R.may(R.may(root, 'mapColorWay', asMap, {}), 'mapNewColorway', asMap, {}), 'listColorway', asList, []).slice(0, 1)) {
+    if (!isMapV(cw)) continue;
+    for (const a of R.may(R.may(cw, 'mapAssign', asMap, {}), 'listThickParametricLineToTopStitchStyle', asList, [])) if (isMapV(a)) assign.push([R.may(a, 'uiItemID', u32, -1), R.may(a, 'uiStyleID', u32, -1)]);
+  }
+  const names = R.may(root, 'listButtonHeadStyle', asList, []).map(b => (isMapV(b) && R.txt(b, 'qsName', '')) || '');
+  const button = R.may(root, 'listButtonHeadStyleMap', asList, []).map((b, k) => { const base = isMapV(b) ? R.may(b, 'mapButtonStyleBase', asMap, {}) : {}; return { name: (names[k] || 'Button ' + (k + 1)).replace(/[.]btn$/i, ''), width: R.may(base, 'fObjWidth', num(f32), null), thickness: R.may(base, 'fThickness', num(f32), null) }; });
+  const zipper = R.may(root, 'listZipperStyle', asList, []).filter(isMapV).map(z => ({ id: R.may(z, 'uiID', u32, null), name: R.txt(z, 'qsName', '') || 'Zipper', teethW: R.may(z, 'fTeethWidth', num(f32), null), tapeW: R.may(z, 'fTapeWidth', num(f32), null) }));
+  const trim = R.may(root, 'listTrimObjectStyle', asList, []).map((t, k) => (isMapV(t) && R.txt(t, 'qsName', '')) || 'Trim ' + (k + 1));
+  return { topstitch, assign, button, zipper, trim };
+}
+/* Zippers, piping and binding (mapPatternEditor). A zipper (listZipper[]): its name, its style (uiStyleUID: a style's uiID); its two tapes
+   are patterns of the list (each skipped as a tape) sewn to the garment's edges and to each other by ordinary seams. Piping (listPiping[]):
+   qsName, fDiameter (mm), the edge it runs along (listParamLine[]: the garment pattern, uiSelfIndex, and a stretch each), its own tube
+   pattern (uiPipingPatternSelfIndex: a pattern of the list, as wide as π × the diameter) and the seams that sew it on (arrPipingSeamLinePair
+   Group: seam indices), bIsClosedStart / End. Binding (listInBinding[]): qsName, fBindingDiameter (its width, mm), the edge
+   (listParamLine[]), its strip pattern (listBindingPatternSelfIndex[].uiBindingPatternSelfIndex), the strip's length
+   (fBindingPatternLineLength), iBindingFoldAngle / iBindingFoldStrength, bBindingTurned, the top and bottom seams
+   (listBindingTopSLPGroupSelfIndex[].iBindingTopSLPGroupSelfIndex, …Bottom…). */
+const intList = (b) => { if (!(b instanceof Uint8Array) || b.length < 4) throw new Error('not a list'); const d = dvOf(b), c = d.getUint32(0, true); if (!c) return []; if (b.length !== 5 + 4*c) throw new Error('not a list of numbers'); return Array.from({ length: c }, (_, i) => d.getInt32(5 + 4*i, true)); };
+function trimsOf(R, pe) {
+  const lines = (x) => R.may(x, 'listParamLine', asList, []).map(m => { try { return paramLine(R, m); } catch (e) { return null; } }).filter(Boolean);
+  const first = (x, list, key) => { const l = R.may(x, list, asList, []); return l.length && isMapV(l[0]) ? R.may(l[0], key, num(i32), null) : null; };
+  const zippers = R.may(pe, 'listZipper', asList, []).filter(isMapV).map((z, k) => ({ name: R.txt(z, 'qsName', '') || 'Zipper ' + (k + 1), style: R.may(z, 'uiStyleUID', u32, null) }));
+  const pipings = R.may(pe, 'listPiping', asList, []).filter(isMapV).map((x, k) => ({ name: R.txt(x, 'qsName', '') || 'Piping ' + (k + 1), d: R.may(x, 'fDiameter', num(f32), null), lines: lines(x),
+    pattern: R.may(x, 'uiPipingPatternSelfIndex', u32, null), seams: R.may(x, 'arrPipingSeamLinePairGroup', intList, []), closed: [R.may(x, 'bIsClosedStart', bool, false), R.may(x, 'bIsClosedEnd', bool, false)] }));
+  const bindings = R.may(pe, 'listInBinding', asList, []).filter(isMapV).map((x, k) => ({ name: R.txt(x, 'qsName', '') || 'Binding ' + (k + 1), w: R.may(x, 'fBindingDiameter', num(f32), null), lines: lines(x),
+    pattern: first(x, 'listBindingPatternSelfIndex', 'uiBindingPatternSelfIndex'), length: R.may(x, 'fBindingPatternLineLength', num(f32), null), fold: R.may(x, 'iBindingFoldAngle', num(i32), null),
+    strength: R.may(x, 'iBindingFoldStrength', num(i32), null), turned: R.may(x, 'bBindingTurned', bool, false), top: first(x, 'listBindingTopSLPGroupSelfIndex', 'iBindingTopSLPGroupSelfIndex'), bottom: first(x, 'listBindingBottomSLPGroupSelfIndex', 'iBindingBottomSLPGroupSelfIndex') }));
+  const trims = R.may(pe, 'listTrimObject', asList, []).filter(isMapV).map((t, k) => ({ name: R.txt(t, 'qsTrimName', '') || 'Trim ' + (k + 1), mass: R.may(t, 'fMass', num(f32), null), glue: R.may(t, 'bGlue', bool, false) }));
+  return { zippers, pipings, bindings, trims };
+}
 /* every pattern of the file. One that can't be read is left out and named in `skipped` ({ index, name, reason }); the
    rest come through. total: how many patterns the file has; defaults: { key: how many times a default stood in };
    others: what the file holds besides patterns that is not imported ({ zippers: [names], graphics, trims }). */
@@ -578,20 +665,89 @@ function extractPieces(root) {
   const pl = R.need(pe, 'mapPatternList', asMap), list = R.need(pl, 'listPattern', asList);
   const grading = gradingOf(R, pe, pl);
   R.sizes = grading ? grading.tables[0].sizes.length : 0;
+  const buttons = [];
   list.forEach((p, index) => {
     const name = String(annoOf(R, p) || '').trim() || nameOf(R, p);
-    if (isTape(R, p)) { skipped.push({ index, name, reason: 'a zipper tape: zippers are not imported', kind: 'tape' }); return; }
+    if (isTape(R, p)) { skipped.push({ index, name, reason: 'a zipper tape: its zipper comes in as a zipper seam where its tapes can be followed', kind: 'tape' }); return; }
+    const btn = isMapV(p) && buttonOf(R, p);                   // (run 16) a button is a pattern of its own in the list: it comes in as a button
+    if (btn) { buttons.push({ index, ...btn }); return; }
     try { pieces.push(extractPiece(R, p, index)); }
     catch (e) { skipped.push({ index, name, reason: String((e && e.message) || e) }); }
   });
   const zippers = R.may(pe, 'listZipper', asList, []).map((z, k) => (isMapV(z) && R.txt(z, 'qsName', '')) || 'Zipper ' + (k + 1));
   const others = { zippers, graphics: R.may(pe, 'listMVGraphic', asList, []).length, trims: R.may(pe, 'listTrimObject', asList, []).length };
-  return { pieces, skipped, total: list.length, defaults: R.used, others, grading, fabrics: fabricsOf(R, root), links: linksOf(R, pl, list.length), seams: seamsOf(R, pe), avatar: avatarOf(R, root), graphics: graphicsOf(R, root, pe, list) };
+  return { pieces, skipped, total: list.length - buttons.length, defaults: R.used, others, grading, fabrics: fabricsOf(R, root), links: linksOf(R, pl, list.length), seams: seamsOf(R, pe), avatar: avatarOf(R, root), graphics: graphicsOf(R, root, pe, list),
+    buttons, styles: stylesOf(R, root), trims: trimsOf(R, pe) };      // (run 16)
 }
-// the file's fabrics, in order (a pattern names one by its index): { name, type ("Woven", "Knit", …), content }
+// the file's fabrics, in order (a pattern names one by its index): { name, type ("Woven", "Knit", …), content, and (Round IMP-1 / A) color,
+// back, side, weight, thickness: each only when the file has it }
 function fabricsOf(R, root) {
-  return R.may(root, 'listFabric', asList, []).map((f, k) => isMapV(f) ? { name: (R.txt(f, 'qsName', '') || R.txt(f, 'qsFabricName', '')).trim() || 'Fabric ' + (k + 1), type: R.txt(f, 'fabricType', ''), content: R.txt(f, 'fabricContent', '') } : { name: 'Fabric ' + (k + 1), type: '', content: '' });
+  return R.may(root, 'listFabric', asList, []).map((f, k) => isMapV(f) ? { name: (R.txt(f, 'qsName', '') || R.txt(f, 'qsFabricName', '')).trim() || 'Fabric ' + (k + 1), type: R.txt(f, 'fabricType', ''), content: R.txt(f, 'fabricContent', ''), ...fabricLook(R, f) } : { name: 'Fabric ' + (k + 1), type: '', content: '' });
 }
+/* (Round IMP-1 / A, roadmap 1.S15a's colours and physics) A fabric's colours, weight and thickness:
+     mapColorwayInfo  .uiCurrentCoordinationIndex (the colorway in use), .listColorwayInfo[that].listFaceMaterial[]: per face
+                      .enMaterialFaceType (0 front, 1 back, 2 side: a guess, imp1/1) and .v3BaseColor (red, green, blue, 0 to 1, sRGB as the
+                      picker shows it: 0.1922 is the face's own name "313131")
+     mapPhysical      .fDensity (g/mm²: × 10⁶ is g/m², a light cotton about 130) and .fThickness (mm)
+   Each may be missing (nothing is counted: a file without them is ordinary). The stiffness rows (fSuK, fBuK …) are not read: their unit
+   against this program's solver is not known (imp1/2). */
+const colorOf = (b) => { const a = f32arr(b); if (a.length < 3 || !a.slice(0, 3).every(x => Number.isFinite(x) && x >= -0.01 && x <= 1.01)) throw new Error('not a colour'); return '#' + a.slice(0, 3).map(x => Math.round(Math.max(0, Math.min(1, x))*255).toString(16).padStart(2, '0')).join(''); };
+function fabricLook(R, f) {
+  const out = {}, cw = R.may(f, 'mapColorwayInfo', asMap, null);
+  if (cw) {
+    const list = R.may(cw, 'listColorwayInfo', asList, []), k = R.may(cw, 'uiCurrentCoordinationIndex', num(u32), 0), info = isMapV(list[k]) ? list[k] : list.find(isMapV);
+    for (const face of info ? R.may(info, 'listFaceMaterial', asList, []) : []) {
+      if (!isMapV(face)) continue;
+      const kind = ['color', 'back', 'side'][R.may(face, 'enMaterialFaceType', num(i32), 0)], col = R.may(face, 'v3BaseColor', colorOf, null);
+      if (kind && col && !(kind in out)) out[kind] = col;
+    }
+  }
+  const ph = R.may(f, 'mapPhysical', asMap, null);
+  if (ph) {
+    const d = R.may(ph, 'fDensity', num(f32), null), t = R.may(ph, 'fThickness', num(f32), null);
+    if (d > 0 && d < 0.01) out.weight = Math.round(d*1e6*10)/10;
+    if (t > 0 && t < 50) out.thickness = Math.round(t*1000)/1000;
+    const k = physicsOf(R, ph);
+    if (k) out.physics = k;
+  }
+  // (run 16, IMP-1 rest / B) the front's picture: mapMaterial2D.listFaceMaterial[the front].listTexture[0] (the base colour map; the others
+  // are its normal, displacement, roughness and alpha maps): qsFileName (and qsUniqueFileName, as the archive may name it), v2Size (one
+  // repeat, mm), fSignedAngle (degrees), bTileTexture
+  try {
+    const faces = R.may(R.may(f, 'mapMaterial2D', asMap, {}), 'listFaceMaterial', asList, []).filter(isMapV);
+    const front = faces.find(x => R.may(x, 'enMaterialFaceType', num(i32), 0) === 0), t = front && R.may(front, 'listTexture', asList, [])[0];
+    if (isMapV(t)) {
+      const file = R.txt(t, 'qsFileName', ''), sz = R.may(t, 'v2Size', asPt, null);
+      // (a picture named as a normal, displacement, roughness or alpha map in the first slot is not a colour: left out, guess imp1b/9)
+      if (file && /[.](png|jpe?g|gif|webp|bmp)$/i.test(file) && !/normal|_nrm|_disp|displace|rough|_alpha|metal/i.test(file) && sz && sz[0] > 0 && sz[1] > 0) out.tex = { file, alt: R.txt(t, 'qsUniqueFileName', '') || null, w: sz[0], h: sz[1], angle: R.may(t, 'fSignedAngle', num(f32), 0) };
+    }
+  } catch (e) {}
+  return out;
+}
+/* (run 16, IMP-1 rest / A) A fabric's stiffness, as the file keeps it (mapPhysical; checked on a fabric whose Property Editor values the
+   maintainer read off, the test fabric): the panel's 0-99 sliders are not stored, the solver's own numbers are, through tables of its own
+   that are not linear (stretch 50 / 40 are 330000 / 230000, shear 9 / 8 are 10000 / 9000, bending 14 / 15 / 17 / 37 are 100 / 111.4 / 150 /
+   600): so only their ratios are unit-free. Stretch weft fSuK, warp fSvK; shear right fRightShearK_v2 (else 2 × fHK), left fLeftShearK_v2
+   (else 2 × fLeftShearK); bending weft fBuK_v2, warp fBvK_v2, bias right fBRightShearK_v2, bias left fBLeftShearK_v2 (each else its
+   older key × π: the files hold both); friction fFriction (the slider / 100: 3 is 0.03); internal damping fIDS (the slider / 10⁴); buckling
+   ratio fBuLR, fBvLR, fBhLR, fBLeftShearLR and stiffness fBucklingStiffnessU, V, H, LeftShear (each the slider / 100). Each only when it
+   is a positive number. */
+function physicsOf(R, ph) {
+  const v = (k, alt, s) => { const x = R.may(ph, k, num(f32), null); if (x > 0) return x; const y = alt ? R.may(ph, alt, num(f32), null) : null; return y > 0 ? y*s : null; };
+  const out = {}, put = (o, k, x) => { if (x > 0 && Number.isFinite(x)) o[k] = Math.round(x*1e6)/1e6; };
+  put(out, 'stretchWeft', v('fSuK')); put(out, 'stretchWarp', v('fSvK'));
+  put(out, 'shearR', v('fRightShearK_v2', 'fHK', 2)); put(out, 'shearL', v('fLeftShearK_v2', 'fLeftShearK', 2));
+  put(out, 'bendWeft', v('fBuK_v2', 'fBuK', Math.PI)); put(out, 'bendWarp', v('fBvK_v2', 'fBvK', Math.PI));
+  put(out, 'bendBiasR', v('fBRightShearK_v2', 'fBhK', Math.PI)); put(out, 'bendBiasL', v('fBLeftShearK_v2', 'fBLeftShearK', Math.PI));
+  put(out, 'friction', v('fFriction')); put(out, 'damping', v('fIDS'));
+  const b = {};
+  put(b, 'ratioWeft', v('fBuLR')); put(b, 'ratioWarp', v('fBvLR')); put(b, 'ratioBiasR', v('fBhLR')); put(b, 'ratioBiasL', v('fBLeftShearLR'));
+  put(b, 'stiffWeft', v('fBucklingStiffnessU')); put(b, 'stiffWarp', v('fBucklingStiffnessV')); put(b, 'stiffBiasR', v('fBucklingStiffnessH')); put(b, 'stiffBiasL', v('fBucklingStiffnessLeftShear'));
+  if (Object.keys(b).length) out.buckling = b;
+  return Object.keys(out).length ? out : null;
+}
+Z.physicsOf = physicsOf;
+Z.fabricLook = fabricLook;
 /* Patterns that are one pattern twice. arrSymmetricIndex (mapPatternList): for each pattern the index of its mirrored
    twin, or -1; a pair is listed when both name each other. listInstance[i].arrInstanceIndex: the patterns that are copies
    of pattern i (empty in the files known: read the same way, as a guess). -> { symmetric: [[i, j]], instances: [[i, j]] } */
@@ -718,7 +874,9 @@ async function importZprj(buffer) {
   let res;
   try { res = extractPieces(tree); }
   catch (e) { throw fail("unknown", String((e && e.message) || e)); }
-  res.images = await picturesOf(inner, res.graphics);
+  // (run 16) the fabrics' pictures too, by their file name or their unique one
+  const tex = (res.fabrics || []).filter(f => f.tex).flatMap(f => [{ file: f.tex.file }, ...(f.tex.alt ? [{ file: f.tex.alt }] : [])]);
+  res.images = await picturesOf(inner, [...(res.graphics || []), ...tex]);
   return res;
 }
 Z.importZprj = importZprj;

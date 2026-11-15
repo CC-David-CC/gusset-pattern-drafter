@@ -144,6 +144,8 @@ test("every key of the table fires its command, and with one more modifier held 
     for (const row of app.keyTable()) {
       app.setMode(row.w === "layout" ? "layout" : "draft"); S.over3d = row.w === "3d";
       if (row.w !== "layout") S.tool = /^turn:|^nudge/.test(row.id) ? "transform_pattern" : "edit_pattern";
+      // (Round UV-1 / B) the UV Editor's arrow keys want it in front with the pointer over it, as a user has it
+      { const U = app.ev("UVED"); U.open = U.front = U.over = row.id === "uvNudge"; }
       // (Round r12 / 3) Clone as Pattern's key wants a closed internal shape selected
       if (row.id === "cloneAsPattern") { const P0 = S.pieces[0]; if (!P0.internals.some(it => it.closed)) app.addChild(P0, "internals", app.mkShape([{x:20,y:20},{x:40,y:20},{x:40,y:40}], true)); S.selKind = "internal"; S.selInt = P0.internals.findIndex(it => it.closed); }
       else { S.selKind = "outline"; S.selInt = -1; }
@@ -399,7 +401,7 @@ test("the keys kept for commands that are not built yet say so and change nothin
     return out;` });
   assert.deepStrictEqual(r.errors, []);
   const o = r.result;
-  assert.strictEqual(o.n, 2 /* (Round r20 / 9: Ctrl+[ and Ctrl+] are Superimpose Over / Under; r20 / 11: F9 Show 3D Garment Window Size) */, "Alt+1, Alt+3, Alt+5, Alt+W and Shift+X the 3D and avatar display since Round r17b / 3, F10 the 3D snapshot since r17b / 4; Alt+2, Alt+4 and Alt+9 are 3D rendering styles since Round D / D1, Ctrl+Shift+O is Add Project since D4, Y the Library since D5; Shift+Q, Shift+C, Ctrl+J, Ctrl+H and Ctrl+K the 3D pattern states since Round r14 / 6, Shift+I Isolate Selection since r14 / 7, Ctrl+Alt+A Select All Sewn since build-1 / 2, Ctrl+E Solidify since build-1 / 5"); assert.ok(o.said.every(Boolean), "each says it is not built yet: " + o.said);
+  assert.strictEqual(o.n, 1 /* (Round CW-1 / B: O is the Colorway Editor's, built; Shift+P is left) (Round r20 / 9: Ctrl+[ and Ctrl+] are Superimpose Over / Under; r20 / 11: F9 Show 3D Garment Window Size) */, "Alt+1, Alt+3, Alt+5, Alt+W and Shift+X the 3D and avatar display since Round r17b / 3, F10 the 3D snapshot since r17b / 4; Alt+2, Alt+4 and Alt+9 are 3D rendering styles since Round D / D1, Ctrl+Shift+O is Add Project since D4, Y the Library since D5; Shift+Q, Shift+C, Ctrl+J, Ctrl+H and Ctrl+K the 3D pattern states since Round r14 / 6, Shift+I Isolate Selection since r14 / 7, Ctrl+Alt+A Select All Sewn since build-1 / 2, Ctrl+E Solidify since build-1 / 5"); assert.ok(o.said.every(Boolean), "each says it is not built yet: " + o.said);
   assert.strictEqual(o.stopped, 0, "none is taken from the browser"); assert.deepStrictEqual(o.quiet, [true, true, true, 0]);
   assert.deepStrictEqual(o.held, [null, null, null, null, null, null]); assert.strictEqual(o.rows, 1 /* (Round r20 / 9: Ctrl+[ and Ctrl+] are built; r20 / 11: F9) */, "listed under their own heading (O and Y are single letters, counted apart; six fewer since Round r14 / 6 and 7, two fewer since build-1: Ctrl+Alt+A, Ctrl+E; six fewer since Round r17b: Alt+1, Alt+3, Alt+5, Alt+W, Shift+X, F10)");
 });

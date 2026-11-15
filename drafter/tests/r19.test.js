@@ -262,9 +262,10 @@ test("r19 / H28: Print Layout's commands on a bar at the right, in the reference
     bar.children.length = 0; app.setUnbuilt(false); out.off = cmds();
     return out;` }).result;
   // (Round r25 / 3: Manual Nesting is built, so it is on the bar either way)
-  assert.deepStrictEqual(o.on, ["nest", "stop-", "settings", "unnest", "unnestAdd-", "labels", "manual", "row", "snap", "tape", "paper", "plotter", "print", "file"]);      // (Round r29: Paper View, ours)
+  // (Round PLOT-1, on purpose: Remove Add'l Nesting Patterns is built with Number of Garment, pressable and on the bar either way)
+  assert.deepStrictEqual(o.on, ["nest", "stop-", "settings", "unnest", "unnestAdd", "labels", "manual", "row", "snap", "tape", "paper", "plotter", "print", "file"]);      // (Round r29: Paper View, ours)
   /* (Round BETA8-1 / F: Stop Nesting is built, on the bar either way, pressable only while nesting) */
-  assert.deepStrictEqual(o.off, ["nest", "stop-", "settings", "unnest", "labels", "manual", "row", "snap", "tape", "paper", "plotter", "print", "file"]);
+  assert.deepStrictEqual(o.off, ["nest", "stop-", "settings", "unnest", "unnestAdd", "labels", "manual", "row", "snap", "tape", "paper", "plotter", "print", "file"]);
 });
 
 /* ---- Batch 7 ---- */

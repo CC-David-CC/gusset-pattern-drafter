@@ -41,7 +41,7 @@
    Units mm, y down.
    ================================================================ */
 const S = {
-  pieces: [], seams: [], stitches: [], hgroups: [], hlane: {}, hjump: {}, lineLinks: [], selMore: [], images: [], guides: [], measures: [], tacks: [], buttons: [], pipings: [], bindings: [], glues: [], backdrop: null, avedit: { joints: {} }, lights: [], bgMode: null, selTrim: null, grading: null, gradeClip: null, print: null, walk: null, selSeam: null, selPart: null, sewCheck: { on: false, useLen: true, len: 2, useRatio: false, ratio: 2 }, sewBad: null, ui: { layout: "2d", unbuilt: false, render: "front", show3d: {} }, lib: null, ob: null, mode: "sim", layout: null, lview: { s: 0.5, x: 40, y: 90 },
+  pieces: [], seams: [], stitches: [], hgroups: [], hlane: {}, hjump: {}, lineLinks: [], selMore: [], images: [], guides: [], measures: [], tacks: [], buttons: [], pipings: [], bindings: [], glues: [], lacings: [], laceDraft: null, backdrop: null, avedit: { joints: {} }, lights: [], bgMode: null, selTrim: null, grading: null, gradeClip: null, print: null, walk: null, selSeam: null, selPart: null, sewCheck: { on: false, useLen: true, len: 2, useRatio: false, ratio: 2 }, sewBad: null, ui: { layout: "2d", unbuilt: false, render: "front", show3d: {} }, lib: null, ob: null, mode: "sim", layout: null, lview: { s: 0.5, x: 40, y: 90 },
   show: { sewing: true, topstitch: true, puckering: true, baseline: true, sa: true, grading: false, reference: true, symmetric: true, links: true, pins: true, name: false, annotations: true, length: true, angle: false, grainline: false, measurements: true, ruler: true, guides: true, lockAll: false, lockInt: false, lockBase: true, lockGuide: false }, nextSegId: 1, nextShapeId: 1, sel: [], selPt: -1, selSeg: -1, selInt: -1, selKind: "outline",
   tool: "edit_pattern", unit: "mm", dec: 1, snapG: 0, saValue: 10, prefs: null,
   notch: { type: "I", len: 6, color: "#00a37a", width: 2, dup: true },
@@ -175,7 +175,10 @@ function normNotchAt(n) {
   // (Round r20 / 6) Direction ▸ Segment 2: a notch at a corner cut square to the line on the corner's other side (version 24);
   // (Round r25, the third check session Number 81) Point (Center): along the corner's middle (version 25)
   if ((n.dir === "other" || n.dir === "point") && (o.t <= 1e-6 || o.t >= 1 - 1e-6)) o.dir = n.dir;
-  return o.type || o.angle !== undefined || o.flip || o.dir ? o : o.t;
+  // (Round PIPE-1b, ⚑ additive, the format stays 37) a notch a one-strip binding put on the garment's edge at a quarter of it: made
+  // again with the binding's strip, gone with it (bindNotches())
+  if (n.bind === true) o.bind = true;
+  return o.type || o.angle !== undefined || o.flip || o.dir || o.bind ? o : o.t;
 }
 const NOTCH_LEAN = 80;                      // a custom angle leans at most this far from square (degrees)
 /* The parameter of segment `sid` has been re-spaced (a curve point came or went): f sends an
@@ -1280,6 +1283,8 @@ function normProps(q) {
   if (q.solid3s === SOLID_S) delete q.solid3s;
   const r3 = num(q.res3, 0);
   if (r3 >= 5 && r3 <= 60) q.res3 = r3; else delete q.res3;
+  // (Round POST8 / FIX-5 C) Mesh Type: "quad" kept, Triangle (the default) not stored
+  if (q.mesh3 !== "quad") delete q.mesh3;
   const s3 = (q.shrink3 && typeof q.shrink3 === "object") ? q.shrink3 : {}, sw = Math.max(SHRINK3_MIN, Math.min(SHRINK3_MAX, num(s3.weft, 100))), sp = Math.max(SHRINK3_MIN, Math.min(SHRINK3_MAX, num(s3.warp, 100)));
   if (sw !== 100 || sp !== 100) q.shrink3 = { weft: sw, warp: sp }; else delete q.shrink3;
   // (Round r20 continued (4)) the Thick styles' Rendering Thickness (mm) and Extrusion Direction of this pattern, kept only when set
@@ -1288,6 +1293,12 @@ function normProps(q) {
   // (Round r25 / 3) Grain Orientation: how the pattern may be turned on the marker (1 One Way, 2 Two Way, 4 Four Way: GRAIN_WAYS),
   // kept only when set; without one the layout's Nest Settings Grain Direction decides
   if ([1, 2, 4].includes(+q.grainWay)) q.grainWay = +q.grainWay; else delete q.grainWay;
+  // (Round UV-1 / D, W20, S4) Pattern Matching (texture: one print over the 2D window; lock: the texture's place kept as numbers, matchAt),
+  // Pattern Matching Lock, and the texture's flips on this pattern (texFlip), each kept only when set
+  if (!["texture", "lock"].includes(q.match)) delete q.match;
+  if (q.match === "lock") { const m = q.matchAt; if (m && [m.x, m.y, m.ang].every(Number.isFinite)) q.matchAt = { x: m.x, y: m.y, ang: m.ang }; else { delete q.match; delete q.matchAt; } } else delete q.matchAt;
+  if (q.matchLock !== true) delete q.matchLock;
+  { const f = q.texFlip; if (f && (f.h === true || f.v === true)) q.texFlip = { ...(f.h === true ? { h: true } : {}), ...(f.v === true ? { v: true } : {}) }; else delete q.texFlip; }
   // Pattern Information (Round r12 / 7): kept only when something is set
   const inf = normInfo(q.info);
   if (inf) q.info = inf; else delete q.info;
@@ -1741,16 +1752,25 @@ const fmt = (mm) => (mm/UNIT_MM[S.unit]).toFixed(unitDec());
 const snapObj = () => ({ pieces: S.pieces, seams: S.seams, lib: S.lib, layout: S.layout, stitches: S.stitches, guides: S.guides, measures: S.measures, grading: S.grading, links: S.lineLinks, tacks: S.tacks, buttons: S.buttons, pipings: S.pipings, bindings: S.bindings, glues: S.glues, backdrop: S.backdrop || null, avedit: S.avedit, lights: S.lights || [],
   ...(S.puckers && S.puckers.length ? { puckers: S.puckers } : {}),          // (Round r20 / 7: only when there are some, so older histories stay as they were)
   ...(S.home3 ? { home: S.home3 } : {}),
-  ...(S.hgroups && S.hgroups.length ? { hgroups: S.hgroups } : {}),          // (Round H1d / B)                                     // (Round r27: Reset 2D Arrangement (All) forgets it, and undo must bring it back)
-  ...(typeof G3 !== "undefined" && G3.drapeNow ? { drape3: G3.drapeNow } : {}) });
+  ...(S.hgroups && S.hgroups.length ? { hgroups: S.hgroups } : {}),          // (Round H1d / B)
+  ...(S.lacings && S.lacings.length ? { lacings: S.lacings } : {}),          // (POST8 FIX-4b: only when there are some, so older histories stay as they were)                                     // (Round r27: Reset 2D Arrangement (All) forgets it, and undo must bring it back)
+  ...(S.colorways ? { colorways: S.colorways } : {}),                         // (Round CW-1 / B: only with two or more colorways)
+  ...(typeof G3 !== "undefined" && G3.drapeNow ? { drape3: G3.drapeNow } : {}),
+  ...(AV_NOW !== undefined ? { av3: AV_NOW } : {}) });
 const snap = () => JSON.stringify(snapObj());
+/* (run 16 batch 0, the maintainer's answer to run 15's Q2) Add ▸ Avatar… takes the avatar's place as ONE undo step. The avatar is not
+   document data (a built-in one is named by its id, one's own embedded at saving), so the step keeps it as the drape is kept: av3 names
+   an entry of AV_POOL (the avatar's file, as loaded, with how it stood: S.avSet), 0 no avatar. Only for the session: histDelta3() writes
+   SNAP_KEYS alone, so nothing of it reaches a file. AV_NOW stays undefined until the first Add ▸ Avatar of a document (histNone()), so
+   every other step is as it was. AV_WANT is what undo / redo asked for; avBack() (from drapeBack()) puts it on. */
+let AV_POOL = new Map(), AV_NOW = undefined, AV_WANT = undefined, AV_NEXT = 1;
 /* (Round perf-2 / 5) HISTORY AS CHANGES. A step of the history keeps the document as it was in parts (histState()): every pattern
    and every item of a list whose items have ids (seams, topstitches, guidelines, …) as its own JSON text, any other key as one
    text. A part a step did not change is the very text of the step before (shared, not a copy), so a step costs what it changed
    (it was the whole document every time). unsnap() takes a step in parts or as one text (as 3D moves and older code made it);
    histSame() says two steps are the same document, as comparing their whole texts did. A step's parts put together are snap()'s
    text: JSON.parse of each part is JSON.parse of the whole. */
-const SNAP_KEYS = ["pieces", "seams", "lib", "layout", "stitches", "guides", "measures", "grading", "links", "tacks", "buttons", "pipings", "bindings", "glues", "backdrop", "avedit", "lights", "puckers", "home", "hgroups"];      // (Round H1d / B: the History Groups, only once there are some)
+const SNAP_KEYS = ["pieces", "seams", "lib", "layout", "stitches", "guides", "measures", "grading", "links", "tacks", "buttons", "pipings", "bindings", "glues", "backdrop", "avedit", "lights", "puckers", "home", "hgroups", "lacings", "colorways"];      // (Round H1d / B: the History Groups, only once there are some; Round CW-1 / B: the colorways)
 let histLast = null;
 const histList = (v) => Array.isArray(v) && v.every(it => it && typeof it === "object" && !Array.isArray(it) && Number.isFinite(it.id)) && new Set(v.map(it => it.id)).size === v.length;
 function histState(o) {
@@ -1765,6 +1785,7 @@ function histState(o) {
     } else { const t = JSON.stringify(v); st.k[key] = typeof was === "string" && was === t ? was : t; }
   }
   if (o.drape3 !== undefined) st.drape3 = o.drape3;
+  if (o.av3 !== undefined) st.av3 = o.av3;
   histLast = st;
   return st;
 }
@@ -1774,6 +1795,7 @@ function histObj(st) {
   const d = {};
   for (const key of SNAP_KEYS) { const v = st.k[key]; if (v === undefined) continue; d[key] = typeof v === "string" ? JSON.parse(v) : v.t.map(t => JSON.parse(t)); }
   if (st.drape3 !== undefined) d.drape3 = st.drape3;
+  if (st.av3 !== undefined) d.av3 = st.av3;
   return d;
 }
 const histText = (st) => (typeof st === "string" ? st : JSON.stringify(histObj(st)));
@@ -1782,6 +1804,7 @@ function histSame(a, b) {
   if (!a || !b) return false;
   if (typeof a === "string" || typeof b === "string") return histText(a) === histText(b);
   if (a.drape3 !== b.drape3) return false;
+  if (a.av3 !== undefined && b.av3 !== undefined && a.av3 !== b.av3) return false;      // (run 16: a state from before the first Add ▸ Avatar names none)
   for (const key of SNAP_KEYS) {
     const x = a.k[key], y = b.k[key];
     if (x === y) continue;
@@ -1791,7 +1814,7 @@ function histSame(a, b) {
   }
   return true;
 }
-function unsnap(t) { const d = histObj(t); S.drapeWant = d.drape3 || null; S.lineLinks = d.links || []; S.pieces = d.pieces; S.seams = d.seams || []; S.stitches = d.stitches || []; S.puckers = d.puckers || []; if (d.lib) S.lib = d.lib; if (d.layout) S.layout = d.layout; S.guides = d.guides || []; S.measures = d.measures || []; S.tacks = d.tacks || []; S.buttons = d.buttons || []; S.pipings = d.pipings || []; S.bindings = d.bindings || []; S.glues = d.glues || []; S.backdrop = d.backdrop || null; S.avedit = normAvEdit(d.avedit); S.lights = normLights(d.lights); if (d.grading) S.grading = d.grading; if (d.home) S.home3 = d.home; S.hgroups = Array.isArray(d.hgroups) ? d.hgroups : []; }
+function unsnap(t) { const d = histObj(t); S.drapeWant = d.drape3 || null; AV_WANT = d.av3; if (d.av3 !== undefined && d.av3 !== AV_NOW && S.av && typeof removeAvatar === "function") { avPoolPut(S.av); removeAvatar(true); } S.lineLinks = d.links || []; S.pieces = d.pieces; S.seams = d.seams || []; S.stitches = d.stitches || []; S.puckers = d.puckers || []; if (d.lib) S.lib = d.lib; if (d.layout) S.layout = d.layout; S.guides = d.guides || []; S.measures = d.measures || []; S.tacks = d.tacks || []; S.buttons = d.buttons || []; S.pipings = d.pipings || []; S.bindings = d.bindings || []; S.glues = d.glues || []; S.backdrop = d.backdrop || null; S.avedit = normAvEdit(d.avedit); S.lights = normLights(d.lights); if (d.grading) S.grading = d.grading; if (d.home) S.home3 = d.home; S.hgroups = Array.isArray(d.hgroups) ? d.hgroups : []; S.lacings = Array.isArray(d.lacings) ? d.lacings : []; S.colorways = d.colorways || null; if (typeof CW_LAST !== "undefined") CW_LAST = null; }
 /* ---- history ----
    Every undo step has a name, for the timeline. S.undo[k] is the document before step k;
    S.un[k] = { n, tool } names that step, S.rn the steps that were undone (S.redo's).
@@ -2002,7 +2025,7 @@ function histGo(j) {
   S.sel = S.sel.filter(id => byId(id)); S.selPt = S.selSeg = S.selInt = -1; S.selCp = null; S.tps = null;
   commit();
 }
-function commit() { if (histAskFuture && !pressAt && !pushLater && typeof setTimeout === "function") setTimeout(() => { if (histAskFuture && !pressAt && !S.drag) histFutureAsk(); }, 0); handlesOut(); seamMirrors(); freeze3(); if (typeof renderTimeline === "function") renderTimeline(); if (S.mode === "layout") drawLayout(); sync(); if (syncHalf.lost) { syncHalf.lost = false; toast("That change can't be mirrored from this half: make it on the other half of the symmetric unfold", 5000); } syncLinks(); olinkSync(); groupsTidy(); hgTidy(); if (hgAsk && !pressAt && !pushLater && typeof setTimeout === "function") setTimeout(() => { if (hgAsk && !pressAt && !S.drag && !modalNow) hgFutureAsk(); }, 0); S.seams = resolveRefs(S.pieces, S.seams); S.stitches = validStitches(S.stitches, S.pieces); S.puckers = validStitches(S.puckers || [], S.pieces); S.measures = validMeasures(S.measures, S.pieces); S.tacks = validTacks(S.tacks, S.pieces); S.buttons = validButtons(S.buttons, S.pieces); S.pipings = validPipings(S.pipings, S.seams); S.bindings = validBindings(S.bindings, S.pieces); S.glues = validGlues(S.glues, S.pieces, S.seams); grainsInside(); for (const p of S.pieces) pruneGrade(p); ui(); drawSoon(); store(); if (typeof avEditSync === "function") avEditSync(); if (typeof garmentChanged === "function") garmentChanged(); }
+function commit() { if (histAskFuture && !pressAt && !pushLater && typeof setTimeout === "function") setTimeout(() => { if (histAskFuture && !pressAt && !S.drag) histFutureAsk(); }, 0); handlesOut(); seamMirrors(); freeze3(); if (typeof renderTimeline === "function") renderTimeline(); if (S.mode === "layout") drawLayout(); sync(); if (syncHalf.lost) { syncHalf.lost = false; toast("That change can't be mirrored from this half: make it on the other half of the symmetric unfold", 5000); } syncLinks(); olinkSync(); groupsTidy(); hgTidy(); if (hgAsk && !pressAt && !pushLater && typeof setTimeout === "function") setTimeout(() => { if (hgAsk && !pressAt && !S.drag && !modalNow) hgFutureAsk(); }, 0); if (typeof trimSync === "function") trimSync(); S.seams = resolveRefs(S.pieces, S.seams); S.stitches = validStitches(S.stitches, S.pieces); S.puckers = validStitches(S.puckers || [], S.pieces); S.measures = validMeasures(S.measures, S.pieces); S.tacks = validTacks(S.tacks, S.pieces); S.buttons = validButtons(S.buttons, S.pieces); S.pipings = validPipings(S.pipings, S.seams); S.bindings = validBindings(S.bindings, S.pieces); S.glues = validGlues(S.glues, S.pieces, S.seams); S.lacings = validLacings(S.lacings || [], S.pieces); if (S.colorways) { S.colorways = validColorways(S.colorways); cwEdits(); } if (typeof CWED !== "undefined" && CWED && CWED.open && CWED.front) cwedRender(); if (typeof UVED !== "undefined" && UVED && UVED.open && UVED.front) uvDraw(); grainsInside(); for (const p of S.pieces) pruneGrade(p); ui(); drawSoon(); store(); if (typeof avEditSync === "function") avEditSync(); if (typeof garmentChanged === "function") garmentChanged(); }
 function undo() {
   pushFlush();
   if (!S.undo.length) return;
@@ -2033,12 +2056,12 @@ function redo() {
    layout (S.ui.render). Puckering and Pins have nothing to show yet. */
 const VIEW = [["sewing", "Sewing", "sewing"], ["sewLen", "2D Sewing Lengths", "sewing"], ["topstitch", "Topstitch", "sewing"], ["puckering", "Puckering", "sewing"],
   ["baseline", "Baseline", "garment"], ["sa", "Seam Allowance", "garment"], ["grading", "Grading", "garment"], ["reference", "Reference Line", "garment"],
-  ["symmetric", "Symmetric/Instance Lines", "garment"], ["links", "Link Lines", "garment"], ["pins", "Pins", "garment"],
+  ["symmetric", "Symmetric/Instance Lines", "garment"], ["links", "Link Lines", "garment"], ["pins", "Pins", "garment"], ["shrink3", "Simulation Shrinkage", "garment"],
   ["name", "Pattern Name", "info"], ["annotations", "Annotations", "info"], ["length", "Line Length", "info"], ["angle", "Angle", "info"],
   ["grainline", "Grainline", "info"], ["measurements", "2D Measurements", "info"], ["ruler", "Ruler", "info"], ["guides", "Guideline", "info"],
   ["lockAll", "Lock All Pattern Outlines", "lock"], ["lockInt", "Lock All Internal Lines", "lock"], ["lockBase", "Lock All Baselines", "lock"], ["lockGuide", "Lock All Guidelines", "lock"]];
 // (Round FIX-2 / C8, the maintainer's decision) pattern names and grain lines hidden at start: switchable; a file opened with its own display settings keeps them
-const VIEW_DEFAULT = { sewing: false, sewLen: false, topstitch: true, puckering: true, baseline: true, sa: true, grading: false, reference: true, symmetric: true, links: true, pins: true,
+const VIEW_DEFAULT = { sewing: false, sewLen: false, topstitch: true, puckering: true, baseline: true, sa: true, grading: false, reference: true, symmetric: true, links: true, pins: true, shrink3: false,
   name: false, annotations: true, length: true, angle: false, grainline: false, measurements: true, ruler: true, guides: true, lockAll: false, lockInt: false, lockBase: true, lockGuide: false };
 // the 2D window's lists, named as the Display menu names them (Round D / D1): Sewing, 2D Pattern, 2D Information, 2D Pattern Rendering Style
 const VIEW_GROUPS = [["sewing", "Sewing"], ["garment", "2D Pattern"], ["info", "2D Information"], ["render", "2D Pattern Rendering Style"], ["lock", "Pattern Lock"]];
@@ -2264,7 +2287,8 @@ function viewHelp() {
 const COLORS = [["outline", "Pattern outline", "#262626"], ["fill", "Pattern fill", "#ffffff"], ["internal", "Internal line", "#d43c3c"],
   ["baseline", "Baseline", "#7173f8"], ["punch", "Punch mark", "#00a37a"], ["hover", "Hover", "#2eaaf1"], ["selection", "Selection", "#ecfd3f"],
   ["saLine", "Seam allowance line", "#8a63d2"], ["curve", "Curve point", "#ea5151"], ["move", "Move and guide lines", "#8a3fd1"]];
-const PREFS_DEFAULT = { keys: {}, unit: "mm", decimals: 1, grid: 0, smart: true, snapPts: true, colors: Object.fromEntries(COLORS.map(c => [c[0], c[2]])), histKeep: 50, view: normViewCtl(null), gizmo: "m", gizSpace: "world", gizPicked: false, wheelRev: false, gridShow: true, openDisplay: false, keepBranchCloth: false, keepFuture: false, showHints: false, histNew: "ask", objKind: "single", labelHalo: true, updateCheck: true, gradeStep: 10, simQuality: "normal" };      // (Round r33: the grading tools' Arrow Key Movement, Simulation Quality)
+const RENDER_MAXES = [2048, 4096, 8192, 16384];
+const PREFS_DEFAULT = { keys: {}, toolSet: null, aa: "on", renderMax: null, unit: "mm", decimals: 1, grid: 0, smart: true, snapPts: true, colors: Object.fromEntries(COLORS.map(c => [c[0], c[2]])), histKeep: 50, view: normViewCtl(null), gizmo: "m", gizSpace: "world", gizPicked: false, wheelRev: false, gridShow: true, openDisplay: false, keepBranchCloth: false, keepFuture: false, showHints: false, histNew: "ask", objKind: "single", labelHalo: true, libThumb: true, thumbBeside: false, cwAssign: "ask", updateCheck: true, gradeStep: 10, simQuality: "normal", pullN: null };      // (Round r33: the grading tools' Arrow Key Movement, Simulation Quality)
 // (Round r15 / 8, the check videos S16) the gizmo's axes: the screen's (ticked first in the reference, the maintainer's choice), the
 // pattern's own (they turn with it) or the 3D window's
 const GIZ_SPACES = [["screen", "Screen Coordinate"], ["local", "Local Coordinate"], ["world", "World Coordinate"]];
@@ -2285,9 +2309,16 @@ function normPrefs(o) {
     objKind: o.objKind === "multi" ? "multi" : "single",      // (Round r25 follow-up, the maintainer's decision 1) Export OBJ's Object: Single Object unless Multiple was chosen last
     updateCheck: o.updateCheck !== false,                     // (Round r24) the desktop app asks whether a newer version is out at the start, unless switched off
     labelHalo: o.labelHalo !== false,
+    cwAssign: ["current", "all"].includes(o.cwAssign) ? o.cwAssign : "ask",      // (Round CW-1 / C, W-US) a material changed with two or more colorways: guess cw1/15
+    libThumb: o.libThumb !== false, thumbBeside: o.thumbBeside === true,      // (Round LIB-1 / C) Default Files ▸ Save with Thumbnail (PNG): on (guess post8/56); the PNG beside a project the desktop app saves: off (guess post8/67)
     gradeStep: Number.isFinite(+o.gradeStep) && +o.gradeStep > 0 && +o.gradeStep <= 1000 ? +o.gradeStep : 10,      // (Round r33 / 4) the grading tools' Arrow Key Movement, mm
     simQuality: o.simQuality === "high" ? "high" : "normal",
-    keys: normKeyPrefs(o.keys) };      // (Round BETA8-1 / C3, roadmap 1.T29 2.C35) the keys changed on User Settings' Shortcuts page      // (Round r33 / 7) Simulation Quality: Normal, or High Accuracy      // (Round r19 follow-up, the maintainer's H07: the halo behind the small numbers, on unless switched off)      // (Round r17b / 2) a file's display settings put back on opening                      // (Round r17b / 1) Grid Properties: the 2D grid shown
+    pullN: Number.isFinite(+o.pullN) && +o.pullN > 0 && o.pullN !== "" && o.pullN !== null && o.pullN !== true ? Math.round(+o.pullN*10)/10 : null,      // (Round PULL-3c) Pull Strength, N; null: the default (pullN() keeps it within its range)
+    toolSet: normToolSet(o.toolSet),      // (POST8 FIX-7 / A, roadmap 1.T30) Customize Tools: the toolbars' slots and hidden tools; null the registry's
+    // (POST8 FIX-7 / C, roadmap 3.A20) Graphic Options: the 3D window's antialiasing (the card's own multisampling, on unless switched off; at the
+    // next start) and Set Maximum Image Resolution for Rendering (a render's or 3D snapshot's longest side; null: as large as allowed here)
+    aa: o.aa === "off" ? "off" : "on", renderMax: RENDER_MAXES.includes(+o.renderMax) ? +o.renderMax : null,
+    keys:normKeyPrefs(o.keys) };      // (Round BETA8-1 / C3, roadmap 1.T29 2.C35) the keys changed on User Settings' Shortcuts page      // (Round r33 / 7) Simulation Quality: Normal, or High Accuracy      // (Round r19 follow-up, the maintainer's H07: the halo behind the small numbers, on unless switched off)      // (Round r17b / 2) a file's display settings put back on opening                      // (Round r17b / 1) Grid Properties: the 2D grid shown
 }
 /* (Round BETA8-1 / C3, roadmap 1.T29 2.C35: "the shortcuts … maybe editable later") A key changed by hand: { "<row id>|<its own key>": the key
    given (as the table writes it, Ctrl for the Mac's Cmd), or "" for none }, a preference (per machine). The table's rows take it
@@ -2322,7 +2353,7 @@ function setPrefs(o) { S.prefs = normPrefs({ ...S.prefs, ...o }); savePrefs(); a
    The status bar shows the state: SAVED (nothing unsaved), AUTOSAVED (unsaved work, kept
    for recovery). A failure (storage full, blocked, private mode) turns it red, toasts
    once, and asks before the tab closes. See THE DOCUMENT AND ITS FILE. */
-const AUTOSAVE_KEY = "pdraft:doc", FILE_VERSION = 36;      // 36 (Round FIX-3 / D, F): a tack's name, off and thread length (len, mm), each only when set; a fabric's Detail rows (dir: { stretchWeft, stretchWarp, shearR, shearL, bendWeft, bendWarp, bendBiasR, bendBiasL, damping } in %, each only when not 100), a fabric's Friction typed (its own friction); an older build would drop them; 35 (Round FIX-2): a fabric's Back and Side faces (faces: { back: { mapping, type }, side: { mapping, type, color } }, only once set; an older build would drop them, so it refuses the file). 34 (Round REC-SHORT): a seam allowance corner's Pocket Style 3 (st 3) and, for Styles 2 and 3, the line it is built from (on) (an older build would make it Style 1, so it refuses the file). 33 (Round H1d): the History Groups (hgroups), each history node's lane (l) and a step that took one group back (j) (an older build would drop them, so it refuses the file). 32 (Round H1): the history as a tree (history.json v4: every node, its parent, Save States, places in the panel) and histcloth.bin (the cloth of Save States and branch points). 31 (Round H1a): the garment measurements (garMeas), the defaults the file was written with (defaults), the render settings always, the avatar record's collision detail (cell) and its pose file's turns (baseQ). 30 (Round r34): an internal line's link to the outline (olink) and a pattern's group (group) (an older build would drop them, so it refuses the file). 29 (Round r33b): Seamless Blocking (an internal line's block, a pattern's blocks: each section's place and fabric) and the background image's angle (an older build would drop them, so it refuses the file). 28 (Round r30): a seam's mirror on a symmetric pair (mir; an older build would drop it, so it refuses the file). 27 (Round r29): a document's render settings (render, only once changed; an older build would drop them, so it refuses the file)
+const AUTOSAVE_KEY = "pdraft:doc", FILE_VERSION = 37;      // 37 (run 15, FREEZE-1, the freeze plan): THE FROZEN 1.0 FORMAT, its fields exactly 36's; from here on only additive optional fields, written only when set, and the version stays 37 (never a rename, a removal, a change of meaning, units or default); the golden files of drafter/tests/files/v37/ must save to their own bytes (freeze1.test.js, release check rule 17). 36 (Round FIX-3 / D, F): a tack's name, off and thread length (len, mm), each only when set; a fabric's Detail rows (dir: { stretchWeft, stretchWarp, shearR, shearL, bendWeft, bendWarp, bendBiasR, bendBiasL, damping } in %, each only when not 100), a fabric's Friction typed (its own friction); an older build would drop them; 35 (Round FIX-2): a fabric's Back and Side faces (faces: { back: { mapping, type }, side: { mapping, type, color } }, only once set; an older build would drop them, so it refuses the file). 34 (Round REC-SHORT): a seam allowance corner's Pocket Style 3 (st 3) and, for Styles 2 and 3, the line it is built from (on) (an older build would make it Style 1, so it refuses the file). 33 (Round H1d): the History Groups (hgroups), each history node's lane (l) and a step that took one group back (j) (an older build would drop them, so it refuses the file). 32 (Round H1): the history as a tree (history.json v4: every node, its parent, Save States, places in the panel) and histcloth.bin (the cloth of Save States and branch points). 31 (Round H1a): the garment measurements (garMeas), the defaults the file was written with (defaults), the render settings always, the avatar record's collision detail (cell) and its pose file's turns (baseQ). 30 (Round r34): an internal line's link to the outline (olink) and a pattern's group (group) (an older build would drop them, so it refuses the file). 29 (Round r33b): Seamless Blocking (an internal line's block, a pattern's blocks: each section's place and fabric) and the background image's angle (an older build would drop them, so it refuses the file). 28 (Round r30): a seam's mirror on a symmetric pair (mir; an older build would drop it, so it refuses the file). 27 (Round r29): a document's render settings (render, only once changed; an older build would drop them, so it refuses the file)
 // 26 (Round r26): Simulation Shrinkage 1 to 1000, a glue's Strength up to 100, a pattern's foldStay (an older build would clamp or drop them, so it refuses the file); 25 (Round r25): a pattern's Grain Orientation (grainWay), a Slant corner's Distance A / B (a, b), a Pocket corner's Style 3, Solidify's Strength (solid3s), a notch's Point (Center) direction (dir: "point"), (r25 follow-up, before any release of 25) a glue switched off (off) (an older build would drop them, so it refuses the file); 24 (Round r20): an annotation's own angle, colour and line (angle, color, link: an older build would drop them, so it refuses the file); 23 (Round r19 follow-up): the document's lights for the render (lights) and each fabric's own roll in Print Layout (layout.rolls; an older build would drop them, so it refuses the file); 22 (Round r18): the document's avatar edits (avedit: the joints turned by hand, …; an older build would drop them, so it refuses the file); 21 (Round r17b): the background image (backdrop), the display settings kept with the file (display); 20 (Round build-1): a pattern's own Particle Distance (res3), Simulation Shrinkage (shrink3), Solidify (solid3), a glue's strength and thick (an older build would drop them, so it refuses the file); 19 (Round perf-2): the history saved as changes, a list's items each on its own (history v3)
 //      // 18 (Round r15): the seam allowance corner types are the reference's eight (perp, turn, slant, env, pocket, … with their own values; an older build would not know them, so it refuses the file; older files' corners are renamed as they open: cornerMigrate()); 17 (Round r14): an internal line's fold angle (foldAngle, foldStrength, foldVar), more in later batches of the round (an older build would drop them, so it refuses the file); 16 (Round r13): a notch may also have its own len and flip (an older build would drop them, so it refuses the file); 15 (Round r12): a notch may be { t, type, angle } (files of 14 have plain numbers, which still are); 14 (Round r11): piping, binding, gluing (files of 13 open with none); 13 (Round r9): a fabric's Max Stretch, tacks, a pattern's Fill, buttons; files of 12 open with defaults
 // where the autosave is kept: the browser's localStorage, or in the desktop app
@@ -2432,15 +2463,15 @@ function renderDoc() {
 // (Round H1a / 2: the render settings always, the defaults it was written with, the garment measurements)
 function docObj() {
   return { v: FILE_VERSION, cloth: S.cloth, nextId: S.nextId, nextSegId: S.nextSegId, nextShapeId: S.nextShapeId, notch: S.notch, grading: S.grading, guides: S.guides, measures: S.measures, links: S.lineLinks, tacks: S.tacks, buttons: S.buttons, pipings: S.pipings, bindings: S.bindings, glues: S.glues,
-    pieces: withKnots(S.pieces), seams: S.seams, stitches: S.stitches, images: usedImages(), lib: S.lib, layout: S.layout, ...((S.lights || []).length ? { lights: S.lights } : {}), ...((S.puckers || []).length ? { puckers: S.puckers } : {}), scene: sceneOut(), display: displayOut(), ...(backdrop() ? { backdrop: S.backdrop } : {}), ...(avEditOn() ? { avedit: S.avedit } : {}),
-    render: renderDoc(), ...(S.renderSet ? { renderSet: true } : {}), ...(S.histOn === false ? { histOff: true } : {}), ...(hgOn() ? { hgroups: S.hgroups } : {}), defaults: fileDefaults(), ...((S.garMeas || []).length ? { garMeas: garMeasOut() } : {}) };
+    pieces: withKnots(S.pieces), seams: S.seams, stitches: S.stitches, images: usedImages(), lib: S.lib, layout: S.layout, ...((S.lights || []).length ? { lights: S.lights } : {}), ...((S.puckers || []).length ? { puckers: S.puckers } : {}), ...((S.lacings || []).length ? { lacings: S.lacings } : {}), scene: sceneOut(), display: displayOut(), ...(backdrop() ? { backdrop: S.backdrop } : {}), ...(avEditOn() ? { avedit: S.avedit } : {}),
+    render: renderDoc(), ...(S.renderSet ? { renderSet: true } : {}), ...(S.histOn === false ? { histOff: true } : {}), ...(hgOn() ? { hgroups: S.hgroups } : {}), ...(cwOn() ? { colorways: S.colorways } : {}), defaults: fileDefaults(), ...((S.garMeas || []).length ? { garMeas: garMeasOut() } : {}), ...(pencilOut().length ? { pencil: pencilOut() } : {}) };
 }
 /* (Round r17b / 2) The display settings kept with the file, as the reference keeps its 2D and 3D display settings in a project
    and offers them on opening (the manual's Open: Display Settings). Saved always (from version 21); put back on opening only with
    Settings ▸ Preferences ▸ Open Files with Their Display Settings on (off by default: guess r17/15), and never Show Sewing, which is
    off whenever the program starts (r17a). The view stays per machine otherwise. What the switches of the Lock list say is no
    display and is left out. */
-const DISPLAY_SKIP = ["lockAll", "lockInt", "lockBase", "lockGuide", "sewLen"];      // (Round r20 / 3: Show 2D Sewing Lengths, per machine, so files of version 21–23 keep their display as written)
+const DISPLAY_SKIP = ["lockAll", "lockInt", "lockBase", "lockGuide", "sewLen", "shrink3"];      // (POST8 FIX-7 / B: Show Simulation Shrinkage too, so a file's display settings stay as written)      // (Round r20 / 3: Show 2D Sewing Lengths, per machine, so files of version 21–23 keep their display as written)
 function displayOut() {
   const show2d = {};
   for (const [k] of VIEW) if (!DISPLAY_SKIP.includes(k) && typeof (S.show || {})[k] === "boolean") show2d[k] = S.show[k];
@@ -2696,6 +2727,7 @@ window.addEventListener("beforeunload", (e) => {
 function loadDoc(d) {
   // (Round H1a / 2) what was a default when the file was written and is not now becomes a value of its own (defaultsFill())
   FILE_DEFS = defaultsOf(d); defaultsFill(d, FILE_DEFS);
+  NEWER = null;                                              // (run 16) another document: what a newer file held is not this one's
   S.known3 = null;                                          // the patterns a document brings are not new (freeze3())
   // start the id counter above anything in the file, so ids assigned during migration can't collide
   S.nextSegId = Math.max(S.nextSegId, d.nextSegId || 1, maxSegId(d.pieces) + 1);
@@ -2710,6 +2742,7 @@ function loadDoc(d) {
     if (p3) p.p3 = p3; else delete p.p3;
     if (fold.length) p.fold = fold; else delete p.fold;
     if (pins.length) p.pins = pins; else delete p.pins;
+    { const uv = normUV(p.uv); if (uv) p.uv = uv; else delete p.uv; }      // (Round UV-1 / B) its UV place, kept only once set
     normState3(p);                                           // (Round r14 / 6)
   }
   S.stitches = validStitches(normStitches(d.stitches), S.pieces);
@@ -2735,10 +2768,13 @@ function loadDoc(d) {
   S.buttons = validButtons(normButtons(d.buttons), S.pieces);
   // (Round r11 / 3, 4, 5) a file of version 13 or older has none
   S.pipings = validPipings(normPipings(d.pipings), S.seams); S.bindings = validBindings(normBindings(d.bindings), S.pieces); S.glues = validGlues(normGlues(d.glues), S.pieces, S.seams); S.selTrim = null;
-  S.lights = normLights(d.lights);                           // (Round r19 follow-up, H22: none before version 23)
+  S.lacings = validLacings(normLacings(d.lacings), S.pieces); S.laceDraft = null;      // (POST8 FIX-4b: none in a file before it)
+  S.lights = normLights(d.lights);                          // (Round r19 follow-up, H22: none before version 23)
   S.garMeas = normGarMeas(d.garMeas, S.pieces);             // (Round H1a / 2) the garment measurements, from version 31
+  G3.pencil = { strokes: normPencil(d.pencil) }; G3.pencilCur = null;      // (run 14d, batch 0) the 3D Pencil's strokes not yet converted
   S.histOn = d.histOff !== true;                             // (Round H1b / 3) the project's history switched off
   S.hgroups = normHGroups(d.hgroups, S.pieces);              // (Round H1d / B) the History Groups, from version 33
+  S.colorways = validColorways(normColorways(d.colorways)); if (typeof CWED !== "undefined" && CWED) { CWED.pics.clear(); CW_LAST = null; }      // (Round CW-1 / B) the colorways; the library is the current one's
   // a file's darts are made of ordinary lines (Round F / 7). A drape the file has for such a pattern was made on the pattern
   // as it was: that is kept (S.bakeWas) to carry the drape over to the new cloth (drapeTake())
   const darted = new Set(S.pieces.filter(p => p.darts && p.darts.length).map(p => p.id));
@@ -2904,7 +2940,10 @@ for (const t of REG.tools) TOOLS[t.id] = { id: t.id, n: t.name, k: t.key.length 
 const FLAGS_KEY = "pdraft:flags";
 function featureOn(name) { try { return !!JSON.parse(kv().getItem(FLAGS_KEY) || "{}")[name]; } catch (e) { return false; } }
 // one slot per group, in registry order: an array of its tools, with the group's id, window and section
+// (POST8 FIX-7 / A, roadmap 1.T30: Customize Tools) the registry's layout; S.prefs.toolSet, when set, regroups and reorders it and hides
+// tools (toolGroupsBuild(), in place, so GROUPS stays the one array everything holds)
 const GROUPS = REG.groups.map(g => Object.assign(REG.tools.filter(t => t.group === g.id).map(t => TOOLS[t.id]), { gid: g.id, win: g.win, section: g.section })).filter(g => g.length);
+const GROUPS_DEFAULT = GROUPS.slice();
 /* Keys. A built tool always gets its key. An unbuilt tool gets its usual key only if
    nothing here uses it (the key then shows the "not built yet" note). KEY_CONFLICTS
    lists the keys left unbound, with the reason. */
@@ -2991,8 +3030,9 @@ const HINT = {
   zipper: "Click where the zipper starts on one edge and double-click where it ends; then the same on the other edge. One click instead of two ends a stretch and lets you add another to the same side. Both sides must be the same length: a dot marks it.",
 };
 // a "later" tool is never on a toolbar but behind its feature flag; every other placeholder follows Show Tools That Are Not Built Yet
-const shownTools = (g) => { const later = featureOn("later"); return g.filter(t => (!t.later || later) && (S.ui.unbuilt || !t.off)); };
+const shownTools = (g) => { const later = featureOn("later"); const hide = toolHidden(); return g.filter(t => (!t.later || later) && (S.ui.unbuilt || !t.off) && !hide.has(t.id)); };
 function buildRail() {
+  toolGroupsBuild();
   document.querySelectorAll(".flyout").forEach(f => f.remove());
   for (const [win, elId] of [["2D", "rail"], ["3D", "rail3d"]]) {
     const rail = document.getElementById(elId);
@@ -3086,7 +3126,276 @@ function refreshRail() {
     b.classList.toggle("on", t.toggle ? (t.toggle === "sewCheck" ? !!S.sewCheck.on : t.toggle === "sewing2" ? !!S.show.sewing : toggle3(t.toggle)) : t.win === "3D" ? S.tool3 === g.active : S.tool === (TOOL_ALIAS[g.active] || g.active));
     b.classList.toggle("off", !!t.off);
     b.title = run ? "Simulating: click or press Space to stop (a click in the 2D window stops it too)" : toolTitle(t);
+    b.classList.toggle("rearr", TOOLSET_RE.win === g.win);
   });
+}
+/* ================================================================
+   CUSTOMIZE TOOLS (POST8 FIX-7 / A, roadmap 1.T30 3.A21's Customize Tools ▸; the reference's Customize Toolbar, its manual page: Group
+   Tools, Rearrange Tools, Open/Save, Reset to Default). A preference of this computer, S.prefs.toolSet, null for the registry's layout:
+     { "2D": [[tool id, …], …], "3D": [[…], …], hide: [tool id, …] }
+   each window's slots in order, each slot its tools (the first is the one a slot shows until another is picked from it), and the tools
+   hidden from the toolbars (their keys and menu rows stay). normToolSet() makes any stored set whole: a tool of the other window, an
+   unknown or repeated id is dropped, an empty slot goes, and a tool the set does not name (a newer version's) joins the slot holding
+   most of its registry group's tools, else a slot of its own where the registry has it. Rows: Settings ▸ Display ▸ Customize Tools ▸
+   and a toolbar's right-click (both the reference's), Group Tools… (a box per window: drag a tool within a slot, onto another slot, or
+   into the gap between two for a new slot; the eye hides it; Open… / Save… a tool set file, our JSON; OK applies), Rearrange Tools
+   (a mode: drag a slot along its toolbar; Esc, the row again or a click off the toolbars ends it), Reset to Default (asked first: it
+   cannot be undone). Never in a document, no undo step.
+   ================================================================ */
+const TOOLSET_FILE = "tool-set", TOOLSET_RE = { win: null, drag: null };
+const toolSetDefault = (win) => GROUPS_DEFAULT.filter(g => g.win === win).map(g => g.map(t => t.id));
+function normToolSet(o) {
+  if (!o || typeof o !== "object") return null;
+  const out = { hide: [] }, seen = new Set();
+  for (const win of ["2D", "3D"]) {
+    const src = Array.isArray(o[win]) ? o[win] : toolSetDefault(win), slots = [];
+    for (const s of src) {
+      if (!Array.isArray(s)) continue;
+      const ids = s.filter(id => typeof id === "string" && TOOLS[id] && TOOLS[id].win === win && !seen.has(id) && seen.add(id));
+      if (ids.length) slots.push(ids);
+    }
+    // what the set does not name: beside its registry group's tools, else a slot of its own at the registry's place
+    GROUPS_DEFAULT.forEach((g, gi) => {
+      if (g.win !== win) return;
+      for (const t of g) {
+        if (seen.has(t.id)) continue;
+        seen.add(t.id);
+        let best = -1, n = 0;
+        slots.forEach((s, k) => { const m = s.filter(id => g.some(x => x.id === id)).length; if (m > n) { n = m; best = k; } });
+        if (best >= 0) { slots[best].push(t.id); continue; }
+        const before = GROUPS_DEFAULT.slice(0, gi).filter(x => x.win === win).length;
+        slots.splice(Math.min(before, slots.length), 0, [t.id]);
+      }
+    });
+    out[win] = slots;
+  }
+  out.hide = [...new Set((Array.isArray(o.hide) ? o.hide : []).filter(id => typeof id === "string" && TOOLS[id]))];
+  // the registry's own layout with nothing hidden is no set at all
+  const same = ["2D", "3D"].every(w => JSON.stringify(out[w]) === JSON.stringify(toolSetDefault(w)));
+  return same && !out.hide.length ? null : out;
+}
+const toolSetNow = () => normToolSet(S.prefs && S.prefs.toolSet) || { "2D": toolSetDefault("2D"), "3D": toolSetDefault("3D"), hide: [] };
+const toolHidden = () => new Set(((S.prefs && S.prefs.toolSet) || {}).hide || []);
+// the section a slot belongs to (the separators on a toolbar): its first tool's registry group's
+const sectionOf = (id) => { const g = GROUPS_DEFAULT.find(x => x.some(t => t.id === id)); return g ? g.section : ""; };
+// GROUPS made from the tool set, in place; each slot keeps the tool it last showed
+function toolGroupsBuild() {
+  const set = toolSetNow(), was = GROUPS.map(g => g.active).filter(Boolean);
+  const next = [];
+  for (const win of ["2D", "3D"]) for (const ids of set[win]) {
+    const g = Object.assign(ids.map(id => TOOLS[id]), { gid: ids[0], win, section: sectionOf(ids[0]) });
+    const a = was.find(id => ids.includes(id)); if (a) g.active = a;
+    next.push(g);
+  }
+  GROUPS.length = 0; GROUPS.push(...next);
+}
+function toolSetPut(set) {
+  setPrefs({ toolSet: normToolSet(set) });
+  closeFlyouts(); buildRail(); applyUI();
+}
+// the pure moves the box makes. Every one returns a new set (a copy).
+const toolSetCopy = (set) => ({ "2D": set["2D"].map(s => s.slice()), "3D": set["3D"].map(s => s.slice()), hide: (set.hide || []).slice() });
+// a tool into slot `to` at place `at` (at the end when at is past it); slot `to` === slots.length or `gap: true`: a new slot before `to`
+function toolSetMove(set, win, id, to, at, gap) {
+  const o = toolSetCopy(set), S2 = o[win];
+  if (!TOOLS[id] || TOOLS[id].win !== win) return o;
+  const from = S2.findIndex(s => s.includes(id));
+  if (from < 0) return o;
+  const fromAt = S2[from].indexOf(id);
+  if (gap) {
+    S2[from].splice(fromAt, 1);
+    let k = Math.max(0, Math.min(to, S2.length));
+    if (!S2[from].length) { S2.splice(from, 1); if (from < k) k--; }
+    S2.splice(k, 0, [id]);
+    return o;
+  }
+  if (to < 0 || to >= S2.length) return o;
+  S2[from].splice(fromAt, 1);
+  let k = at === undefined ? S2[to].length : Math.max(0, at);
+  if (from === to && fromAt < k) k--;
+  S2[to].splice(Math.min(k, S2[to].length), 0, id);
+  if (!S2[from].length) S2.splice(from, 1);
+  return o;
+}
+// a whole slot moved along its toolbar (Rearrange Tools): from place `from` to before place `to`
+function toolSetMoveSlot(set, win, from, to) {
+  const o = toolSetCopy(set), S2 = o[win];
+  if (from < 0 || from >= S2.length) return o;
+  const [s] = S2.splice(from, 1);
+  S2.splice(Math.max(0, Math.min(to > from ? to - 1 : to, S2.length)), 0, s);
+  return o;
+}
+const toolSetHide = (set, id, hide) => { const o = toolSetCopy(set), h = new Set(o.hide); if (hide) h.add(id); else h.delete(id); o.hide = [...h]; return o; };
+const toolSetText = (set) => JSON.stringify({ gusset: TOOLSET_FILE, v: 1, ...toolSetCopy(set) }, null, 1);
+// a tool set file's text: the set, or a string saying why not
+function toolSetRead(text) {
+  let d = null;
+  try { d = JSON.parse(text); } catch (e) {}
+  if (!d || d.gusset !== TOOLSET_FILE || !Array.isArray(d["2D"]) || !Array.isArray(d["3D"])) return "That is not a tool set file";
+  return normToolSet(d) || { "2D": toolSetDefault("2D"), "3D": toolSetDefault("3D"), hide: [] };
+}
+// (POST8 FIX-7 / C) File ▸ Open ▸ Tool Set… and Save As ▸ Tool Set…: the tool set file of Group Tools' Open… / Save…, applied at once
+function toolSetSaveFile() { dl("Gusset tool set.json", toolSetText(toolSetNow()), "application/json", (f) => toast("Saved " + f)); }
+function toolSetOpenFile() {
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".json,application/json";
+  inp.onchange = () => { const f = inp.files && inp.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { const s = toolSetRead(String(rd.result)); if (typeof s === "string") return toast(s); toolSetPut(s); toast("Toolbar tools from " + f.name); }; rd.readAsText(f); };
+  inp.click();
+}
+// the rows: Settings ▸ Display ▸ Customize Tools ▸ and a toolbar's right-click
+function customizeToolRows(win) {
+  return [{ n: "Group Tools…", f: () => groupToolsDialog(win || "2D") },
+    { n: "Rearrange Tools", on: !!TOOLSET_RE.win, f: () => (TOOLSET_RE.win ? rearrangeEnd() : rearrangeStart(win || "2D")) },
+    { n: "Reset to Default", off: !(S.prefs && S.prefs.toolSet), note: S.prefs && S.prefs.toolSet ? "" : "already the default", f: toolSetResetAsk }];
+}
+function toolSetResetAsk() {
+  askModal("Reset to Default", "Put the 2D and 3D toolbars' tools back in their default slots and order, and show every hidden tool? This cannot be undone: save your tool set first (Group Tools… ▸ Save…) to keep it.",
+    [{ n: "Reset", k: "y", primary: true, f: () => { toolSetPut(null); toast("Toolbar tools back to their default"); } }, { n: "Cancel", k: "n", esc: true, f: () => {} }]);
+}
+/* Group Tools: a box with the window's slots, each a framed list of its tools; drag a tool (its row) within a slot, onto another slot,
+   or into the gap between two (a dashed bar shows where it goes); the eye hides or shows a tool; 2D / 3D at the top right; Open… and
+   Save… at the bottom left; OK applies, Cancel leaves the toolbars as they were. */
+const GT = { set: null, win: "2D" };
+function groupToolsDialog(win) {
+  hideMenu(); closeFlyouts(); hideDlg(); rearrangeEnd(true);
+  GT.set = toolSetCopy(toolSetNow()); GT.win = win === "3D" ? "3D" : "2D";
+  dlg.className = "wide gtools"; dlg.style.display = "block";
+  gtRender();
+  const r = dlg.getBoundingClientRect();
+  dlg.style.left = Math.max(6, (window.innerWidth - r.width)/2) + "px"; dlg.style.top = Math.max(6, (window.innerHeight - r.height)/3) + "px";
+  dlgEsc = (e) => { if (e.key === "Escape") { e.stopPropagation(); hideDlg(); } };
+  window.addEventListener("keydown", dlgEsc, true);
+}
+function gtRender() {
+  const hide = new Set(GT.set.hide), later = featureOn("later");
+  const row = (id, si, ti) => { const t = TOOLS[id], h = hide.has(id);
+    return '<div class="gt-row' + (h ? " gt-hid" : "") + (t.off ? " gt-off" : "") + '" data-id="' + id + '" data-s="' + si + '" data-t="' + ti + '" title="Drag to move it' + (ti === 0 ? " (the first tool of a slot is the one it shows)" : "") + '">' +
+      '<img src="' + (ICON[id] || "") + '" alt=""><span class="fn">' + esc(t.n) + (t.off ? ' <i>(not built yet)</i>' : '') + (h ? ' <i>(hidden)</i>' : '') + '</span>' +
+      '<button type="button" class="gt-eye" data-eye="' + id + '" title="' + (h ? "Show it on the toolbar" : "Hide it from the toolbar (its key and menu row stay)") + '">' + (h ? "◌" : "◉") + '</button></div>'; };
+  // a tool kept off the toolbars anyway (out of this stage's scope, or not built while the switch is off) is not listed
+  const listed = (id) => (!TOOLS[id].later || later) && (S.ui.unbuilt || !TOOLS[id].off);
+  const slots = GT.set[GT.win];
+  let html = "";
+  slots.forEach((s, si) => {
+    const ids = s.filter(listed);
+    html += '<div class="gt-gap" data-gap="' + si + '"></div>';
+    if (!ids.length) return;
+    html += '<div class="gt-slot" data-s="' + si + '">' + s.map((id, ti) => (listed(id) ? row(id, si, ti) : "")).join("") + '</div>';
+  });
+  html += '<div class="gt-gap" data-gap="' + slots.length + '"></div>';
+  dlg.innerHTML = '<div class="dt">Group Tools</div><div class="db">' +
+    '<div class="df gt-head"><span class="hint">Drag a tool within its slot, onto another slot, or into a gap between slots for a slot of its own. The first tool of a slot is the one the toolbar shows.</span>' +
+    '<span class="gt-wins">' + ["2D", "3D"].map(w => '<button type="button" class="btn' + (GT.win === w ? " pri" : "") + '" data-win="' + w + '" aria-pressed="' + (GT.win === w) + '">' + (GT.win === w ? "✓ " : "") + w + ' Toolbar</button>').join("") + '</span></div>' +
+    '<div class="gt-list">' + html + '</div>' +
+    '<div class="da"><button type="button" class="btn" id="gt-open">Open…</button><button type="button" class="btn" id="gt-save">Save…</button><span style="flex:1"></span>' +
+    '<button type="button" class="btn pri" id="gt-ok">OK</button><button type="button" class="btn" id="gt-x">Cancel</button></div></div>';
+  dlg.querySelectorAll("[data-win]").forEach(b => b.onclick = () => { GT.win = b.dataset.win; gtRender(); });
+  dlg.querySelectorAll("[data-eye]").forEach(b => { b.onpointerdown = (e) => e.stopPropagation(); b.onclick = () => { const id = b.dataset.eye; GT.set = toolSetHide(GT.set, id, !GT.set.hide.includes(id)); gtRender(); }; });
+  dlg.querySelector("#gt-ok").onclick = () => { const set = GT.set; hideDlg(); toolSetPut(set); toast("Toolbar tools set"); };
+  dlg.querySelector("#gt-x").onclick = hideDlg;
+  dlg.querySelector("#gt-save").onclick = () => dl("Gusset tool set.json", toolSetText(GT.set), "application/json", (f) => toast("Saved " + f));
+  dlg.querySelector("#gt-open").onclick = () => {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".json,application/json";
+    inp.onchange = () => { const f = inp.files && inp.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { const s = toolSetRead(String(rd.result)); if (typeof s === "string") return toast(s); GT.set = toolSetCopy(s); gtRender(); toast("Opened " + f.name + ": OK applies it"); }; rd.readAsText(f); };
+    inp.click();
+  };
+  dlg.querySelectorAll(".gt-row").forEach(el => el.addEventListener("pointerdown", (e) => gtDragStart(e, el)));
+}
+// where a tool dropped at (x, y) goes: { to, at, gap } or null
+function gtDropAt(x, y) {
+  const el = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+  const gap = el && el.closest && el.closest(".gt-gap");
+  if (gap) return { to: +gap.dataset.gap, gap: true };
+  const r = el && el.closest && el.closest(".gt-row");
+  if (r) { const b = r.getBoundingClientRect(); return { to: +r.dataset.s, at: +r.dataset.t + (y > b.top + b.height/2 ? 1 : 0) }; }
+  const s = el && el.closest && el.closest(".gt-slot");
+  if (s) return { to: +s.dataset.s };
+  return null;
+}
+function gtDragStart(e, el) {
+  if (e.button !== 0) return;
+  const id = el.dataset.id, x0 = e.clientX, y0 = e.clientY;
+  let on = false, mark = null;
+  const clear = () => { if (mark) mark.classList.remove("gt-to", "gt-to-after"); mark = null; };
+  const move = (ev) => {
+    if (!on && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+    on = true; el.classList.add("gt-drag"); clear();
+    const d = gtDropAt(ev.clientX, ev.clientY);
+    if (!d) return;
+    mark = d.gap ? dlg.querySelector('.gt-gap[data-gap="' + d.to + '"]') : d.at !== undefined ? dlg.querySelector('.gt-row[data-s="' + d.to + '"][data-t="' + Math.max(0, d.at - 1) + '"]') : dlg.querySelector('.gt-slot[data-s="' + d.to + '"]');
+    if (mark) mark.classList.add(d.at !== undefined && d.at > 0 ? "gt-to-after" : "gt-to");
+  };
+  const up = (ev) => {
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+    clear(); el.classList.remove("gt-drag");
+    if (!on) return;
+    const d = gtDropAt(ev.clientX, ev.clientY);
+    if (d) { GT.set = toolSetMove(GT.set, GT.win, id, d.to, d.at, d.gap); gtRender(); }
+  };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  if (e.preventDefault) e.preventDefault();
+}
+/* Rearrange Tools: a mode. A slot of that window's toolbar is dragged along it (its tools go with it); a click picks no tool while it
+   lasts. Esc, Rearrange Tools again, or a press off the toolbar ends it. */
+function rearrangeStart(win) {
+  hideMenu(); closeFlyouts();
+  TOOLSET_RE.win = win === "3D" ? "3D" : "2D";
+  window.addEventListener("pointerdown", rearrangeDown, true);
+  window.addEventListener("keydown", rearrangeKey, true);
+  window.addEventListener("click", rearrangeClick, true);
+  document.body.classList.add("rearranging");
+  refreshRail();
+  holdToast("Rearrange Tools: drag a tool along the " + TOOLSET_RE.win + " toolbar to its new place. Esc or a click elsewhere ends it.");
+}
+function rearrangeEnd(quiet) {
+  if (!TOOLSET_RE.win) return;
+  TOOLSET_RE.win = null; TOOLSET_RE.drag = null;
+  window.removeEventListener("pointerdown", rearrangeDown, true);
+  window.removeEventListener("keydown", rearrangeKey, true);
+  window.removeEventListener("click", rearrangeClick, true);
+  document.body.classList.remove("rearranging");
+  refreshRail();
+  if (!quiet) toast("Rearranging ended");
+}
+// a click on a toolbar picks no tool while rearranging
+function rearrangeClick(e) { const s = e.target && e.target.closest && e.target.closest(".rail .slot"); if (s) { e.stopPropagation(); if (e.preventDefault) e.preventDefault(); } }
+function rearrangeKey(e) { if (e.key === "Escape") { e.stopPropagation(); if (e.preventDefault) e.preventDefault(); rearrangeEnd(); } }
+// the slot index (in that window's slots) under (x, y), and whether the place is after its middle
+function rearrangeSlotAt(win, x, y) {
+  const rail = document.getElementById(win === "2D" ? "rail" : "rail3d");
+  if (!rail) return null;
+  const slots = [...rail.querySelectorAll(".slot")], side = win === "2D" ? S.ui.dock2 !== "top" : S.ui.dock3 === "left";
+  for (const s of slots) {
+    const b = s.getBoundingClientRect();
+    if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) { const g = GROUPS[+s.dataset.gi], k = GROUPS.filter(x2 => x2.win === win).indexOf(g); return { k, after: side ? y > b.top + b.height/2 : x > b.left + b.width/2, el: s }; }
+  }
+  return null;
+}
+function rearrangeDown(e) {
+  const win = TOOLSET_RE.win, rail = document.getElementById(win === "2D" ? "rail" : "rail3d");
+  const slot = e.target && e.target.closest && e.target.closest(".slot");
+  if (!rail || !slot || !rail.contains(slot)) {
+    // a press on the menu that ends it, or anywhere else: the mode ends, the press goes on
+    if (!(e.target && e.target.closest && e.target.closest("#menu"))) rearrangeEnd();
+    return;
+  }
+  e.stopPropagation(); if (e.preventDefault) e.preventDefault();
+  const from = rearrangeSlotAt(win, e.clientX, e.clientY);
+  if (!from) return;
+  let mark = null;
+  const clear = () => { if (mark) mark.el.classList.remove("rearr-to", "rearr-to-after"); mark = null; };
+  const move = (ev) => { clear(); const at = rearrangeSlotAt(win, ev.clientX, ev.clientY); if (at && at.k !== from.k) { mark = at; at.el.classList.add(at.after ? "rearr-to-after" : "rearr-to"); } };
+  const up = (ev) => {
+    window.removeEventListener("pointermove", move, true); window.removeEventListener("pointerup", up, true);
+    clear();
+    const at = rearrangeSlotAt(win, ev.clientX, ev.clientY);
+    if (at && at.k !== from.k) {
+      // the place among all of the window's slots (a hidden or empty slot is one too)
+      const set = toolSetNow(), shown = GROUPS.filter(g => g.win === win), idx = (g) => set[win].findIndex(s => s[0] === g[0].id && s.length === g.length && s.every((id, j) => g[j] && g[j].id === id));
+      const fi = idx(shown[from.k]), ti = idx(shown[at.k]);
+      if (fi >= 0 && ti >= 0) toolSetPut(toolSetMoveSlot(set, win, fi, ti + (at.after ? 1 : 0)));
+    }
+  };
+  window.addEventListener("pointermove", move, true); window.addEventListener("pointerup", up, true);
 }
 /* (Round FIX-2 / D) Property Editor rows a recording shows that are not built here: a greyed row each, "not built yet", only while
    Settings ▸ Show Tools That Are Not Built Yet is on (the standing rule for rows) */
@@ -3109,7 +3418,7 @@ function segLen3(p, sid) {
   return L;
 }
 // (Round FIX-2 / C1) the 2D toolbar's twins of tools that live in both windows: picking one picks the tool itself
-const TOOL_ALIAS = { glue_fill_2d: "glue_fill", sticker_2d: "sticker", edit_gluing_2d: "edit_gluing" };
+const TOOL_ALIAS = { glue_fill_2d: "glue_fill", sticker_2d: "sticker", edit_gluing_2d: "edit_gluing", lacing_2d: "lacing", edit_lacing_2d: "edit_lacing" };      // (POST8 FIX-4b: Lacing)
 function setTool(id) {
   if (TOOL_ALIAS[id]) { setTool(TOOL_ALIAS[id]); GROUPS.forEach(g => { if (g.some(x => x.id === id)) g.active = id; }); refreshRail(); return; }
   const t = TOOLS[id];
@@ -3122,6 +3431,7 @@ function setTool(id) {
   S.blockDraft = null; S.blockSel = null;      // (Round r33b / 2)
   S.subPick = null;      // (Round FIX-3b / B) Set Sublayer's first click
   S.ripFrom = null; if (id !== "edit_rip") S.selRip = null;      // (Round FIX-4 / A) a rip begun, the rip selected
+  if (id !== "lacing" && S.laceDraft) { S.laceDraft = null; if (typeof view3d !== "undefined" && view3d.ready()) showTrims3(); }      // (POST8 FIX-4b) a lacing being threaded
   S.tool = id; S.draft = null; S.place = null; S.rotAxis = null; S.pickPoly = null; S.bgMode = null; S.selMeas = []; S.marquee = null; S.walk = null; S.selPart = null; S.selNote = null; S.selCp = null; S.selCps = []; S.selHandle = null; S.tps = null; S.selPunch = null; S.selStitch = null; S.selPucker = null; S.selGfx = null; S.selNotch = null;
   if (id !== "transform_pattern") S.pivot = null;
   if (id === "edit_pom" && !S.show.measurements) setView("measurements", true);      // (Round r13 / 7) the measurements are what it edits
@@ -4154,7 +4464,7 @@ function grainNumeric(at, p) {
    fold or elastic lines and the distance (perf2.test.js's rule: the same as working it out afresh) */
 const meshMemo2 = new WeakMap();
 function meshEdges2(p) {
-  const res = particleOf(p), key = geomKey(p) + "#" + res + "#" + (p.internals || []).filter(it => (it.hole && it.closed) || meshLine(it)).map(it => geomKey(it) + (it.hole ? "h" : "")).join("|"), m = meshMemo2.get(p);
+  const res = particleOf(p), key = geomKey(p) + "#" + res + "#" + (meshOpt(p) ? "q" + meshOpt(p).quad + "#" : "") + (p.internals || []).filter(it => (it.hole && it.closed) || meshLine(it)).map(it => geomKey(it) + (it.hole ? "h" : "")).join("|"), m = meshMemo2.get(p);
   if (m && m.key === key) return m.out;
   const out = Object.freeze(meshEdges2Fresh(p, res));
   meshMemo2.set(p, { key, out });
@@ -4164,12 +4474,8 @@ function meshEdges2Fresh(p, res) {
   let m = null;
   try { m = pieceMesh3(p, res); } catch (e) { m = null; }
   if (!m) return [];
-  const seen = new Set(), out = [], T = m.tri, xy = m.xy;
-  for (let k = 0; k < T.length; k += 3) for (const [a, b] of [[T[k], T[k+1]], [T[k+1], T[k+2]], [T[k+2], T[k]]]) {
-    const key = a < b ? a*1e7 + b : b*1e7 + a;
-    if (seen.has(key)) continue;
-    seen.add(key); out.push(xy[2*a], xy[2*a+1], xy[2*b], xy[2*b+1]);
-  }
+  const out = [], E = meshEdgesOf(m), xy = m.xy;      // (Round POST8 / FIX-5 C) a Quad mesh's squares without their diagonals
+  for (let k = 0; k < E.length; k += 2) { const a = E[k], b = E[k+1]; out.push(xy[2*a], xy[2*a+1], xy[2*b], xy[2*b+1]); }
   return out;
 }
 function drawMesh2(p) {
@@ -4190,10 +4496,16 @@ function normFabTex(t) {
   const w = +t.w, h = +t.h;
   return w > 0 && h > 0 ? { img: t.img, w: Math.min(5000, w), h: Math.min(5000, h) } : null;
 }
+// (Round UV-1 / D) Pattern Matching: Texture Based lays one print over the 2D window (its middle on the window's origin, its up the window's:
+// patterns laid edge to edge in 2D match across the edge, guess uv1/13); Lock in Place keeps the place it had when chosen (matchAt). The
+// texture's flips on the pattern (texFlip, the Materials rows) are q.fh / q.fv
 function texPlace(p) {
   const f = fabricOf(p), t = f && f.tex, im = t && imgEl(t.img), g = im && grainOf(p);
   if (!g || !g.a || !g.b) return null;
-  return { im, t, o: V((g.a.x + g.b.x)/2, (g.a.y + g.b.y)/2), ang: Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x) - Math.PI/2, unified: f.mapping === "Unified" };
+  const flip = { fh: !!(p.texFlip && p.texFlip.h), fv: !!(p.texFlip && p.texFlip.v) }, unified = f.mapping === "Unified";
+  if (p.match === "texture") return { im, t, o: V(0, 0), ang: 0, unified, ...flip };
+  if (p.match === "lock" && p.matchAt) return { im, t, o: V(p.matchAt.x, p.matchAt.y), ang: p.matchAt.ang, unified, ...flip };
+  return { im, t, o: V((g.a.x + g.b.x)/2, (g.a.y + g.b.y)/2), ang: Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x) - Math.PI/2, unified, ...flip };
 }
 // the texture drawn on ctx, clipped to the pattern (path(): its outline in ctx's coordinates; at(w): a world point there; s: ctx units a mm)
 function drawFabTex(ctx, p, path, at, s) {
@@ -4202,6 +4514,7 @@ function drawFabTex(ctx, p, path, at, s) {
   const b = bboxOf([p]), R = Math.hypot(b.x1 - b.x0, b.y1 - b.y0) + Math.max(q.t.w, q.t.h), c = at(q.o);
   ctx.save(); path(); ctx.clip();
   ctx.translate(c.x, c.y); ctx.scale(s, s); ctx.rotate(q.ang);
+  if (q.fh || q.fv) ctx.scale(q.fh ? -1 : 1, q.fv ? -1 : 1);      // (Round UV-1 / D) Flip Texture Horizontally / Vertically on this pattern
   let pat = null;
   if (!q.unified) try { pat = ctx.createPattern(q.im, "repeat"); if (pat && pat.setTransform && typeof DOMMatrix !== "undefined") pat.setTransform(new DOMMatrix().translate(-q.t.w/2, -q.t.h/2).scale(q.t.w/q.im.naturalWidth, q.t.h/q.im.naturalHeight)); else pat = null; } catch (e) { pat = null; }
   if (pat) { ctx.fillStyle = pat; ctx.fillRect(-R, -R, 2*R, 2*R); }
@@ -4211,7 +4524,7 @@ function drawFabTex(ctx, p, path, at, s) {
   return true;
 }
 // what a pattern's texture looks like now (for the cloth's picture: drawn again when it changes)
-const texSig = (p) => { const f = fabricOf(p), t = f && f.tex, g = t && grainOf(p); return t ? [t.img, t.w, t.h, f.mapping, g && g.a && [g.a.x, g.a.y, g.b.x, g.b.y], !!imgEl(t.img)] : null; };
+const texSig = (p) => { const f = fabricOf(p), t = f && f.tex, g = t && grainOf(p); return t ? [t.img, t.w, t.h, f.mapping, g && g.a && [g.a.x, g.a.y, g.b.x, g.b.y], !!imgEl(t.img), p.match || "", p.matchAt || null, p.texFlip || null, p.match === "texture" ? [p.pts[0].x, p.pts[0].y] : null] : null; };
 function pieceFill(p, style) {
   if (style === "translucent") style = "front";
   if (style === "random") return RANDOM_COLS[Math.max(0, S.pieces.indexOf(p)) % RANDOM_COLS.length];
@@ -4895,6 +5208,7 @@ function drawSoon() {
 function drawFlush() { if (drawRaf) draw(); }
 function draw() {
   if (drawHold) { drawWant = true; return; }
+  if (typeof holdCheck === "function") holdCheck();            // (POST8 batch 0d) a held message goes at the next action
   if (drawRaf) { if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(drawRaf); drawRaf = 0; }
   geomGen++; geomIn++;                                       // (Round perf-2 / 2) the shapes' keys are worked out once in this frame
   try { drawAll(); } finally { geomIn--; }
@@ -4915,8 +5229,8 @@ function drawAll() {
     if (S.show.links !== false) { drawLinks(); drawLineLinks(); }
     VIS = new Set();
     for (const p of stack()) if (p.on) { if (gd && p === gd.sh) drawAdded(gd); if (inView(p)) { VIS.add(p.id); drawPiece(p); } }
-    drawSeams(); drawZippers(); if (S.seams.some(sm => sm.rips) || S.ripFrom) rips2D();
-    drawStitches(); drawPuckers(); drawSymbols2D(); drawTrims2D(); drawElastics2D();
+    drawSeams(); drawAutoLeft(); drawZippers(); if (S.seams.some(sm => sm.rips) || S.ripFrom) rips2D();
+    drawStitches(); drawPuckers(); drawSymbols2D(); drawTrims2D(); drawElastics2D(); drawShrink2D();
     drawHover();
   } finally { if (gd) ghostSwap(gd); }
   drawDragFeedback();
@@ -5129,6 +5443,8 @@ function cvDown(e) {
   if (T === "edit_gluing") return glueEditDown(sx, sy, w, e);
   if (T === "sticker") return stickerClick(sx, sy, w);
   if (T === "glue_fill") return glueFillClick(sx, sy, e.shiftKey);
+  if (T === "lacing") return laceClick(sx, sy);                // (POST8 FIX-4b)
+  if (T === "edit_lacing") return laceEditDown(sx, sy, e);
   if (T === "add_dart") {
     if (h && h.k === "seg" && h.kind === "outline") {
       const seg = h.i, t = h.t, p = h.p;
@@ -5213,6 +5529,7 @@ function cvDown(e) {
   if (T === "edit_texture") {
     // press the grainline: its middle moves it, an end turns it about its middle. A click on the pattern selects it.
     if (h && h.k === "grain") {
+      if (h.p.matchLock) { S.sel = [h.p.id]; ui(); drawSoon(); return toast("Pattern Matching Lock is on for " + (h.p.name || "this pattern") + ": Edit Texture cannot move its texture (Property Editor ▸ Fabric)", 5000); }      // (Round UV-1 / D, CF)
       push(); S.sel = [h.p.id];
       const g0 = clone(grainOf(h.p)); h.p.grain = clone(g0);
       S.drag = { k: "grain", p: h.p, h: h.h, g0, start: cp(w), moved: false }; ui(); drawSoon(); return;
@@ -5548,6 +5865,7 @@ function cvDbl(e) {
     const h = hit(S.mouse.sx, S.mouse.sy);
     if (h && h.k === "note") { S.drag = null; return noteDialog({ x: e.clientX, y: e.clientY }, h.p, h.p.notes[h.ni]); }
   }
+  if (S.tool === "lacing" && S.laceDraft) { S.drag = null; return laceFinish(); }      // (POST8 FIX-4b) the double-click's presses added the last eyelet once
   const d = S.draft;
   if (!d || !d.pts || !(d.internal || d.base)) return;
   // the double-click's two presses put two points in the same place: keep one
@@ -5591,7 +5909,7 @@ function cvMenu(e) {
     }
     S.drag = null; return gfxMenu(e.clientX, e.clientY, w);
   }
-  if (T === "edit_texture") { const gp = pieceAt(sx, sy) || primary(); if (gp && !gp.lock) { S.drag = null; return grainNumeric(at, gp); } }
+  if (T === "edit_texture") { const gp = pieceAt(sx, sy) || primary(); if (gp && gp.matchLock) { S.drag = null; return toast("Pattern Matching Lock is on: Edit Texture cannot move this pattern's texture", 5000); } if (gp && !gp.lock) { S.drag = null; return grainNumeric(at, gp); } }
   if ((T === "smooth_curve" || T === "fullness") && S.draft) { S.drag = null; if (!shapeToolMenu(at)) toast("Esc starts over"); return; }
   // shape tools: type the exact size
   if (["rectangle","ellipse","internal_rectangle","internal_ellipse","base_rectangle","base_ellipse"].includes(T)) {
@@ -5972,6 +6290,8 @@ function normLibItem(kind, o, id) {
   if (kind === "fabric") { const d = normFabDetail(o.dir); if (d) out.dir = d; }
   // (Round BETA8-1 / C) its texture's picture and repeat size, kept only once chosen
   if (kind === "fabric") { const t = normFabTex(o.tex); if (t) out.tex = t; }
+  // (Round LIB-1 / E) a registered mesh (Register Button / Buttonhole / OBJ), kept only when set
+  if (kind === "button" || kind === "buttonhole" || kind === "zipper") { const m = normTrimMesh(o.mesh); if (m) out.mesh = m; }
   return out;
 }
 /* (Round FIX-3 / D, the maintainer's brief: every row the recordings show, session 5 frames 022-025: Stretch-Weft / -Warp, Shear (Right) /
@@ -6113,6 +6433,8 @@ function normImages(list) {
 function usedImages() {
   const used = new Set(S.pieces.flatMap(p => (p.graphics || []).map(g => g.img))); if (S.backdrop) used.add(S.backdrop.img);
   for (const f of (S.lib && S.lib.fabric) || []) if (f.tex) used.add(f.tex.img);      // (Round BETA8-1 / C) a fabric's texture
+  for (const l of S.lights || []) if (l.env) used.add(l.env.img);      // (POST8 FIX-6 / C) a dome's environment map
+  if (S.colorways) for (const c of S.colorways.list || []) for (const r of Object.values(c.mat || {})) if (r && r.tex) used.add(r.tex.img);      // (Round CW-1 / B) another colorway's texture
   // (Round r21 / 1) and every picture a step of the history still shows: the file keeps the history, and an undo after opening it
   // brought back a graphic or background image whose picture was not saved. Only looked for while a picture is not in use now
   if ((S.images || []).some(im => !used.has(im.id))) for (const st of [...(S.undo || []), ...(S.redo || [])]) histImages(st, used);
@@ -6120,7 +6442,9 @@ function usedImages() {
 }
 function histImages(st, used) {
   const k = st && typeof st === "object" ? st.k : null, pc = k && k.pieces;
-  const texts = typeof st === "string" ? [st] : !k ? [] : [k.backdrop, k.lib, ...(typeof pc === "string" ? [pc] : pc ? pc.t : [])];
+  // (a part is one text, or a list of ids kept item by item, { ids, t }: the patterns, and the lights since POST8 FIX-6 / C names a picture)
+  const part = (x) => (typeof x === "string" ? [x] : x && Array.isArray(x.t) ? x.t : []);
+  const texts = typeof st === "string" ? [st] : !k ? [] : [k.backdrop, k.lib, k.colorways, ...part(k.lights), ...part(pc)];
   for (const t of texts) if (typeof t === "string" && t.includes('"img"')) for (const m of t.matchAll(/"img":(\d+)/g)) used.add(+m[1]);
 }
 // keep a picture; the same picture twice is kept once
@@ -6956,6 +7280,33 @@ function puckerAt(sx, sy) {
     }
   }
   return best;
+}
+/* (POST8 FIX-7 / B, roadmap 3.A21) Show Simulation Shrinkage (2D Pattern list, off at first, per machine): a pattern with Shrinkage Weft /
+   Warp (Property Editor ▸ Simulation) not 100 % gets the outline its cloth rests at, scaled along its grainline by Warp and across it by
+   Weft about the grainline's middle, as the solver shrinks it: dashed, with the two percentages beside it. Solidify leaves the shape
+   (the solver gives a solidified pattern no shrinkage), so none is drawn there. Guess post8/31. */
+function simShrinkOutline(p) {
+  const s = p.shrink3;
+  if (!s || p.solid3) return null;
+  const warp = (s.warp || 100)/100, weft = (s.weft || 100)/100;
+  if (Math.abs(warp - 1) < 1e-6 && Math.abs(weft - 1) < 1e-6) return null;
+  const g = grainOf(p), L = dist(g.a, g.b);
+  if (!(L > 1e-9)) return null;
+  const u = V((g.b.x - g.a.x)/L, (g.b.y - g.a.y)/L), c = V((g.a.x + g.b.x)/2, (g.a.y + g.b.y)/2);
+  return { pts: flatten(p, 20).map(q => { const d = sub(q, c), a = dot(d, u)*warp, b = (d.x*-u.y + d.y*u.x)*weft; return V(c.x + u.x*a - u.y*b, c.y + u.y*a + u.x*b); }), warp, weft };
+}
+function drawShrink2D() {
+  if (!S.show.shrink3) return;
+  ctx.save(); ctx.setLineDash([7, 4]); ctx.lineWidth = 1.4; ctx.strokeStyle = "#0b6e4f";
+  for (const p of S.pieces) {
+    if (!p.on || !inView(p)) continue;
+    const o = simShrinkOutline(p);
+    if (!o) continue;
+    ctx.beginPath(); o.pts.forEach((q, k) => { const s = toS(q); k ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); ctx.stroke();
+    const top = o.pts.reduce((a, q) => (q.y < a.y ? q : a), o.pts[0]), s = toS(top);
+    lbl("Shrinkage weft " + Math.round(o.weft*100) + " % · warp " + Math.round(o.warp*100) + " %", V(s.x + 6, s.y - 8), "#0b6e4f", 9, "left");
+  }
+  ctx.restore();
 }
 function drawPuckers() {
   if (S.show.puckering === false && !puckerTools.includes(S.tool)) return;
@@ -10707,28 +11058,124 @@ function zprjLink(res, pieces, rep) {
 /* Seams, once the patterns are in the document: each side's runs as parts of ours ({ piece, shape: 0, sids, t0, t1, rev },
    the run's own-direction segments and where it starts and ends on them; a run against the outline's direction is rev).
    A seam with a run on a pattern that did not come in (a zipper tape, a pattern left out) is left out, and named. */
+// a stretch of a file's pattern outline ({ pattern, from, to, r0, r1, forward }) as a part of ours (throws why not); at: the file's index -> pattern
+function zprjPart(at, r) {
+  const p = at.get(r.pattern), n = p ? p.segs.length : 0;
+  if (!p) throw new Error("a pattern that was not imported");
+  if (!(r.from < n && r.to < n)) throw new Error("a line the pattern does not have");
+  const run = [r.from];
+  for (let i = r.from, k = 0; i !== r.to && k < n; k++) { i = (i + (r.forward ? 1 : n - 1)) % n; run.push(i); }
+  if (run[run.length - 1] !== r.to) throw new Error("a run that does not reach its end");
+  const tf = (i, f) => tAtFrac(p, i, Math.min(1, Math.max(0, f)));
+  if (r.forward) return { piece: p.id, shape: 0, sids: run.map(i => p.segs[i].id), t0: tf(r.from, r.r0), t1: tf(r.to, r.r1), rev: false };
+  run.reverse();
+  return { piece: p.id, shape: 0, sids: run.map(i => p.segs[i].id), t0: tf(r.to, r.r1), t1: tf(r.from, r.r0), rev: true };
+}
 function zprjSew(res, pieces, rep) {
   const list = (res && res.seams && res.seams.list) || [], at = new Map(pieces.map(p => [p._zi, p]));
-  rep.seamsTotal = list.length;
+  rep.seamsTotal = list.filter(sm => !sm._zip).length;
   for (const w of (res && res.seams && res.seams.left) || []) rep.seamLeft.push(w);
   for (const sm of list) {
-    const part = (r) => {
-      const p = at.get(r.pattern), n = p ? p.segs.length : 0;
-      if (!p) throw new Error("a pattern that was not imported");
-      if (!(r.from < n && r.to < n)) throw new Error("a line the pattern does not have");
-      const run = [r.from];
-      for (let i = r.from, k = 0; i !== r.to && k < n; k++) { i = (i + (r.forward ? 1 : n - 1)) % n; run.push(i); }
-      if (run[run.length - 1] !== r.to) throw new Error("a run that does not reach its end");
-      const tf = (i, f) => tAtFrac(p, i, Math.min(1, Math.max(0, f)));
-      if (r.forward) return { piece: p.id, shape: 0, sids: run.map(i => p.segs[i].id), t0: tf(r.from, r.r0), t1: tf(r.to, r.r1), rev: false };
-      run.reverse();
-      return { piece: p.id, shape: 0, sids: run.map(i => p.segs[i].id), t0: tf(r.to, r.r1), t1: tf(r.from, r.r0), rev: true };
-    };
+    if (sm._zip) continue;                                     // (run 16) a zipper's tape seam: the zipper is made by zprjZippers()
+    const part = (r) => zprjPart(at, r);
     try {
       const made = makeSeam(S.seams, sm.a.map(part), sm.b.map(part));
       if (!made) throw new Error("its parts overlap or are empty");
-      S.seams.push(made); rep.seams++;
+      S.seams.push(made); rep.seams++; sm._our = made.id;      // (Round PIPE-1: a binding's seams found by the file's numbers, zprjBindings())
     } catch (e) { rep.seamLeft.push(sm.name + " (" + e.message + ")"); }
+  }
+}
+/* (run 16, IMP-1 rest / B; guesses imp1b/5-9) WHAT LIES ON THE PATTERNS, from the reader's stitches, buttonholes, buttons, styles and trims.
+   ZIPPERS (imp1b/5). In the file a zipper's two tapes are patterns of their own, each sewn to one garment edge, and sewn to each other
+   along the teeth. Ours is one seam with zip between the two garment edges, so the chain is followed: the seam joining the two tapes, and
+   for each tape the seam joining it to a garment pattern. The direction: a tape is a strip whose garment edge and teeth edge lie opposite,
+   so in its outline's order they run opposite ways; with A's side as the file sews it, B's side is A's way when s1·sx·sy·s2 is 1 (s each
+   seam side's own sign: 1 along the outline, -1 against), else it is turned. The tape seams are not sewn as seams (the tapes do not come
+   in), and the zipper's type is the file's style as a library zipper (its name, teeth and tape width). */
+function zprjZipPlan(res) {
+  const tapes = new Set((res.skipped || []).filter(s => s.kind === "tape").map(s => s.index)), list = (res.seams && res.seams.list) || [], plans = [];
+  if (!tapes.size) return plans;
+  const one = (side) => (side.length === 1 ? side[0] : null), tapeOf = (r) => (r && tapes.has(r.pattern) ? r.pattern : null);
+  const sg = (r) => (r.forward ? 1 : -1);
+  for (const sm of list) {
+    const a = one(sm.a), b = one(sm.b);
+    if (!(a && b && tapeOf(a) !== null && tapeOf(b) !== null)) continue;
+    const toGarment = (t) => { for (const g of list) { const x = one(g.a), y = one(g.b); if (!x || !y) continue; if (tapeOf(x) === t && tapeOf(y) === null) return { g, tape: x, side: y }; if (tapeOf(y) === t && tapeOf(x) === null) return { g, tape: y, side: x }; } return null; };
+    const X = toGarment(a.pattern), Y = toGarment(b.pattern);
+    if (!X || !Y) continue;
+    sm._zip = X.g._zip = Y.g._zip = true;
+    plans.push({ name: sm.name, A: X.side, B: Y.side, turn: sg(X.tape)*sg(a)*sg(b)*sg(Y.tape) !== 1, tapes: [a.pattern, b.pattern] });
+  }
+  // any other seam to a tape of a zipper followed is that zipper's too (a tape sewn further along the garment): not a seam of its own
+  const done = new Set(plans.flatMap(z => z.tapes));
+  for (const sm of list) if ([...sm.a, ...sm.b].some(r => done.has(r.pattern))) sm._zip = true;
+  return plans;
+}
+function zprjZippers(res, plans, pieces, rep) {
+  const at = new Map(pieces.map(p => [p._zi, p])), file = ((res.trims && res.trims.zippers) || []), style = ((res.styles && res.styles.zipper) || []);
+  plans.forEach((z, k) => {
+    const zf = file[k] || {}, st = style.find(s => s.id === zf.style) || style[0] || null, name = zf.name || "Zipper " + (k + 1);
+    try {
+      const A = zprjPart(at, z.A), B = zprjPart(at, z.B);
+      if (z.turn) B.rev = !B.rev;
+      const made = makeSeam(S.seams, [A], [B]);
+      if (!made) throw new Error("its sides overlap or are empty");
+      const L = libOf();
+      let t = st && L.zipper.find(x => x.name === st.name);
+      if (!t) { t = normLibItem("zipper", { name: st ? st.name : "Zipper", ...(st && st.teethW > 0 ? { teethW: st.teethW } : {}), ...(st && st.tapeW > 0 ? { tapeW: st.tapeW } : {}) }, L.nextId++); L.zipper.push(t); }
+      made.zip = { name, type: t.id };
+      S.seams.push(made); (rep.zippers = rep.zippers || []).push(name);
+    } catch (e) { rep.seamLeft.push(name + " (a zipper: " + e.message + ")"); }
+  });
+}
+/* TOPSTITCHES (imp1b/6). Each on its outline stretch as a topstitch of ours, named as in the file; its style (by the colorway's assignment)
+   gives its Offset (the style's own offset off the line, plus the line's), Stitch per Inch (25.4 over the stitch length), Thread Thickness,
+   Stitch Count (the rows switched on) and Distance between them; the style also comes into the library's Topstitch tab once (its name,
+   offset, length, thread, lines, colour). On an internal line: not read (the files show none). */
+function zprjStitches(res, pieces, rep) {
+  const at = new Map(pieces.map(p => [p._zi, p])), zat = new Map(((res && res.pieces) || []).map(z => [z.index, z])), S0 = (res.styles || {}), assign = new Map(S0.assign || []);
+  let next = (S.stitches || []).reduce((m, s) => Math.max(m, s.id), 0) + 1;
+  const L = libOf(), libs = new Map();
+  for (const p of pieces) for (const st of (zat.get(p._zi) || {}).stitches || []) {
+    try {
+      const part = zprjPart(at, { ...st, pattern: p._zi });
+      const sy = (S0.topstitch || []).find(s => s.id === assign.get(st.id)) || null, rows = sy && sy.rows.length ? sy.rows : null, r0 = rows ? rows[0] : null;
+      const offset = Math.round(((sy ? sy.offset : STITCH_OFFSET) + (st.off || 0))*1000)/1000;
+      const spec = r0 ? { count: rows.length, gap: rows.length > 1 && rows[1].distance > 0 ? rows[1].distance : STITCH_SPEC.gap, spi: r0.length > 0 ? Math.round(254/r0.length)/10 : STITCH_SPEC.spi, thread: r0.thread } : {};
+      if (sy && !libs.has(sy.id)) {
+        let it = L.topstitch.find(x => x.name === sy.name && x.offset === offset);
+        if (!it) { it = normLibItem("topstitch", { name: sy.name, offset, ...(r0 ? { length: Math.round(r0.length*1000)/1000, thread: r0.thread, ...(r0.color ? { color: r0.color } : {}) } : {}), lines: rows ? rows.length : 1 }, L.nextId++); L.topstitch.push(it); }
+        libs.set(sy.id, it);
+      }
+      S.stitches.push({ id: next++, name: st.name, preset: sy ? libs.get(sy.id).name : "Default Topstitch", part, offset, extS: true, extE: true, corner: "right", ...stitchSpecNorm(spec) });
+      (rep.stitches = rep.stitches || []).push(st.name + " on " + p.name);
+    } catch (e) { (rep.stitchLeft = rep.stitchLeft || []).push(st.name + " (" + e.message + ")"); }
+  }
+}
+/* BUTTONS AND BUTTONHOLES (imp1b/7). A button (a pattern of its own in the file, with no lines) at its middle on the pattern it is sewn on;
+   a buttonhole at its middle, turned as the file has it in the pattern's frame. Each type once into the library: the button's width and
+   thickness, the buttonhole's length (its width in ours). Not fastened (the file's fastening was not read: the test file has none). */
+function zprjButtons(res, pieces, rep, shift) {
+  const at = new Map(pieces.map(p => [p._zi, p])), zat = new Map(((res && res.pieces) || []).map(z => [z.index, z])), L = libOf(), S0 = res.styles || {};
+  let next = (S.buttons || []).reduce((m, b) => Math.max(m, b.id), 0) + 1;
+  const place = (zp, q) => { const w = zprjWin(zp.transform, q); return V(zprjRound(w.x + shift.x), zprjRound(w.y + shift.y)); };
+  const lib = (kind, name, o) => { let t = L[kind].find(x => x.name === name); if (!t) { t = normLibItem(kind, { name, ...o }, L.nextId++); L[kind].push(t); } return t.id; };
+  for (const b of res.buttons || []) {
+    const p = at.get(b.pattern), zp = zat.get(b.pattern);
+    if (!p || !zp) { (rep.buttonLeft = rep.buttonLeft || []).push(b.name + " (on a pattern that was not imported)"); continue; }
+    const st = (S0.button || [])[b.style] || {}, c = place(zp, b.at);
+    const type = lib("button", st.name || "Button", { ...(st.width > 0 ? { width: Math.round(st.width*1000)/1000 } : {}), ...(st.thickness > 0 ? { thickness: Math.round(st.thickness*1000)/1000 } : {}) });
+    S.buttons.push({ id: next++, kind: "button", piece: p.id, x: c.x, y: c.y, angle: 0, lib: type, fasten: null });
+    (rep.buttons = rep.buttons || []).push(b.name + " on " + p.name);
+  }
+  for (const zp of (res && res.pieces) || []) for (const h of zp.buttonholes || []) {
+    const p = at.get(h.pattern), hz = zat.get(h.pattern);
+    if (!p || !hz) continue;
+    const c = place(hz, h.at), a = (h.angle || 0)*Math.PI/180, u = place(hz, [h.at[0] + Math.cos(a), h.at[1] + Math.sin(a)]);
+    const angle = zprjRound(((Math.atan2(u.y - c.y, u.x - c.x)*180/Math.PI % 360) + 360) % 360);
+    const type = lib("buttonhole", "Buttonhole " + Math.round(h.w) + " mm", { width: Math.round(h.w*1000)/1000 });
+    S.buttons.push({ id: next++, kind: "hole", piece: p.id, x: c.x, y: c.y, angle, lib: type, fasten: null });
+    (rep.buttons = rep.buttons || []).push(h.name + " on " + p.name);
   }
 }
 /* ---- 3D placement and drape (Round I3 / 2) ----
@@ -10837,6 +11284,31 @@ function zprjGraphics(res, pieces, rep, shift) {
     rep.graphics.push(g.name + " on " + p.name);
   }
 }
+/* (run 16, IMP-1 rest / A; guesses imp1b/1-3) A project file's fabric stiffness onto this program's fabric (zprj-import.js physicsOf()).
+   The file's numbers go through its own non-linear tables, so their size against this solver is not known: what is unit-free comes in, the
+   preset keeps its own overall stiffness (imp1b/1). The Detail shares (FAB_DETAIL, % of the preset): weft and warp stretch each against
+   their geometric mean (weft 330000 and warp 230000 are 120 % and 84 %), right and left shear against theirs, the four bendings against
+   theirs. Friction: the file's coefficient × 10, so its default slider 3 (0.03) is 0.3, as our woven presets (imp1b/2), 0.05 to 1.5.
+   Not taken, and named in the report: Internal Damping (its default in the file is not known, so no share can be had: imp1b/3) and the
+   Buckling Ratio and Stiffness (this solver's bending is linear: nothing they would change). -> { dir, friction, notes } */
+const ZPRJ_FRICTION = 10;
+function zprjPhysics(k) {
+  const out = { dir: null, friction: null, notes: [] };
+  if (!k) return out;
+  const dir = {}, share = (keys) => {
+    const v = keys.map(x => k[x]);
+    if (!v.every(x => x > 0)) return;
+    const g = Math.exp(v.reduce((a, x) => a + Math.log(x), 0)/v.length);
+    keys.forEach((x, i) => { dir[x] = Math.round(1000*v[i]/g)/10; });
+  };
+  share(["stretchWeft", "stretchWarp"]); share(["shearR", "shearL"]); share(["bendWeft", "bendWarp", "bendBiasR", "bendBiasL"]);
+  out.dir = normFabDetail(dir);
+  if (k.friction > 0) out.friction = Math.round(Math.max(0.05, Math.min(1.5, k.friction*ZPRJ_FRICTION))*1000)/1000;
+  if (k.damping > 0) out.notes.push("Internal Damping " + +(k.damping*1e4).toFixed(2) + " not taken (our damping stays the solver's own)");
+  const b = k.buckling;
+  if (b) out.notes.push("Buckling " + ["Weft", "Warp", "BiasR", "BiasL"].map(s => s.replace("BiasR", "Bias (Right)").replace("BiasL", "Bias (Left)") + " " + [b["ratio" + s], b["stiff" + s]].map(x => (x > 0 ? +(x*100).toFixed(2) : "–")).join(" / ")).join(", ") + " (ratio / stiffness): not taken, this solver's bending is linear");
+  return out;
+}
 // the file's fabrics into the library (one of the same name is used as it is), and each pattern's fabric assigned
 const ZPRJ_FABRIC = { woven: "Medium woven", knit: "Single jersey" };
 function zprjFabrics(res, pieces, rep) {
@@ -10845,15 +11317,59 @@ function zprjFabrics(res, pieces, rep) {
     const k = p._zf; delete p._zf;
     if (!(k >= 0) || !F[k]) continue;
     if (!ids.has(k)) {
-      const f = F[k], L = libOf(), same = L.fabric.find(x => x.name === f.name);
-      const it = same || normLibItem("fabric", { name: f.name, construction: f.content && f.content !== "None" ? f.content : "", physical: ZPRJ_FABRIC[String(f.type).toLowerCase()] || "Custom" }, L.nextId++);
-      if (!same) L.fabric.push(it);
+      const f = F[k], L = libOf();
+      let same = L.fabric.find(x => x.name === f.name);
+      // (run 16, guess imp1b/4) a fabric of that name that is still exactly a new document's default (a blank document's own "FABRIC 1",
+      // the file's default name too) takes the file's values, its id kept: else every import into a new document lost them
+      let at = -1, keepId = null;
+      if (same && JSON.stringify(same) === JSON.stringify(normLibItem("fabric", { name: same.name }, same.id))) { at = L.fabric.indexOf(same); keepId = same.id; same = null; }
+      // (Round IMP-1 / A) with the file's front, back and side colours, weight and thickness where it has them (zprj-import.js fabricLook())
+      const phys = ZPRJ_FABRIC[String(f.type).toLowerCase()] || "Custom", kd = zprjPhysics(f.physics);
+      const it = same || normLibItem("fabric", { name: f.name, construction: f.content && f.content !== "None" ? f.content : "", physical: phys,
+        ...(f.weight > 0 ? { weight: f.weight } : {}), ...(f.thickness > 0 ? { thickness: f.thickness } : {}), ...(f.color ? { color: f.color } : {}), ...(f.back ? { back: f.back } : {}), ...(f.side ? { faces: { side: { color: f.side } } } : {}),
+        ...(kd.dir ? { dir: kd.dir } : {}), ...(kd.friction ? { friction: kd.friction } : {}) }, keepId !== null ? keepId : L.nextId++);
+      // (run 16, IMP-1 rest / B, guess imp1b/9) the front's picture as the fabric's texture, one repeat as the file sizes it (its turn: not kept)
+      const pic = !same && f.tex && ((res && res.images) || []).find(im => im.file === f.tex.file || im.file === f.tex.alt);
+      if (pic) { const im = addImage(f.tex.file, "data:image/" + pic.type + ";base64," + b64Of(pic.bytes), pic.w, pic.h), t = normFabTex({ img: im.id, w: Math.round(f.tex.w*1000)/1000, h: Math.round(f.tex.h*1000)/1000 }); if (t) { it.tex = t; (rep.textures = rep.textures || []).push(f.name + ": " + f.tex.file); } }
+      if (at >= 0) L.fabric[at] = it; else if (!same) L.fabric.push(it);
       ids.set(k, it.id); rep.fabrics.push(f.name + (same ? " (already in the library)" : ""));
+      if (!same && kd.notes.length) (rep.fabricNotes = rep.fabricNotes || []).push(f.name + ": " + kd.notes.join("; "));
     }
     p.fabric = ids.get(k);
   }
 }
-const ZPRJ_NOT = "notch types, seam allowance corner types, the fabrics' physical properties and colors, topstitches, zippers, trims, the avatar, and the rest of the 3D scene";
+const ZPRJ_NOT = "notch types, seam allowance corner types, the fabrics' overall stiffness, damping and buckling (their colors, weight, thickness, friction and stiffness by direction are read), the zippers' sliders, pullers and stoppers, trims as objects, topstitches on internal lines, the avatar, and the rest of the 3D scene";
+/* (run 16, IMP-1 rest / C, guess imp1b/8) Piping, binding and trims, as the report names them. Piping and binding are, in the file, patterns
+   of their own (a tube as wide as π × the diameter; a strip as wide as the binding) sewn on by ordinary seams: they come in as those
+   patterns and seams, which is how the file simulates them, and are named here (this program's piping and binding, rods along a seam or
+   an edge, are not made from them). A trim object (a mesh, placed, glued) has no counterpart here (roadmap 1.3c): named. */
+function zprjTrimRows(t, made) {
+  if (!t) return [];
+  const rows = [], mm = (v) => (v > 0 ? " " + Math.round(v*100)/100 + " mm" : ""), ours = new Set(made || []);
+  // (Round PIPE-1, pipe1/11-12) a binding is one of ours, its strip the file's; a piping (the file's lies on a free edge, ours goes into a seam) stays its patterns
+  for (const p of t.pipings || []) rows.push("Piping " + p.name + ":" + mm(p.d) + " across, came in as its own tube pattern and the " + (p.seams || []).length + " seams that sew it on (Piping here goes into a seam between two patterns)");
+  for (const b of t.bindings || []) rows.push("Binding " + b.name + ":" + mm(b.w) + " wide" + (b.length > 0 ? ", " + Math.round(b.length) + " mm long" : "") + (ours.has(b.name) ? ", came in as a binding with its own strip pattern and seams (Select Binding changes it; its box's OK cuts it again as this program does)" : ", came in as its own strip pattern and the seams that sew it on") + (b.fold != null ? " (its fold " + b.fold + "° is not set here)" : ""));
+  if ((t.trims || []).length) rows.push("Trims not imported (no trim objects here yet): " + t.trims.map(x => x.name + (x.mass > 0 ? " (" + Math.round(x.mass*10)/10 + " g)" : "")).join(", "));
+  return rows;
+}
+/* (Round PIPE-1, pipe1/12) a project file's binding comes in as one of ours: its edge (the first stretch it lists), its width, its strip
+   (a pattern of the file, simulated as the file has it) and the seams that sew it (its top and bottom). Its box's OK cuts it again the way
+   this program makes a binding (bindingMake()), the file's strip and seams going. One whose strip or edge did not come in stays patterns. */
+function zprjBindings(res, pieces, rep) {
+  const at = new Map(pieces.map(p => [p._zi, p])), list = (res.seams && res.seams.list) || [];
+  rep.bindingsIn = [];
+  for (const b of (res.trims && res.trims.bindings) || []) {
+    const strip = at.get(b.pattern), line = (b.lines || [])[0];
+    if (!strip || !line) continue;
+    let part;
+    try { part = zprjPart(at, line); } catch (e) { continue; }
+    if (part.rev) part = { ...part, sids: part.sids.slice().reverse(), rev: false };
+    const sew = [b.top, b.bottom].map(k => (Number.isInteger(k) && list[k] ? list[k]._our : null)).filter(Number.isInteger);
+    const id = trimNext("binding");
+    S.bindings.push({ id, name: b.name, part, w: b.w > 0 ? Math.min(60, b.w) : BIND_W, fabric: Number.isInteger(strip.fabric) ? strip.fabric : null, pat: [strip.id], ...(sew.length ? { sew } : {}) });
+    rep.bindingsIn.push(b.name);
+  }
+}
 // "Imported N of M patterns; skipped: name (why); defaults used: key × count": the report's first line, also as plain text
 function zprjSummary(rep) {
   const parts = ["Imported " + rep.patterns + " of " + rep.total + (rep.total === 1 ? " pattern" : " patterns")];
@@ -10880,7 +11396,13 @@ function zprjReportHTML(rep) {
       (f && f.here && f.file ? "Fitted to " + esc(f.name || "the avatar") + " by the floor and the middle, scaled by the heights " + r1(f.here) + " / " + r1(f.file) + " mm (" + (Math.round(f.s*10000)/10000) + ")" : f && f.file ? "No avatar is loaded: the file's places are kept as they are (its avatar was " + r1(f.file) + " mm tall)" : "The file names no avatar height: its places are kept as they are") + ". Simulate to settle it on the avatar.");
   }
   if (rep.graphics.length) rows.push("Graphics: " + esc(rep.graphics.join(", ")) + " (the picture is kept in the pattern file)");
-  if (rep.fabrics.length) rows.push("Fabrics: " + esc(rep.fabrics.join(", ")) + " (their physical properties are a preset of ours by the fabric's kind: check them)");
+  // (run 16, IMP-1 rest / B, C)
+  if ((rep.zippers || []).length) rows.push("Zippers: " + esc(rep.zippers.join(", ")) + " (between the two garment edges its tapes were sewn to; the tapes themselves are not patterns here)");
+  if ((rep.stitches || []).length) rows.push("Topstitches: " + esc(rep.stitches.slice(0, 8).join(", ")) + (rep.stitches.length > 8 ? " and " + (rep.stitches.length - 8) + " more" : "") + " (with their style's offset, stitches per inch, thread and rows)");
+  if ((rep.buttons || []).length) rows.push("Buttons and buttonholes: " + esc(rep.buttons.join(", ")) + " (not fastened to each other)");
+  if ((rep.textures || []).length) rows.push("Fabric textures: " + esc(rep.textures.join(", ")) + " (the front's picture, one repeat as the file sizes it)");
+  for (const r of zprjTrimRows(rep.trimsIn, rep.bindingsIn)) rows.push(esc(r));
+  if (rep.fabrics.length) rows.push("Fabrics: " + esc(rep.fabrics.join(", ")) + " (a preset of ours by the fabric's kind, with the file's weight, thickness, friction and how its stiffness differs by direction: check them)");
   if (rep.sizes) rows.push("Grading: " + n(rep.graded, "pattern", "patterns") + " in " + n(rep.sizes.names.length, "size", "sizes") + " (" + esc(rep.sizes.names.join(", ")) + "; base " + esc(rep.sizes.base) + "), every point and curve point in every size as the file has it" + (rep.baseOff ? ". At " + n(rep.baseOff, "point", "points") + " the file's base size is not where the point is drawn: the drawn place was taken" : ""));
   let html = rows.map(r => "<div>" + r + "</div>").join("");
   const list = (title, items) => '<div style="margin-top:8px">' + title + "</div>" + items.slice(0, 8).map(s => "<div>· " + esc(s) + "</div>").join("") + (items.length > 8 ? "<div>· and " + (items.length - 8) + " more</div>" : "");
@@ -10889,14 +11411,17 @@ function zprjReportHTML(rep) {
   if ((rep.linkLeft || []).length) html += list("Not linked, kept as two patterns:", rep.linkLeft);
   if ((rep.seamLeft || []).length) html += list("Seams not sewn:", rep.seamLeft);
   if ((rep.gfxLeft || []).length) html += list("Graphics not imported:", rep.gfxLeft);
+  if ((rep.fabricNotes || []).length) html += list("Fabric values in the file not taken:", rep.fabricNotes);
+  if ((rep.stitchLeft || []).length) html += list("Topstitches not imported:", rep.stitchLeft);
+  if ((rep.buttonLeft || []).length) html += list("Buttons not imported:", rep.buttonLeft);
   if ((rep.notDraped || []).length) html += list("Placed in 3D but not draped (the outline is not on the file's resting cloth):", rep.notDraped);
   const keys = Object.keys(rep.defaults || {});
   if (keys.length) html += list("Defaults used where the file has no value:", keys.map(k => k + " × " + rep.defaults[k] + ((ZPRJ.DEFAULTS || {})[k] ? ": " + ZPRJ.DEFAULTS[k] : "")));
   const o = rep.others;
   if (o) {
     const items = [];
-    if ((o.zippers || []).length) items.push(n(o.zippers.length, "zipper", "zippers") + " (" + o.zippers.join(", ") + "): tape, teeth, slider, puller and stoppers are not imported; its tapes are skipped above");
-    if (o.trims) items.push(n(o.trims, "trim", "trims"));
+    const zl = (o.zippers || []).filter(z => !(rep.zippers || []).includes(z));
+    if (zl.length) items.push(n(zl.length, "zipper", "zippers") + " (" + zl.join(", ") + ") whose tapes could not be followed to the garment");
     if (items.length) html += list("In the file, not imported:", items);
   }
   return html + '<div style="margin-top:8px;color:var(--dim)">Not imported: ' + ZPRJ_NOT + ".</div>";
@@ -10906,6 +11431,7 @@ function zprjReportHTML(rep) {
 function zprjTake(fname, res, opt) {
   opt = opt || {};
   const got = zprjPieces(res, opt), rep = got.report;
+  rep.trimsIn = res.trims || null;                             // (run 16) piping, binding and trims, for the report
   if (!got.pieces.length) { askModal("Nothing imported", "No pattern could be read from " + esc(fname) + "." + (rep.total ? "<br>" + esc(zprjSummary(rep)) : ""), [{ k: "ok", n: "OK", primary: true, esc: true, f: () => {} }]); return null; }
   push("Import " + fname);
   const shift = V(0, 0);
@@ -10918,9 +11444,16 @@ function zprjTake(fname, res, opt) {
   zprjGrade(res, got.pieces);
   zprjFabrics(res, got.pieces, rep);
   for (const p of got.pieces) S.pieces.push(p);
-  if (opt.seams !== false) zprjSew(res, got.pieces, rep);
+  // (run 16) a zipper's tape seams make one zipper between the garment's edges, not seams of their own
+  const zips = opt.seams !== false ? zprjZipPlan(res) : [];
+  if (opt.seams !== false) { zprjSew(res, got.pieces, rep); zprjZippers(res, zips, got.pieces, rep); }
   if (opt.place3 !== false) zprj3D(res, got.pieces, rep, shift);
   if (opt.graphics !== false) zprjGraphics(res, got.pieces, rep, shift);
+  // (run 16) topstitches, buttons and buttonholes; trims as objects, piping and binding are named in the report (zprjTrimRows())
+  if (opt.stitches !== false) zprjStitches(res, got.pieces, rep);
+  if (opt.buttons !== false) zprjButtons(res, got.pieces, rep, shift);
+  if (opt.seams !== false) zprjBindings(res, got.pieces, rep);
+  for (const sm of (res.seams && res.seams.list) || []) { delete sm._zip; delete sm._our; }
   // (r25 follow-up) each pattern remembers where it came from: the file's name and its place in the file (grainReread())
   for (const p of got.pieces) { p.zsrc = { file: String(fname), i: p._zi }; delete p._zi; }
   // reference lines are helper lines: they come in hidden
@@ -11131,7 +11664,7 @@ function dropFiles(files) {
   for (const f of files) {
     const name = f.name || "", rd = new FileReader();
     if (/\.dxf$/i.test(name)) { rd.onload = () => dxfInNumeric({ x: window.innerWidth - 640, y: 120 }, String(rd.result), name); rd.readAsText(f); continue; }
-    if (!/\.(zprj|zpac|pdraft|json)$/i.test(name)) { toast("Not opened: " + name + ". Drop a pattern file (.pdraft), a project file (.zprj, .zpac) or a DXF."); continue; }
+    if (!/\.(zprj|zpac|pdraft|json|zip)$/i.test(name)) { toast("Not opened: " + name + ". Drop a pattern file (.pdraft), a project file (.zprj, .zpac) or a DXF."); continue; }
     rd.onload = () => { const bytes = new Uint8Array(rd.result); if (zprjFile(name, bytes)) zprjImport(name, rd.result); else openFile(name, bytes); };
     rd.onerror = () => toast("That file could not be read: " + name);
     rd.readAsArrayBuffer(f);
@@ -11159,14 +11692,16 @@ function buttonDropType(kind, libId, bid) {
   return true;
 }
 function libDrop(e) {
+  if (libPanelHas(e.target)) return libPanelDrop(e);      // (Round LIB-1 / C) onto the library panel: kept there
   const [kind, id] = String(e.dataTransfer.getData(LIB_DRAG) || "").split(":"), bid = (kind === "button" || kind === "buttonhole") ? libDropTarget(e, kind) : null;
+  if (kind !== "button" && kind !== "buttonhole") return toast("Drop it onto the Library to keep it there");
   if (bid == null) return toast("Drop a " + (kind === "buttonhole" ? "buttonhole" : "button") + " type onto a placed " + (kind === "buttonhole" ? "buttonhole" : "button"));
   buttonDropType(kind, +id, bid);
 }
 window.addEventListener("dragover", (e) => { if (!libDragOf(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
 window.addEventListener("drop", (e) => { if (!libDragOf(e) || textField(e.target)) return; e.preventDefault(); libDrop(e); });
 window.addEventListener("dragover", (e) => { if (!hasFiles(e) || textField(e.target)) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
-window.addEventListener("drop", (e) => { if (!hasFiles(e) || textField(e.target)) return; e.preventDefault(); const fs = Array.from(e.dataTransfer.files || []); if (fs.length) dropFiles(fs); });
+window.addEventListener("drop", (e) => { if (!hasFiles(e) || textField(e.target)) return; e.preventDefault(); const fs = Array.from(e.dataTransfer.files || []); if (fs.length) (libPanelHas(e.target) ? libImportFiles(fs, null) : dropFiles(fs)); });      // (Round LIB-1 / C, spec 4.9: onto the open library panel, copied into it)
 
 /* ================================================================
    GRADING
@@ -12967,6 +13502,295 @@ function makeSeam(seams, a, b, rev) {
   const id = seams.reduce((m, sm) => Math.max(m, sm.id), 0) + 1;
   return { id, a: A, b: B };
 }
+/* (Round POST8, second session, roadmap 1.T41) AUTO SEWING: lines matched by the patterns themselves, not by where they hang (the
+   third attempt; BETA8-1 / D and POST8 / B matched by 3D distance and failed: an armhole lies nearer the other armhole than the shoulders
+   lie to each other). Our design, not the reference's behaviour (guess post8/7). autoSewPlan() is pure (scripts/auto-sew.js measures it on
+   the shipped examples with their seams taken off: both skirts 7 of 7, the T-shirt 4 of 6, nothing wrong or reversed); autoSewRun() is
+   the 3D toolbar's Auto Sewing and 3D ▸ Sewing ▸ Auto Sewing: the selected patterns (none selected: all), one step, the new seams
+   selected with Edit Sewing in hand so they are seen before simulating. The rules, in order:
+     units    every outline line not sewn yet but a dart's legs (Add Dart sews those), and two lines with only a dart between them as one
+     1:1      two units of two patterns (never one pattern's own two: a sleeve's underarm is left), of one length (AUTOSEW.TOL_MM or
+              TOL_PCT of the longer) and one shape (bend, the sag over the length, within BEND_TOL); refused: two lines that both face down
+              the page (hems, cuffs: the page's down is the 3D down), two patterns of one shape (mirror copies, two sleeves) but along a
+              centre line of both (straight, along the grain, the pattern's whole length), notches that do not line up where both have some
+     1:2      a line of a third pattern as long as two lines that meet (their ends sewn) is sewn to both (a sleeve cap into the front's and
+              back's armholes); while such a line is free, the two are never sewn to each other
+     ends     two lines that run up and down the page are sewn top to top; else the way whose joined corners are (1) one point already,
+              (2) corners from which two lines leave that could be sewn to each other (look-ahead); otherwise not sewn
+     certain  a unit is sewn only to its one best partner (by ends already one point, then score) and only when it is that partner's
+              one best; a tie only between lines the patterns cannot tell apart (SAME_MM, SAME_BEND) is decided by 3D distance, when
+              the garment is arranged and the nearest is clearly nearer (NEAR_RATIO). Rounds until nothing changes (each round's pairs
+              are disjoint, so their order does not matter); a 1:1 whose ends only 3D could tell is never made. */
+const AUTOSEW = { TOL_MM: 3, TOL_PCT: 0.02, BEND_TOL: 0.02, HEM_DEG: 30, NEAR_RATIO: 0.8, TIE: 0.05, NOTCH_MM: 5, SAME_MM: 1, SAME_BEND: 0.005 };
+const asAng = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
+const asD3 = (a, b) => (a && b ? Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) : Infinity);
+// a pattern's units: [{ P, sids, len, bend, n, g, c0, c1 (its end corners "piece:vertex"), p0, p1, m3, a3, b3, notches }]
+function autoSewUnits(P) {
+  const segs = P.segs, n = segs.length, keep = segs.filter(s => !s.leg && !s.sewn), out = [], R = Math.PI/180;
+  const mk = (list) => {
+    const len = list.reduce((s, x) => s + x.len, 0);
+    let nx = 0, ny = 0, bend = 0;
+    for (const s of list) { nx += Math.cos(s.n*R)*s.len; ny += Math.sin(s.n*R)*s.len; bend += s.bend*s.len; }
+    const first = list[0], last = list[list.length - 1], notches = [];
+    const m3 = list.every(s => s.m3) ? [0, 1, 2].map(k => list.reduce((t, s) => t + s.m3[k]*s.len, 0)/len) : null;
+    let at = 0;
+    for (const s of list) { for (const t of s.notches || []) notches.push(at + t*s.len); at += s.len; }
+    return { P: P.id, sids: list.map(s => s.sid), len, bend: bend/len, n: Math.atan2(ny, nx)/R, g: first.g, c0: P.id + ":" + first.i, c1: P.id + ":" + ((last.i + 1) % n),
+      p0: first.p0, p1: last.p1, m3, a3: first.a3, b3: last.b3, notches };
+  };
+  for (const s of keep) out.push(mk([s]));
+  for (let k = 0; k < keep.length; k++) {
+    const a = keep[k], b = keep[(k + 1) % keep.length], gap = (b.i - a.i + n) % n;
+    if (a === b || gap < 2) continue;
+    let legs = true;
+    for (let s = 1; s < gap; s++) if (!segs[(a.i + s) % n].leg) legs = false;
+    if (legs) out.push(mk([a, b]));
+  }
+  return out;
+}
+/* garment: { patterns: [{ id, link, arranged, segs: [{ sid, i, len, bend, n (outward normal on the page, degrees), g (grain), p0, p1,
+   m3, a3, b3 (3D middle and ends, or null), leg, sewn, notches }] }], joined: [[corner, corner]] (corners seams already make one point) }
+   -> { seams: [{ kind, a: [[piece, sids, rev]], b: [...] }], left: the units it could not place } */
+function autoSewPlan(garment, opt) {
+  const o = { ...AUTOSEW, ...(opt || {}) }, R = Math.PI/180, byId = {};
+  for (const P of garment.patterns) byId[P.id] = P;
+  const arranged = garment.patterns.some(P => P.arranged), U = [];
+  for (const P of garment.patterns) for (const u of autoSewUnits(P)) U.push(u);
+  U.forEach((u, k) => { u.k = k; });
+  const tolOf = (a, b) => Math.max(o.TOL_MM, o.TOL_PCT*Math.max(a, b));
+  const congruent = (Pi, Qi) => {
+    const p = byId[Pi], q = byId[Qi];
+    if ((p.link && p.link.of === Qi) || (q.link && q.link.of === Pi)) return true;
+    const L = (x) => x.segs.map(s => s.len).sort((a, b) => a - b), a = L(p), b = L(q);
+    return a.length === b.length && a.every((v, k) => Math.abs(v - b[k]) <= 1);
+  };
+  const extent = (P) => { const gx = Math.cos(P.segs[0].g*R), gy = Math.sin(P.segs[0].g*R); let lo = Infinity, hi = -Infinity; for (const s of P.segs) for (const q of [s.p0, s.p1]) { const t = q[0]*gx + q[1]*gy; lo = Math.min(lo, t); hi = Math.max(hi, t); } return hi - lo; };
+  const centre = (u) => u.bend < 0.002 && Math.min(asAng(u.n, u.g + 90), asAng(u.n, u.g - 90)) <= 5 && u.len >= 0.95*extent(byId[u.P]);
+  const up = new Map(), find = (x) => { while (up.has(x) && up.get(x) !== x) x = up.get(x); return x; }, join = (a, b) => { a = find(a); b = find(b); if (a !== b) up.set(a, b); };
+  const same = (a, b) => find(a) === find(b);
+  for (const [a, b] of garment.joined || []) join(a, b);
+  const used = new Set(), free = (u) => u.sids.every(s => !used.has(u.P + ":" + s)), take = (u) => { for (const s of u.sids) used.add(u.P + ":" + s); };
+  const seams = [];
+  function fits(a, b) {
+    if (a.P === b.P) return null;
+    const tol = tolOf(a.len, b.len), dl = Math.abs(a.len - b.len), db = Math.abs(a.bend - b.bend);
+    if (dl > tol || db > o.BEND_TOL) return null;
+    if (asAng(a.n, 90) <= o.HEM_DEG && asAng(b.n, 90) <= o.HEM_DEG) return null;
+    if (congruent(a.P, b.P) && !(centre(a) && centre(b))) return null;
+    if (a.notches.length && b.notches.length) {
+      if (a.notches.length !== b.notches.length) return null;
+      const A = a.notches.slice().sort((x, y) => x - y), B = b.notches.slice().sort((x, y) => x - y), Br = b.notches.map(t => b.len - t).sort((x, y) => x - y);
+      if (!A.every((t, k) => Math.abs(t - B[k]) <= o.NOTCH_MM) && !A.every((t, k) => Math.abs(t - Br[k]) <= o.NOTCH_MM)) return null;
+    }
+    return 0.6*(1 - dl/tol) + 0.4*(1 - db/o.BEND_TOL);
+  }
+  const leaving = (x, but) => U.filter(u => free(u) && !but.includes(u) && (same(u.c0, x) || same(u.c1, x)));
+  const ahead = (x, y, but) => { const X = leaving(x, but), Y = leaving(y, but); return X.some(u => Y.some(v => fits(u, v) !== null)) ? 1 : 0; };
+  // which way round: the option whose corner pairs are one point already, then the look-ahead; null when nothing tells
+  function endsOf(opts, but) {
+    for (const op of opts) { op.one = op.pairs.filter(([x, y]) => same(x, y)).length; op.look = op.pairs.reduce((s, [x, y]) => s + (same(x, y) ? 0 : ahead(x, y, but)), 0); }
+    const key = (op) => op.one*10 + op.look, top = Math.max(...opts.map(key)), best2 = opts.filter(op => key(op) === top);
+    return best2.length === 1 ? best2[0] : null;
+  }
+  function pair(a, b) {
+    const score = fits(a, b);
+    if (score === null) return null;
+    const vy = (u) => u.p1[1] - u.p0[1], vert = (u) => Math.abs(vy(u)) >= 0.3*Math.hypot(u.p1[0] - u.p0[0], vy(u)), opts = [];
+    for (const rev of [true, false]) {
+      if (vert(a) && vert(b) && ((vy(a) > 0) === (vy(b) > 0)) === rev) continue;
+      opts.push({ rev, pairs: rev ? [[a.c0, b.c1], [a.c1, b.c0]] : [[a.c0, b.c0], [a.c1, b.c1]] });
+    }
+    if (!opts.length) return null;
+    const e = opts.length === 1 ? opts[0] : endsOf(opts, [a, b]);
+    return { a, b, score, e, one: Math.max(...opts.map(op => op.pairs.filter(([x, y]) => same(x, y)).length)), dist: asD3(a.m3, b.m3) };
+  }
+  const oneClass = (list) => list.every(x => list.every(y => Math.abs(x.len - y.len) <= o.SAME_MM && Math.abs(x.bend - y.bend) <= o.SAME_BEND));
+  // (POST8 batch 0c) why the last best() gave nothing: "tie-flat" a tie between look-alikes on a garment not arranged (a symmetric
+  // garment laid flat: every side ties with its mirror), "tie" any other tie
+  let bestWhy = "";
+  function best(list, unitOf) {
+    if (!list.length) return null;
+    list.sort((x, y) => y.one - x.one || y.score - x.score);
+    const top = list.filter(x => x.one === list[0].one && list[0].score - x.score <= o.TIE);
+    if (top.length === 1) return top[0];
+    const alike = oneClass(top.map(unitOf));
+    bestWhy = alike && !arranged ? "tie-flat" : "tie";
+    if (!arranged || !alike) return null;
+    top.sort((x, y) => x.dist - y.dist);
+    return top[0].dist <= o.NEAR_RATIO*top[1].dist ? top[0] : null;
+  }
+  // (POST8 batch 0c) the last round's reason per unit that had a partner and was left: tie-flat, tie, ends (which way round not
+  // known), mutual (its best partner preferred another); a unit with no partner at all (a hem) has none and is not a candidate
+  let why = new Map();
+  const because = (u, r) => { if (!why.has(u.k)) why.set(u.k, r); };
+  const meets = (a, b) => [[a.c0, b.c0], [a.c0, b.c1], [a.c1, b.c0], [a.c1, b.c1]].some(([x, y]) => same(x, y));
+  for (let round = 0; round < 100; round++) {
+    let moved = false;
+    why = new Map();
+    const F = U.filter(free), C = [];
+    for (const c of F) for (const a of F) {
+      if (a.P === c.P) continue;
+      for (const b of F) {
+        if (b.k <= a.k || b.P === c.P || b.P === a.P || Math.abs(a.len + b.len - c.len) > tolOf(c.len, a.len + b.len) || !meets(a, b)) continue;
+        C.push({ c, a, b, one: 0, score: 1 - Math.abs(a.len + b.len - c.len)/tolOf(c.len, a.len + b.len), dist: asD3(c.m3, a.m3) + asD3(c.m3, b.m3) });
+      }
+    }
+    const byC = new Map(), byAB = new Map();
+    for (const x of C) { (byC.get(x.c.k) || byC.set(x.c.k, []).get(x.c.k)).push(x); const k = x.a.k + "," + x.b.k; (byAB.get(k) || byAB.set(k, []).get(k)).push(x); }
+    for (const [ck, list] of byC) {
+      bestWhy = "";
+      const pick = best(list.slice(), (x) => x.a);
+      if (!pick) { because(U[ck], bestWhy || "tie"); continue; }
+      if (best(byAB.get(pick.a.k + "," + pick.b.k).slice(), (x) => x.c) !== pick || !free(pick.c) || !free(pick.a) || !free(pick.b)) { for (const u of [pick.c, pick.a, pick.b]) because(u, "mutual"); continue; }
+      // the two lines as one chain through where they meet (at one end, or both: a loop such as an armhole, cut at either), either way round
+      const { c, a, b } = pick, opts = [], st = ([u, r]) => (r ? u.c1 : u.c0), en = ([u, r]) => (r ? u.c0 : u.c1);
+      for (const ch of [[[a, false], [b, false]], [[b, false], [a, false]], [[a, true], [b, false]], [[a, false], [b, true]]]) {
+        if (!same(en(ch[0]), st(ch[1]))) continue;
+        for (const flip of [false, true]) {
+          const parts = flip ? ch.slice().reverse().map(([u, r]) => [u, !r]) : ch;
+          opts.push({ parts, pairs: [[c.c0, st(parts[0])], [c.c1, en(parts[1])]] });
+        }
+      }
+      const e = endsOf(opts, [c, a, b]);
+      if (!e) { for (const u of [c, a, b]) because(u, "ends"); continue; }
+      take(c); take(a); take(b);
+      for (const [x, y] of e.pairs) join(x, y);
+      seams.push({ kind: "1:2", a: [[c, false]], b: e.parts });
+      moved = true;
+    }
+    for (const x of C) for (const u of [x.c, x.a, x.b]) because(u, why.get(x.c.k) || "tie");      // the lines a 1:2 holds back
+    if (moved) continue;
+    const cand = new Map();
+    for (const a of F) for (const b of F) {
+      if (a === b) continue;
+      const p = pair(a, b);
+      if (!p || U.some(c => free(c) && c.P !== a.P && c.P !== b.P && Math.abs(a.len + b.len - c.len) <= tolOf(c.len, a.len + b.len))) continue;
+      (cand.get(a.k) || cand.set(a.k, []).get(a.k)).push(p);
+    }
+    const choice = new Map();
+    for (const [k, list] of cand) { bestWhy = ""; const p = best(list, (x) => x.b); choice.set(k, p); if (!p) because(U[k], bestWhy || "tie"); }
+    for (const [k, p] of choice) {
+      if (!p) continue;
+      if (!p.e) { because(p.a, "ends"); continue; }
+      if (k > p.b.k) continue;
+      const q = choice.get(p.b.k);
+      if (!q || q.b !== p.a || !free(p.a) || !free(p.b)) { because(p.a, "mutual"); continue; }
+      take(p.a); take(p.b);
+      for (const [x, y] of p.e.pairs) join(x, y);
+      seams.push({ kind: "1:1", a: [[p.a, false]], b: [[p.b, p.e.rev]] });
+      moved = true;
+    }
+    for (const k of cand.keys()) because(U[k], "mutual");
+    if (!moved) break;
+  }
+  const side = (L) => L.map(([u, r]) => [u.P, u.sids, r]);
+  // (POST8 batch 0c) the candidate lines left unsewn, each outline line once: { piece, sid, why }
+  const leftLines = [], seen = new Set();
+  for (const u of U) if (free(u) && why.has(u.k)) for (const sid of u.sids) {
+    const k = u.P + ":" + sid;
+    if (!seen.has(k)) { seen.add(k); leftLines.push({ piece: u.P, sid, why: why.get(u.k) }); }
+  }
+  return { seams: seams.map(s => ({ kind: s.kind, a: side(s.a), b: side(s.b) })), left: U.filter(free).length, leftLines };
+}
+// the garment autoSewPlan() reads, from the patterns given (their outline lines; their 3D places when the 3D window is up)
+function autoSewGarment(ps) {
+  const legs = dartLegs(S.seams, S.pieces), sewn = new Set(), joined = [], ids = new Set(ps.map(p => p.id));
+  for (const sm of S.seams) for (const q of seamParts(sm)) if (!(q.shape || 0)) for (const sid of q.sids) sewn.add(q.piece + ":" + sid);
+  // a seam's two sides' first and last corners are one point (whole lines only)
+  const ends = (L) => {
+    const f = L[0], l = L[L.length - 1], pf = byId(f.piece), pl = byId(l.piece);
+    if (!pf || !pl || (f.shape || 0) || (l.shape || 0)) return [null, null];
+    const v = (p, sid, end) => { const i = segIx(p, sid); return i < 0 ? null : p.id + ":" + ((i + (end ? 1 : 0)) % p.pts.length); };
+    const s0 = f.rev ? (f.t1 >= 1 ? v(pf, f.sids[f.sids.length - 1], true) : null) : (f.t0 <= 0 ? v(pf, f.sids[0], false) : null);
+    const e1 = l.rev ? (l.t0 <= 0 ? v(pl, l.sids[0], false) : null) : (l.t1 >= 1 ? v(pl, l.sids[l.sids.length - 1], true) : null);
+    return [s0, e1];
+  };
+  for (const sm of S.seams) { const A = ends(sm.a), B = ends(sm.b); if (A[0] && B[0]) joined.push([A[0], B[0]]); if (A[1] && B[1]) joined.push([A[1], B[1]]); }
+  const W = (p, q) => {
+    const it = G3.items && G3.items.get(p.id);
+    if (!it || !it.mesh) return null;
+    const c = it.mesh.c;
+    return SIM3D.placePoint(q.x, q.y, p3C(p, c), pieceP3(p, c), [0, 0, 0]);
+  };
+  const patterns = ps.map(p => {
+    let A = 0;
+    for (let i = 0; i < p.pts.length; i++) { const a = p.pts[i], b = p.pts[(i + 1) % p.pts.length]; A += a.x*b.y - b.x*a.y; }
+    const g = grainOf(p), p3 = p.p3 || {};
+    return { id: p.id, link: p.link && ids.has(p.link.of) ? { of: p.link.of, kind: p.link.kind } : null, arranged: !!(p3.pt || (p3.r && Math.abs(p3.r) > 0) || (p3.q && Math.abs(p3.q[3]) < 0.9999)),
+      segs: p.segs.map((s, i) => {
+        const L = segLen(p, i), a = segPt(p, i, 0), b = segPt(p, i, 1), cx = b.x - a.x, cy = b.y - a.y, cl = Math.hypot(cx, cy) || 1;
+        let sag = 0;
+        for (let k = 1; k < 16; k++) { const m = segPt(p, i, k/16), d = Math.abs((m.x - a.x)*cy - (m.y - a.y)*cx)/cl; if (d > sag) sag = d; }
+        let nx = cy/cl, ny = -cx/cl;
+        if (A < 0) { nx = -nx; ny = -ny; }
+        return { sid: s.id, i, len: L, bend: L > 0 ? sag/L : 0, n: Math.atan2(ny, nx)*180/Math.PI, g: Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x)*180/Math.PI,
+          p0: [a.x, a.y], p1: [b.x, b.y], m3: W(p, segPt(p, i, 0.5)), a3: W(p, a), b3: W(p, b), leg: legs.has(p.id + ":" + s.id), sewn: sewn.has(p.id + ":" + s.id),
+          notches: (s.notches || []).map(nT) };
+      }) };
+  });
+  return { patterns, joined };
+}
+/* (POST8 batch 0c, the maintainer's brief) What Auto Sewing left: its candidate lines (a partner was possible, none was sure) marked
+   on the patterns in both windows until the next action (a step, an undo or redo, another tool: autoLeftNow()), told by a thick dashed
+   line on a white rim with a "?" at its middle, never by colour alone. Not document data and not saved: a module variable. */
+let AUTOSEW_LEFT = null;
+const AUTOSEW_COL = "#7a3db8";
+function autoLeftNow() {
+  const L = AUTOSEW_LEFT;
+  if (!L || L.push !== pushCount || L.n !== S.undo.length || L.tool !== S.tool) return null;
+  return L.lines.filter(x => { const p = byId(x.piece); return p && p.on !== false && segIx(p, x.sid) >= 0; });
+}
+const autoLeftPart = (x) => ({ piece: x.piece, shape: 0, sids: [x.sid], t0: 0, t1: 1, rev: false });
+// the message: "Sewed N seams. M lines left unsewn." and, when most were left tied with their mirror on a garment laid flat, the hint
+function autoSewText(n, lines) {
+  const s = (k, w) => k + " " + w + (k === 1 ? "" : "s");
+  let t = "Sewed " + s(n, "seam") + ". " + s(lines.length, "line") + " left unsewn.";
+  if (lines.length && lines.filter(x => x.why === "tie-flat").length*2 > lines.length) t += " Arrange the patterns around the avatar first for better results.";
+  return t;
+}
+function drawAutoLeft() {
+  const L = autoLeftNow();
+  if (!L || !L.length) return;
+  ctx.save(); ctx.lineCap = "butt";
+  for (const x of L) {
+    const part = autoLeftPart(x);
+    ctx.setLineDash([]); drawPart(part, "#ffffff", 8, true);
+    ctx.setLineDash([9, 6]); const X = drawPart(part, AUTOSEW_COL, 4, true); ctx.setLineDash([]);
+    if (X) { const p = byId(x.piece), i = segIx(p, x.sid); lbl("?", toS(segPt(p, i, 0.5)), AUTOSEW_COL, 12); }
+  }
+  ctx.restore();
+}
+function ov3AutoLeft() {
+  const out = [];
+  for (const x of autoLeftNow() || []) { const it = partItem(autoLeftPart(x), AUTOSEW_COL, "thin", [9, 6], true); if (it) out.push(it); }
+  return out;
+}
+// Auto Sewing (the 3D toolbar's, 3D ▸ Sewing): the selected patterns, or all; one step; the new seams selected with Edit Sewing in hand
+// and shown in both windows before anything simulates (a running simulation is stopped first, so nothing pulls an unchecked seam)
+function autoSewRun() {
+  const ps = (S.sel.length ? S.sel.map(byId) : S.pieces).filter(p => p && !p.arch3);
+  AUTOSEW_LEFT = null;
+  if (ps.length < 2) { toast("Auto Sewing: select two patterns or more (none selected: all of them)"); return 0; }
+  if (typeof simHalt === "function") simHalt();
+  const plan = autoSewPlan(autoSewGarment(ps));
+  const mark = () => { AUTOSEW_LEFT = { lines: plan.leftLines, push: pushCount, n: S.undo.length, tool: S.tool }; drawSoon(); if (typeof view3d !== "undefined" && view3d.ready()) view3d.ask(); };
+  const none = () => { mark(); holdToast(autoSewText(0, plan.leftLines)); return 0; };
+  if (!plan.seams.length) return none();
+  push("Auto Sewing");
+  const made = [];
+  const parts = (side) => side.flatMap(([piece, sids, rev]) => (rev ? sids.slice().reverse() : sids).map(sid => ({ piece, shape: 0, sids: [sid], rev })));
+  for (const sm of plan.seams) {
+    const s = makeSeam(S.seams, parts(sm.a), parts(sm.b));
+    if (s) { S.seams.push(s); made.push(s.id); }
+  }
+  if (!made.length) { unpush(); return none(); }
+  setTool("edit_sewing");
+  seamSelSet(made);
+  commit();
+  mark();
+  holdToast(autoSewText(made.length, plan.leftLines) + " The new seams are selected: check them before simulating (Delete takes a wrong one away).");
+  return made.length;
+}
 /* (Round r30 / 4, the maintainer's user test) SYMMETRIC SEWING. On a symmetric pair (a pattern and its Symmetric Pattern copy, which
    share their segments' ids) and on a symmetric unfold (whose mirrored half's segments are half.map's), a seam made on one side
    is made on the other too, and the two are tied: seam.mir is the other's id, on both. A part is mirrored onto the partner pattern
@@ -12979,7 +13803,7 @@ function makeSeam(seams, a, b, rev) {
      deleted  a tied seam deleted (its patterns still there) takes its mirror with it; one whose pattern went is untied
    Unlink Symmetric Sewing (Edit Sewing's menu) unties a pair: each stays as it is. A file from before has no tie and nothing
    changes in it until a seam is made or edited. One undo step: what the pass does belongs to the step that caused it. */
-const MIR_KEYS = ["off", "hide", "turned", "foldAngle", "foldStrength", "tension", "sub", "line3", "rips"];
+const MIR_KEYS = ["off", "hide", "turned", "foldAngle", "foldStrength", "press" /* (run 14d: Press ▸ Pressed Open) */, "tension", "sub", "line3", "rips"];
 let mirSeen = new Map(), mirPush = -1;
 // the partner of pattern p in a symmetric pair, or null (one copy only: with several the mirror is not known)
 function symPartner(p) {
@@ -13114,7 +13938,9 @@ function loadSeams(list, pieces) {
       ...(Number.isFinite(sm.tension) && sm.tension > 0 ? { tension: Math.min(SEAM_TENSION_MAX, sm.tension) } : {}), ...(sm.sub === true ? { sub: true } : {}),
       ...(normLine3(sm.line3) ? { line3: normLine3(sm.line3) } : {}),
       // (Round FIX-4 / A) its rips: stretches left open (normRips())
-      ...(normRips(sm.rips).length ? { rips: normRips(sm.rips) } : {}) }))
+      ...(normRips(sm.rips).length ? { rips: normRips(sm.rips) } : {}),
+      // (run 14d) Pressed Open; (run 15, FREEZE-1: found by the golden files) it was written but not read back, so it was lost on opening
+      ...(sm.press === "open" && !sm.turned && (!Number.isFinite(sm.foldAngle) || sm.foldAngle === 180) ? { press: "open" } : {}) }))
     .filter(sm => sm.a.length && sm.b.length), pieces);
 }
 
@@ -13678,7 +14504,8 @@ function editSewMenu(x, y, sx, sy) {
       { n: "Hide Sewing (Selected)", f: () => hideSewing(sm) },
       S.seams.some(x => x.hide) ? { n: "Show Sewing (All)", f: showAllSewing } : { n: "Show Sewing (All)", off: true, note: "none hidden", f: () => toast("No sewing line is hidden") }, { sep: 1 },
       { n: "Link Line", f: () => seamLinkLine(sm) },
-      ...ctxMore([sm.a.length + sm.b.length > 2 && { n: "Unlink M:N Sewing", f: () => unlinkSewing(sm) },
+      ...ctxMore([!sm.zip && { n: (S.pipings || []).some(t => t.seam === sm.id) ? "Edit Piping…" : "Piping…", f: () => { const t = (S.pipings || []).find(x => x.seam === sm.id) || null; if (t) trimSelect("piping", t.id); pipingDialog(sm.id, t, { x, y }); } },      // (Round PIPE-1)
+        sm.a.length + sm.b.length > 2 && { n: "Unlink M:N Sewing", f: () => unlinkSewing(sm) },
         sm.mir !== undefined && { n: "Unlink Symmetric Sewing", h: "Unlink Symmetric Sewing", f: () => unlinkSymSewing(sm) }, ...checks]));      // (Round r30 / 4)
   } else I.push(...(S.seams.some(x => x.hide) ? [{ n: "Show Sewing (All)", f: showAllSewing }, { sep: 1 }] : []), ...checks);
   listMenu(I, x, y);
@@ -14305,8 +15132,7 @@ function traceToInternal() {
    The table is made at the first key or menu, when everything it names exists. */
 const KEY_SECTIONS = ["Tools", "File", "Edit", "View", "3D window", "With the pointer over the 3D window", "Print Layout", "While working", "Kept for what is not built yet"];
 // keys that wait for a command that is not built yet: pressed, each says so, as the key of a tool that is not built does
-const KEYS_KEPT = [["O", "Colorway"],
-  ["Shift+P", "Show Scene and Props"],
+const KEYS_KEPT = [["Shift+P", "Show Scene and Props"],      // (Round CW-1 / B: O is the Colorway Editor's, built)
 
   ...RENDER3_ALL.filter(r => !r[3] && r[2]).map(r => [r[2], r[1] + " (3D window)"])];
 let KEYS = null;
@@ -14381,6 +15207,7 @@ function keyTable() {
   // (Round H1c / A) the History panel: D, a key of its own (Shift+H turns patterns half round over the 3D window; U is Link Lines;
   // O waits for Colorway, as the reference has it). It was U, giving way to Link Lines, in Round H1b
   row("historyPanel", "D", "History panel", "View", () => setTimeline(!S.ui.timeline));
+  row("colorway", "O", "Colorway Editor", "View", () => colorwayEditor(!(CWED.open && CWED.front)));      // (Round CW-1 / B, as the reference has it)
   row("linkLines", "U", "Edit Pattern: link the selected lines", "Edit", () => linkSelected(), { when: () => !KEYMAP.U && S.tool === "edit_pattern", pass: 1 });
   // View
   row("zoomSel", "F", "Zoom to the selection, or to fit (in 3D: Focus Zoom on the selected patterns)", "View", () => (S.over3d && sel3(true).length ? focusZoom3() : focusZoom()), { pass: 1 });
@@ -14420,6 +15247,9 @@ function keyTable() {
   row("layPrint", "Ctrl+P", "Print", "Print Layout", () => layoutCmd("print"), { w: "layout" });
   row("layFit", "F", "Fit the sheet to the window", "Print Layout", () => layoutFit(), { w: "layout", pass: 1 });
   // (Round r25 / 3) Manual Nesting's Nudge Move and Switch Selection (the nudge also without it, freely)
+  // (Round UV-1 / B) with the pointer over the UV Editor the arrow keys are Move UV's, by its Distance
+  for (const k of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) row("uvNudge", k, "UV Editor: move the selected UVs by the Distance", "While working", () => uvNudge(k.slice(5).toLowerCase()),
+    { when: () => !!(UVED.open && UVED.front && UVED.over), l: 1, as: "Arrow keys", alias: k !== "ArrowLeft" });
   for (const k of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) {
     row("layNudge", k, "Move the selected pattern 1 mm (with Manual Nesting it stops at the next one)", "Print Layout", (e) => layManualKey(e), { w: "layout", when: () => !!S.laySel, hist: "Nudge on Layout", as: "Arrow keys", alias: k !== "ArrowLeft" });
     row("laySwitch", "Shift+" + k, "Select the next pattern that way", "Print Layout", (e) => layManualKey(e), { w: "layout", when: () => !!S.laySel, as: "Shift+Arrow keys", alias: k !== "ArrowLeft" });
@@ -14432,7 +15262,7 @@ function keyTable() {
     else if (S.tool === "transform_pattern") scaleNumeric(at);
   }, { l: 1 });
   row("enter", "Enter", "Finish (a line, a seam side, a walk, Smooth Curve)", WORK, () => keyEnter(), { l: 1, pass: 1 });
-  row("escape", "Escape", "Give up what is being done", WORK, () => { if (gizEsc()) return; if (typeof foldEsc === "function" && foldEsc()) return; if (S.noteLink) { S.noteLink = null; draw(); return toast("Link to given up"); } if (typeof ikEsc === "function" && ikEsc()) return; if (G3.tackFrom) { G3.tackFrom = null; note3d(); tackLiveEnd(); } if (S.layTape) layTape(false); S.replace = null; S.rotAxis = null; S.pickPoly = null; if (S.bgMode) { S.bgMode = null; ui(); } S.place = null; S.draft = null; S.walk = null; S.pleatPick = null; S.blockDraft = null; S.sticker = null; S.subPick = null; S.ripFrom = null; hideMenu(); closeFlyouts(); draw(); }, { l: 1, pass: 1, w: "any" });      // (Round r13 / 9: in Print Layout too, where it stops the Tape Measure)
+  row("escape", "Escape", "Give up what is being done", WORK, () => { if (gizEsc()) return; if (typeof foldEsc === "function" && foldEsc()) return; if (typeof penKey === "function" && penKey("escape")) return; if (S.noteLink) { S.noteLink = null; draw(); return toast("Link to given up"); } if (typeof ikEsc === "function" && ikEsc()) return; if (G3.tackFrom) { G3.tackFrom = null; note3d(); tackLiveEnd(); } if (S.layTape) layTape(false); S.replace = null; S.rotAxis = null; S.pickPoly = null; if (S.bgMode) { S.bgMode = null; ui(); } S.place = null; S.draft = null; S.walk = null; S.pleatPick = null; S.blockDraft = null; S.sticker = null; S.subPick = null; S.ripFrom = null; if (S.laceDraft) { S.laceDraft = null; if (view3d.ready()) { showTrims3(); view3d.ask(); } } hideMenu(); closeFlyouts(); draw(); }, { l: 1, pass: 1, w: "any" });      // (Round r13 / 9: in Print Layout too, where it stops the Tape Measure)
   row("delete", "Delete", "Delete what is selected; while drawing, the last point", WORK, () => keyDelete(), { l: 1, hist: "Delete" });
   row("delete", "Backspace", "Delete", WORK, () => keyDelete(), { l: 1, hist: "Delete", alias: 1 });
   for (const k of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) row("nudge", k, "Transform Pattern: move the selection 1 mm (Shift: 10 mm). Edit Pattern with a size picked: move the grading", WORK, (e) => keyArrow(e),
@@ -14731,7 +15561,7 @@ function cardPx() {
   return CARD_PX;
 }
 // the largest side of a 3D picture here: the browser's limit, and the card's
-const pxMax3 = () => Math.min(pxMax(), cardPx());
+const pxMax3 = () => Math.min(pxMax(), cardPx(), (S.prefs && S.prefs.renderMax) || Infinity);      // (POST8 FIX-7 / C: and Graphic Options' Maximum Image Resolution)
 // what holds it: "card" when the graphics card is the lower limit (the desktop app would not help), else "browser" or "" (the desktop app's own)
 const pxWhy3 = () => (cardPx() <= pxMax() ? "card" : noLimits() ? "" : "browser");
 // the line beside a picture's size fields: the lock in a browser, the card's limit wherever it holds
@@ -14746,6 +15576,8 @@ function keyEnter() {
   if (S.bgMode && S.bgMode.k === "edit") { S.bgMode = null; ui(); draw(); return; }      // (Round UI-1e / D) editing the background image ends
   if (S.replace) { if (S.replace.src != null && S.replace.pairs.length) replaceDone(); else toast("Match at least one point first"); return; }
   if (sewKey("Enter")) return;
+  if (S.laceDraft && S.tool === "lacing") return void laceFinish();      // (POST8 FIX-4b)
+  if (typeof penKey === "function" && penKey("enter")) return;      // (run 14c, 1.T45) a line on the avatar ends
   if (S.dartCap) { S.dartCap = null; S.selCp = null; setTool("edit_pattern"); toast("The dart cap is done"); return; }
   if (S.tool === "smooth_curve" && smoothDone()) return;
   if (S.tool === "pleats") return void pleatDialog({ x: window.innerWidth/2 - 160, y: 120 });
@@ -14759,6 +15591,8 @@ function keyDelete() {
   const d = S.draft;
   if (S.replace) { const R = S.replace; if (R.pending != null) R.pending = null; else if (R.pairs.length) R.pairs.pop(); else R.src = null; draw(); return; }      // (Round r12 / 5) the last click back
   if (sewKey("Delete")) return;
+  if (S.tool === "lacing" && typeof laceBack === "function" && laceBack()) return;      // (POST8 FIX-4b) the last eyelet back
+  if (typeof penKey === "function" && penKey("delete")) return;      // (run 14c, 1.T45) a pen's last point, or the selected line / point
   if (typeof tackDeleteSel === "function" && tackDeleteSel()) return;
   if (S.tool === "edit_rip" && ripDelete()) return;      // (Round FIX-4 / A) the selected rip
   if (typeof measDeleteSel === "function" && measDeleteSel()) return;
@@ -15147,7 +15981,8 @@ const fmtDeg = (a) => (Math.round(a*10)/10) + "°";
    foldStrength. The solver folds across the seam once its stitches have closed (SIM3D seamBends()). */
 const seamFoldOf = (sm) => ({ turned: !!sm.turned, angle: Number.isFinite(sm.foldAngle) ? sm.foldAngle : 180, strength: Number.isFinite(sm.foldStrength) ? sm.foldStrength : FOLD_STRENGTH });
 // what the solver gets: { a: the angle, k: its stiffness } or null for a flat seam
-function seamFold(sm) { const f = seamFoldOf(sm); return f.turned || f.angle === 180 ? null : { a: f.angle, k: FOLD_K*f.strength }; }
+// (run 14d) a seam pressed open (`press: "open"`, Press ▸ Pressed Open) is held flat (180°) at its strength; any other seam at 180 folds nothing
+function seamFold(sm) { const f = seamFoldOf(sm); return f.turned || (f.angle === 180 && sm.press !== "open") ? null : { a: f.angle, k: FOLD_K*f.strength }; }
 function setSeamFold(sms, o) {
   const L = (Array.isArray(sms) ? sms : [sms]).filter(Boolean);
   if (!L.length) return;
@@ -15157,6 +15992,7 @@ function setSeamFold(sms, o) {
     if (f.turned) sm.turned = true; else delete sm.turned;
     const a = Math.max(0, Math.min(360, Math.round(+f.angle*10)/10 || 0)), k = Math.max(0, Math.min(100, +f.strength || 0));
     if (a === 180) delete sm.foldAngle; else sm.foldAngle = a;
+    if (a !== 180 || f.turned) delete sm.press;      // (run 14d) a seam given another angle, or Turned, is no longer pressed open
     if (k === FOLD_STRENGTH) delete sm.foldStrength; else sm.foldStrength = k;
   }
   commit();
@@ -16864,11 +17700,12 @@ function modalKey(e) {
 function bootPieces() { return []; }
 // a new, empty document with every document setting at its default (the view, the preferences and the avatar are not the document's)
 function blankDoc() {
+  NEWER = null;                                              // (run 16)
   S.known3 = null; S.home3 = null;
-  S.render = null; S.renderSet = false; S.histOn = histNewOn(); S.hgroups = []; S.pieces = []; S.seams = []; S.stitches = []; S.puckers = []; S.lineLinks = []; S.selMore = []; S.guides = []; S.measures = []; S.tacks = []; S.buttons = []; S.pipings = []; S.bindings = []; S.glues = []; S.selTrim = null; S.images = []; S.backdrop = null; S.avedit = normAvEdit(null); S.bgMode = null; S.lights = [];
+  S.render = null; S.renderSet = false; S.histOn = histNewOn(); S.hgroups = []; S.pieces = []; S.seams = []; S.stitches = []; S.puckers = []; S.lineLinks = []; S.selMore = []; S.guides = []; S.measures = []; S.tacks = []; S.buttons = []; S.pipings = []; S.bindings = []; S.glues = []; S.lacings = []; S.colorways = null; S.laceDraft = null; S.selTrim = null; S.images = []; S.backdrop = null; S.avedit = normAvEdit(null); S.bgMode = null; S.lights = [];
   S.notch = normNotch(null); S.grading = defaultGrading(); S.lib = normLib(null); S.layout = normLayout(null); S.cloth = normCloth(null); S.drapeIn = null;
   G3.look = null; S.states3 = [];
-  S.docAv = null; S.docAvAsk = false; S.docAvTried = false; S.docAvFile = null; S.avEmbed = null; S.garMeas = []; S.docPose = null;
+  S.docAv = null; S.docAvAsk = false; S.docAvTried = false; S.docAvFile = null; S.avEmbed = null; S.garMeas = []; S.docPose = null; G3.pencil = { strokes: [] }; G3.pencilCur = null;
   avatarOwnBack();
   avatarNone();                                              // a new document starts with no avatar
   S.nextId = 1;
@@ -17115,11 +17952,11 @@ function histPack(max, bin, apart) {
 }
 // the file versions whose saved history this build can replay: a step holds whole patterns, and 12 to 15 changed nothing in them
 // that can't be read with its defaults
-const HIST_FV = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36];
+const HIST_FV = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
 // a state of a file's history in parts, as the session keeps them; prev: the parts of the state it is to share its unchanged parts with
 function histPartsOf(s, prev) {
   histLast = prev || null;
-  return histState({ pieces: s.pieces, seams: s.seams || [], lib: s.lib, layout: s.layout, stitches: s.stitches || [], guides: s.guides || [], measures: s.measures || [], grading: s.grading, links: s.links || [], tacks: s.tacks || [], buttons: s.buttons || [], pipings: s.pipings || [], bindings: s.bindings || [], glues: s.glues || [], backdrop: s.backdrop || null, avedit: normAvEdit(s.avedit), lights: normLights(s.lights), ...(Array.isArray(s.puckers) && s.puckers.length ? { puckers: s.puckers } : {}), ...(Array.isArray(s.home) && s.home.length === 2 && s.home.every(Number.isFinite) ? { home: s.home } : {}), ...(Array.isArray(s.hgroups) && s.hgroups.length ? { hgroups: s.hgroups } : {}) });      // (Round r21 / 1: the puckering was left out, so undo after opening took it away)
+  return histState({ pieces: s.pieces, seams: s.seams || [], lib: s.lib, layout: s.layout, stitches: s.stitches || [], guides: s.guides || [], measures: s.measures || [], grading: s.grading, links: s.links || [], tacks: s.tacks || [], buttons: s.buttons || [], pipings: s.pipings || [], bindings: s.bindings || [], glues: s.glues || [], backdrop: s.backdrop || null, avedit: normAvEdit(s.avedit), lights: normLights(s.lights), ...(Array.isArray(s.puckers) && s.puckers.length ? { puckers: s.puckers } : {}), ...(Array.isArray(s.home) && s.home.length === 2 && s.home.every(Number.isFinite) ? { home: s.home } : {}), ...(Array.isArray(s.hgroups) && s.hgroups.length ? { hgroups: s.hgroups } : {}), ...(Array.isArray(s.lacings) && s.lacings.length ? { lacings: s.lacings } : {}), ...(s.colorways ? { colorways: normColorways(s.colorways) } : {}) });      // (Round r21 / 1: the puckering was left out, so undo after opening took it away)
 }
 /* (Round H1c / A) A node's cloth from a file is read only when it is wanted (going to that step, a save): at opening the snapshot is only
    named (G3.poolLazy: id -> { c, bin }, the file's bytes kept as they came), and poolGet() makes it a drape snapshot the first time.
@@ -17220,7 +18057,7 @@ function histTake(h) {
   histMade = []; hgAsk = null;
 }
 // no history at all: the tree's stores emptied too
-function histNone() { S.undo = []; S.redo = []; S.un = []; S.rn = []; S.hoff = new Map(); S.hsave = new Map(); S.hui = {}; S.hlane = {}; S.hjump = {}; histMade = []; hgAsk = null; }
+function histNone() { S.undo = []; S.redo = []; S.un = []; S.rn = []; S.hoff = new Map(); S.hsave = new Map(); S.hui = {}; S.hlane = {}; S.hjump = {}; histMade = []; hgAsk = null; AV_POOL.clear(); AV_NOW = undefined; AV_WANT = undefined; }
 function clearHistory() {
   histFit();
   const n = S.undo.length + S.redo.length + S.hoff.size;
@@ -17238,7 +18075,15 @@ function histKeepDialog(at) {
 
 /* ---- the drape, in the file ---- */
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+// (POST8 batch 0k) through the page's btoa where there is one, in pieces, and a table for the way back: a high dynamic range picture is tens of
+// megabytes, which the old loops took seconds over (the same text either way)
+const B64_AT = (() => { const t = new Int16Array(128).fill(-1); for (let i = 0; i < 64; i++) t[B64.charCodeAt(i)] = i; return t; })();
 function b64Of(bytes) {
+  if (typeof btoa === "function" && bytes.length > 3*4096 && typeof bytes.subarray === "function") {
+    const part = [];
+    for (let i = 0; i < bytes.length; i += 3*8192) part.push(btoa(String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + 3*8192)))));
+    return part.join("");
+  }
   let out = "";
   for (let i = 0; i < bytes.length; i += 3) {
     const a = bytes[i], b = i + 1 < bytes.length ? bytes[i+1] : 0, c = i + 2 < bytes.length ? bytes[i+2] : 0;
@@ -17250,8 +18095,8 @@ function bytesOf(s) {
   const n = s.length, pad = s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0, out = new Uint8Array(n/4*3 - pad);
   let o = 0;
   for (let i = 0; i < n; i += 4) {
-    const v = [0, 1, 2, 3].map(k => Math.max(0, B64.indexOf(s[i+k])));
-    const w = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
+    const v = (k) => { const c = s.charCodeAt(i + k); return c < 128 && B64_AT[c] > 0 ? B64_AT[c] : 0; };
+    const w = (v(0) << 18) | (v(1) << 12) | (v(2) << 6) | v(3);
     if (o < out.length) out[o++] = (w >> 16) & 255;
     if (o < out.length) out[o++] = (w >> 8) & 255;
     if (o < out.length) out[o++] = w & 255;
@@ -17317,6 +18162,7 @@ function drapeApply(id) {
 }
 // after undo or redo: the drape the step names, once the cloth is up to date with the document
 function drapeBack() {
+  if (typeof avBack === "function") avBack();
   const id = S.drapeWant;
   S.drapeWant = null;
   // (Round H1 / 1) a step whose cloth was not kept (in a file: only Save States and branch points keep theirs; in the session the oldest
@@ -17809,7 +18655,51 @@ function noteDialog(at, p, nt, pos) {
 /* Settings: units and decimals, snapping, and every colour of the 2D window. They are
    preferences (per browser), except the notch colour, which belongs to the document
    because it is printed. Changes show at once; Cancel puts them back. */
-const SET_PAGES = [["ui", "User Interface"], ["view", "View Controls"], ["keys", "Shortcuts"], ["2d", "2D"], ["3d", "3D"], ["other", "Other"]], SET_PAGE = { now: "ui" };
+const SET_PAGES = [["gfx", "Graphic Options"] /* (POST8 FIX-7 / C) */, ["ui", "User Interface"], ["view", "View Controls"], ["keys", "Shortcuts"], ["2d", "2D"], ["3d", "3D"], ["other", "Other"], ["files", "Default Files"] /* (POST8 FIX-7 / C) */], SET_PAGE = { now: "ui" };
+/* (POST8 FIX-7 / C, roadmap 3.A20) Default Files ▸ Project File: a .pdraft that File ▸ New Project starts from, as a new unsaved project
+   without its history. Kept on this computer (pdraft:defproject: its name and bytes), never in a document; in a browser at most
+   DEFPROJ_MAX bytes (localStorage), any size in the desktop app. Guess post8/34. */
+const DEFPROJ_KEY = "pdraft:defproject", DEFPROJ_MAX = 3*1024*1024;
+function defProj() { try { const o = JSON.parse(kv().getItem(DEFPROJ_KEY) || "null"); return o && typeof o.name === "string" && typeof o.data === "string" ? o : null; } catch (e) { return null; } }
+const defProjName = () => { const o = defProj(); return o ? o.name : ""; };
+// keep a file's bytes as the default project (null: none); "" when kept, else why not
+function defProjSet(name, bytes) {
+  if (!name) { try { kv().removeItem(DEFPROJ_KEY); } catch (e) {} return ""; }
+  if (!DESK && bytes.length > DEFPROJ_MAX) return "Only in the desktop app: a default project over " + Math.round(DEFPROJ_MAX/1048576) + " MB is too large for a browser to keep";
+  try { kv().setItem(DEFPROJ_KEY, JSON.stringify({ name: String(name).slice(0, 200), data: b64Of(bytes) })); return ""; } catch (e) { return "It could not be kept here (" + (e.message || e) + ")"; }
+}
+function defProjChoose(done) {
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".pdraft,.json";
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const bytes = new Uint8Array(rd.result);
+      readDocBytes(f.name, bytes, (err) => {
+        if (err) return toast("Couldn't use " + f.name + ": " + err, 6000);
+        const why = defProjSet(f.name, bytes);
+        toast(why || "New Project now starts from " + f.name, why ? 6000 : 3000);
+        if (done) done();
+      });
+    };
+    rd.readAsArrayBuffer(f);
+  };
+  inp.click();
+}
+// File ▸ New Project with a default project: it opened as a new, unsaved project with no history; false if there is none or it cannot be read
+function defProjOpen() {
+  const o = defProj();
+  if (!o) return false;
+  readDocBytes(o.name, bytesOf(o.data), (err, d) => {
+    if (err || !d) { toast("The default project " + o.name + " could not be read (" + (err || "?") + "): a blank one instead. Settings ▸ Default Files", 8000); blankDoc(); commit(); fitAll(); markClean(); if (DESK) setFile(null); return histNewAsk(); }
+    delete d.history; delete d.histCloth;
+    openLoaded(o.name, d, null, true);
+    markClean(); if (DESK) setFile(null);
+    toast("New project from " + o.name + " (Settings ▸ Default Files)");
+    histNewAsk();
+  });
+  return true;
+}
 // the Shortcuts page: every row whose key can be changed, by its section; a click on a key waits for the new one
 function keyPageHTML() {
   const rows = keyTable().filter(r => keyEditable(r) && (!r.desk || DESK) && (S.ui.unbuilt || !r.nb)), secs = [];
@@ -17886,6 +18776,25 @@ function settingsDialog(at) {
   // online pages have nothing here: left out)
   const pg = (k) => '</div><div class="spage" data-page="' + k + '"' + (k === SET_PAGE.now ? '' : ' style="display:none"') + '>';
   dlg.innerHTML = '<div class="dt">Settings</div><div class="db"><div class="facetabs" role="tablist">' + SET_PAGES.map(([k, n]) => '<button type="button" role="tab" class="ftab' + (k === SET_PAGE.now ? ' on' : '') + '" aria-selected="' + (k === SET_PAGE.now) + '" data-spage="' + k + '">' + n + '</button>').join("") + '</div><div>' +
+    // (POST8 FIX-7 / C, roadmap 3.A20) Graphic Options and Default Files, as the reference's pages have them where this program has something
+    // behind a row (W30): Normal Blending and Transparency Rendering Method (one way each here), the avatar permission files, the texture and
+    // AI/PDF and Substance rows are left out; Save with Thumbnail waits for the library panel (LIB-1), which shows thumbnails
+    pg("gfx") +
+    '<h3>Antialiasing</h3>' +
+    '<div class="df"><label>Antialiasing</label><select data-p="aa">' + opt("on", P0.aa, "On (the graphics card's own)") + opt("off", P0.aa, "Off") + '</select></div>' +
+    '<div class="hint">Smooths the 3D window\'s edges. Off can help a slow graphics card. Takes effect when Gusset starts again.</div>' +
+    '<h3>Image Resolution Setting</h3>' +
+    '<div class="df"><label>Set Maximum Image Resolution for Rendering</label><select data-p="renderMax">' + opt("", P0.renderMax || "", "As large as allowed here (" + pxMax() + " × " + pxMax() + ")") +
+      RENDER_MAXES.filter(n => n < pxMax()).map(n => opt(n, P0.renderMax || "", n + " × " + n + " pixels")).join("") + '</select></div>' +
+    '<div class="hint">The largest render or 3D snapshot, side by side. This graphics card draws at most ' + cardPx() + ' pixels a side, whatever is set here.</div>' +
+    pg("files") +
+    '<h3>Project</h3>' +
+    '<div class="df"><label>Project File</label><span id="set-defproj">' + esc(defProjName() || "None: New Project starts blank") + '</span> <button type="button" class="btn" id="set-defproj-pick" title="File ▸ New Project starts from this file">\u{1F4C1}</button> <button type="button" class="btn" id="set-defproj-x" title="Back to a blank project">↻</button></div>' +
+    '<div class="hint">File ▸ New Project opens this .pdraft as a new, unsaved project (its patterns, sewing, fabrics and avatar; not its history). Kept on this computer.</div>' +
+    // (Round LIB-1 / C, spec 4.2) Save with Thumbnail (PNG)
+    '<h3>Thumbnail</h3>' +
+    '<label class="lk"><input type="checkbox" data-p="libThumb"' + (P0.libThumb !== false ? ' checked' : '') + '> Save with Thumbnail (PNG): a garment saved to the library keeps a picture of it (the 3D view when it is draped, else its patterns)</label>' +
+    (DESK ? '<label class="lk"><input type="checkbox" data-p="thumbBeside"' + (P0.thumbBeside ? ' checked' : '') + '> Also write the picture beside a saved project (<i>name</i>.png next to <i>name</i>.pdraft)</label>' : '') +
     pg("ui") +
     '<h3>Units</h3>' +
     '<div class="df"><label>Unit</label><select data-p="unit">' + opt("mm", P0.unit, "Millimeters") + opt("cm", P0.unit, "Centimeters") + opt("in", P0.unit, "Inches") + '</select></div>' +
@@ -17910,8 +18819,15 @@ function settingsDialog(at) {
     pg("3d") +
     '<h3>3D window</h3>' +
     '<div class="df"><label>Gizmo size</label><select data-p="gizmo">' + GIZ_SIZES.map(([k, n, px]) => opt(k, P0.gizmo, n + " (" + px + " px)")).join("") + '</select></div>' +
+    // (Round PULL-3c) Pull Strength: a slider from PULL_MIN to PULL_SAFE (never above: past it a garment can be pulled off the body)
+    '<h3>Simulation</h3>' +
+    '<div class="df"><label for="set-pull">Pull Strength</label><input type="range" id="set-pull" data-p="pullN" min="' + PULL_MIN + '" max="' + PULL_SAFE + '" step="0.1" value="' + pullN() + '" aria-describedby="set-pull-h"> <span id="set-pull-v">' + pullN().toFixed(1) + ' N</span></div>' +
+    '<div class="hint" id="set-pull-h">How strongly the mouse pulls cloth while simulating (default ' + PULL_DEFAULT.toFixed(1) + ' N). The strongest setting still never pulls a garment off the avatar.</div>' +
     // (Round r24) the desktop app's only: whether it asks for a newer version at the start
-    pg("other") + (DESK && DESK.updates ? '' : '<div class="hint">Nothing to set here in a browser.</div>') +
+    pg("other") +
+    // (Round CW-1 / C, W-US: Other ▸ Colorway) a material changed on an item that is each colorway's own: this colorway only, all of them, or asked
+    '<h3>Colorway</h3><div class="df"><label>A color or material changed</label><select data-p="cwAssign">' + opt("ask", P0.cwAssign, "Assign to Current Colorway Only (offer All)") + opt("current", P0.cwAssign, "Assign to Current Colorway Only") + opt("all", P0.cwAssign, "Assign to All Colorways") + '</select></div>' +
+    '<div class="hint">Only with two or more colorways (Production ▸ Colorway), for a fabric, button, buttonhole or topstitch that is each colorway’s own. "Offer All" changes the current colorway and shows a button to give the change to every colorway.</div>' +
     (DESK && DESK.updates ? '<h3>Updates</h3><label class="lk"><input type="checkbox" data-p="updateCheck"' + (P0.updateCheck !== false ? ' checked' : '') + '> Check for updates on start: asks where the versions are published whether a newer one is out (nothing else is sent; Help \u25b8 Check for Updates\u2026 asks at any time)</label>' : '') +
     pg("ui2") + '<h3>Colors</h3><table>' +
     COLORS.map(([k, name]) => '<tr><td>' + name + '</td><td><input type="color" data-col="' + k + '" value="' + P0.colors[k] + '"></td></tr>').join("") +
@@ -17929,9 +18845,16 @@ function settingsDialog(at) {
   dlg.querySelectorAll("[data-spage]").forEach(b => { b.onclick = () => showPage(b.dataset.spage); });
   showPage(SET_PAGE.now);
   keyPageWire();
+  // (POST8 FIX-7 / C) Default Files ▸ Project File: chosen or reset at once (a file is no field of the box)
+  const dp = () => { const s = dlg.querySelector("#set-defproj"); if (s) s.textContent = defProjName() || "None: New Project starts blank"; };
+  const dpPick = dlg.querySelector("#set-defproj-pick"), dpX = dlg.querySelector("#set-defproj-x");
+  if (dpPick) dpPick.onclick = () => defProjChoose(dp);
+  if (dpX) dpX.onclick = () => { defProjSet(null); dp(); toast("New Project starts blank again"); };
   const read = () => {
-    const o = { colors: {}, keys: { ...((S.prefs && S.prefs.keys) || {}) } };
-    dlg.querySelectorAll("[data-p]").forEach(el => { const k = el.dataset.p; o[k] = el.type === "checkbox" ? el.checked : k === "unit" || k === "gizmo" ? el.value : numOf(el.value); });
+    // (POST8 FIX-7 / C) from the preferences as they are: those the box does not show (the tool set, Simulation Quality, History for New
+    // Projects, …) were set back to their defaults by any change made here
+    const o = { ...S.prefs, colors: {}, keys: { ...((S.prefs && S.prefs.keys) || {}) } };
+    dlg.querySelectorAll("[data-p]").forEach(el => { const k = el.dataset.p; o[k] = el.type === "checkbox" ? el.checked : k === "unit" || k === "gizmo" || k === "aa" ? el.value : numOf(el.value); });
     dlg.querySelectorAll("[data-col]").forEach(el => { o.colors[el.dataset.col] = el.value; });
     const nc = dlg.querySelector("[data-notch]");
     if (nc && /^#[0-9a-fA-F]{6}$/.test(nc.value)) S.notch.color = nc.value;
@@ -17946,7 +18869,7 @@ function settingsDialog(at) {
     if (view3d.ready()) note3d();
   };
   viewShown();
-  dlg.onchange = read; dlg.oninput = (e) => { if (e.target && e.target.type === "color") read(); };
+  dlg.onchange = read; dlg.oninput = (e) => { if (e.target && e.target.type === "color") read(); if (e.target && e.target.id === "set-pull") { const s = dlg.querySelector("#set-pull-v"); if (s) s.textContent = (+e.target.value).toFixed(1) + " N"; } };
   const close = () => { dlg.oninput = null; hideDlg(); if (view3d.ready()) note3d(); };
   dlg.querySelector("#dlg-ok").onclick = () => { read(); savePrefs(); close(); store(); };
   dlg.querySelector("#dlg-def").onclick = () => { S.prefs = normPrefs(null); S.notch.color = NOTCH_DEFAULT.color; applyPrefs(); savePrefs(); close(); ui(); draw(); store(); toast("Settings are back to their defaults"); };
@@ -19528,6 +20451,14 @@ function showMenu(e, force) {
         !many && s.curved && !isSpline(s) && { n: "Convert to Curve Points", f: () => { push(); toCurvePoints(sh, h.i); commit(); toast("Now a curve through " + s.cps.length + " curve points, the same shape to within " + CURVE_FIT + " mm"); } },
         !many && isSpline(s) && { n: "Convert to Handle Curve", f: () => { push(); toHandles(sh, h.i); commit(); } },      // (Round r30 / 2: kept, asked for by name; Curve Grading needs it)
         !many && s.curved && !isSpline(s) && !p.link && { n: "Curve Grading…", f: () => curveGradeNumeric(at, p, sh, h.i) },
+        // (Round PIPE-1) a free outline line's binding, as the 3D Binding tool makes it
+        !many && sh === p && !segSewn(p, s.id) && { n: bindingOn(p, h.i) ? "Edit Binding…" : "Binding…", f: () => {
+          const t = bindingOn(p, h.i);
+          if (t) { trimSelect("binding", t.id); return bindingDialog(t.part, t, at); }
+          if (isLocked(p)) return toast(p.name + " is locked");
+          const part = freeEdgePart(p, h.i, true);
+          part.one = s.id; bindingDialog(part, null, at);
+        } },
         { n: "Distribute Internal Lines between Segments…", f: two(distributeNumeric) },
         { n: "Fullness (Line)…", f: two(fullnessLineNumeric) },
         { n: "Pleats…", f: two(pleatsNumeric) }]));
@@ -20070,12 +21001,13 @@ function contextMenuRows() {
   const onLine = (n, k) => lineCtxRow(n, k);          // (Round BETA8-1 / 0, gate G10) the selected line's own row, else hidden with the switch off
   const g3 = () => [{ n: state3Name("arch3"), f: () => state3Toggle("arch3") }, { n: off3Name("pattern"), k: keyOf("off3"), f: () => deactivate3("pattern") }, { n: off3Name("sewing"), f: () => deactivate3("sewing") },
     { n: state3Name("freeze3"), k: keyOf("freeze3"), f: () => state3Toggle("freeze3") }, { n: state3Name("strong3"), k: keyOf("strong3"), f: () => state3Toggle("strong3") },
-    { n: state3Name("solid3"), k: keyOf("solid3"), f: () => state3Toggle("solid3") }, nb("Quadrangulate"), nb("Triangulate"), nb("Mesh Type"), { n: "Flip Normal", f: () => state3Toggle("flip3") }, nb("Convert"), { sep: 1 },
-    { n: "Reset 2D Arrangement (Selected)", f: () => resetArrangement2(true) }, { n: "Reset 3D Arrangement (Selected)", k: keyOf("reset3d"), f: () => resetArrangement3(true) }, nb("Symmetric Arrangement"),
-    { n: "Flip Horizontally", k: keyOf("turnHalf"), f: () => turnPieces3([0, 1, 0], 180) }, { n: "Flip Vertically", k: keyOf("flipOver"), f: () => turnPieces3([1, 0, 0], 180) }, nb("Reverse-Arrange"),
-    { n: "Flat", f: () => flatPieces3() }, nb("Flip Wrap Direction"), nb("Copy Symmetric Weights"), { n: "Superimpose (Under)", k: keyOf("superUnder"), f: () => superimpose3("under") }, { n: "Superimpose (Over)", k: keyOf("superOver"), f: () => superimpose3("over") }, { n: "Superimpose (Side)", f: () => superimpose3("side") }, { sep: 1 },
-    nb("Duplicate to Symmetric Patterns"), { n: "Delete Selected Pin", off: !selPinOf(), note: selPinOf() ? undefined : "right-click a pin", f: deleteSelPin }, { n: "Delete Pins on Selected Pattern", f: () => removePins(true) }, { n: "Delete All Pins", k: keyOf("removePins"), f: () => removePins(false) },
-    { n: "Attach Pin to Avatar", off: !(selPinOf() && selPinOf().tack == null), note: selPinOf() ? undefined : "right-click a pin", f: attachSelPin }, { n: "Detach Pin from Avatar", off: !(selPinOf() && selPinOf().tack != null), note: selPinOf() ? undefined : "right-click a pin", f: detachSelPin }, nb("Roll Up Horizontally"), nb("Roll Up Vertically")].filter(Boolean);
+    { n: state3Name("solid3"), k: keyOf("solid3"), f: () => state3Toggle("solid3") }, { n: "Quadrangulate", f: () => setMeshType(S.sel, "quad") }, { n: "Triangulate", f: () => setMeshType(S.sel, "tri") }, { n: "Mesh Type", menu: meshTypeRows }, { n: "Flip Normal", f: () => state3Toggle("flip3") }, nb("Convert"), { sep: 1 },
+    { n: "Reset 2D Arrangement (Selected)", f: () => resetArrangement2(true) }, { n: "Reset 3D Arrangement (Selected)", k: keyOf("reset3d"), f: () => resetArrangement3(true) }, { n: "Symmetric Arrangement", f: symArrange3 },
+    { n: "Flip Horizontally", k: keyOf("turnHalf"), f: () => turnPieces3([0, 1, 0], 180) }, { n: "Flip Vertically", k: keyOf("flipOver"), f: () => turnPieces3([1, 0, 0], 180) }, { n: "Reverse-Arrange", menu: reverseArrangeRows },
+    { n: "Flat", f: () => flatPieces3() }, { n: "Flip Wrap Direction", off: wrapFlipOff(), note: wrapFlipOff() ? "a flat pattern" : undefined, f: wrapFlip3 }, { n: "Copy Symmetric Weights", off: symWeightsOff(), note: symWeightsOff() ? "a pattern with a symmetric copy" : undefined, f: copySymWeights }, { n: "Superimpose (Under)", k: keyOf("superUnder"), f: () => superimpose3("under") }, { n: "Superimpose (Over)", k: keyOf("superOver"), f: () => superimpose3("over") }, { n: "Superimpose (Side)", f: () => superimpose3("side") }, { sep: 1 },
+    { n: "Duplicate to Symmetric Patterns", f: pinsToSymmetric3 }, { n: "Delete Selected Pin", off: !selPinOf(), note: selPinOf() ? undefined : "right-click a pin", f: deleteSelPin }, { n: "Delete Pins on Selected Pattern", f: () => removePins(true) }, { n: "Delete All Pins", k: keyOf("removePins"), f: () => removePins(false) },
+    { n: "Attach Pin to Avatar", off: !(selPinOf() && selPinOf().tack == null), note: selPinOf() ? undefined : "right-click a pin", f: attachSelPin }, { n: "Detach Pin from Avatar", off: !(selPinOf() && selPinOf().tack != null), note: selPinOf() ? undefined : "right-click a pin", f: detachSelPin },
+    { n: "Roll Up Horizontally", off: rollUpOff(), note: rollUpOff() ? "select a pattern in 3D" : undefined, f: () => rollUp3("h") }, { n: "Roll Up Vertically", off: rollUpOff(), note: rollUpOff() ? "select a pattern in 3D" : undefined, f: () => rollUp3("v") }].filter(Boolean);
   const p2 = () => [{ n: "Lock", f: () => { if (!selPieces().length) return toast("Select a pattern first"); push("Lock"); for (const q of selPieces()) q.lock = true; commit(); } },
     onLine("Convert to Curve Point"), { n: "Link Lines", k: "U", f: () => { const L = selLines(); if (L.length < 2) return toast("Link Lines: select a line, Shift+click the others, then press U", 5000); push("Link Lines"); linkLines(L); commit(); } },
     onLine("Offset as Internal Line"), onLine("Offset as Seamless Block Line"), { n: "Offset Pattern Outline", f: () => { const p = primary(); if (!p) return toast("Select a pattern first"); offsetWholeNumeric({ x: window.innerWidth/2 - 140, y: 120 }, p); } },
@@ -20086,12 +21018,14 @@ function contextMenuRows() {
     { n: "Clone", menu: cloneRows }, selGrouped() ? { n: "Ungroup", f: ungroupSel } : { n: "Group", f: groupSel }, ...arrangeRows().slice(2), arrangeRows()[0], arrangeRows()[1], { n: "Distribute", menu: () => [{ n: "Horizontally", h: "Distribute", f: () => distributeSel("x") }, { n: "Vertically", h: "Distribute", f: () => distributeSel("y") }] }, toolRow("Trace", "trace"), { n: "Grading", menu: gradingCtxRows }].filter(Boolean);
   const sew = () => [needSeam("Reverse Sewing", () => reverseSewing(sm, part), keyOf("reverse")), needSeam(sm && sm.off ? "Activate Sewing (Selected)" : "Deactivate Sewing (Selected)", () => toggleSewing(sm)),
     { n: "Assign to New Topstitch", f: () => stitchNewType((S.stitches || []).find(s => s.id === S.selStitch)) }, { n: "Add Internal Line on Topstitch", f: () => stitchToLine((S.stitches || []).find(s => s.id === S.selStitch)) }, needSeam("Add Seamline Topstitch", () => seamlineStitch(sm))].filter(Boolean);
-  const mat = () => [nb("Reset to Basic Fabric"), { n: "Assign to New Fabric", f: assignNewFabric }].concat(["Delete Texture", "Flip Texture Horizontally", "Flip Texture Vertically", "Reset Fabric Angle", "Align Grain X-Axis", "Align Grain Y-Axis",
-    "Align Grain Parallel to Selected", "Match Up Grain", "Duplicate to Symmetric Pattern"].map(n => nb(n))).concat([{ n: "Reset 3D Position", k: keyOf("reset3d"), f: () => resetArrangement3(true) }],
+  // (Round UV-1 / D, roadmap 3.B12's Materials rows) built, on the selected patterns
+  const mat = () => [{ n: "Reset to Basic Fabric", f: matResetBasic }, { n: "Assign to New Fabric", f: assignNewFabric }, { n: "Delete Texture", f: matDeleteTexture }, { n: "Flip Texture Horizontally", f: () => matFlipTexture("h") },
+    { n: "Flip Texture Vertically", f: () => matFlipTexture("v") }, { n: "Reset Fabric Angle", f: () => matGrain("reset") }, { n: "Align Grain X-Axis", f: () => matGrain("x") }, { n: "Align Grain Y-Axis", f: () => matGrain("y") },
+    { n: "Align Grain Parallel to Selected", f: () => matGrain("par") }, { n: "Match Up Grain", f: () => matGrain("match") }, { n: "Duplicate to Symmetric Pattern", f: matToSymmetric }].concat([{ n: "Reset 3D Position", k: keyOf("reset3d"), f: () => resetArrangement3(true) }],
     ["Set Number of Sewing Layers", "Flip"].map(n => nb(n)), [{ n: "Remove Steam on Selected Pattern", f: removeSteamSel }, { n: "Refresh Textures", f: refreshTextures }]).filter(Boolean);      // (Round BETA8-1 / E)
   const av = () => [S.av ? { n: "Delete Avatar", f: () => removeAvatar() } : { n: "Delete Avatar", off: true, note: "none loaded", f: () => toast("There is no avatar") },
     nb("Delete All Avatars"), nb("Delete Scene and Props"), nb("Delete All Scene and Props"), { n: show3("avatar") ? "Hide Avatar" : "Show Avatar", k: keyOf("show3:avatar"), f: () => setShow3("avatar", !show3("avatar")) }, nb("Set As Heel"), nb("Show All Avatars"), nb("Deactivate Avatar"),
-    S.av ? { n: "Reset Joints", f: () => { const was = G3.joint; G3.joint = null; try { jointReset(); } finally { G3.joint = was; } } } : { n: "Reset Joints", off: true, note: "none loaded", f: () => toast("There is no avatar") }, nb("Delete Accessory"), nb("Move to Ground")].filter(Boolean);
+    S.av ? { n: "Reset Joints", f: () => { const was = G3.joint; G3.joint = null; try { jointReset(); } finally { G3.joint = was; } } } : { n: "Reset Joints", off: true, note: "none loaded", f: () => toast("There is no avatar") }, accList().length ? { n: "Delete Accessory", f: () => accDelete() } : { n: "Delete Accessory", off: true, note: "none", f: () => toast("There is no accessory") } /* (POST8 FIX-8 / C2) */, ...avPlaceRows()].filter(Boolean);
   return [{ n: "3D Garment", menu: g3 }, { n: "2D Pattern", menu: p2 }, { n: "Sewing", menu: sew }, { n: "Materials", menu: mat }, { n: "Avatar", menu: av }, { n: "Display", menu: menuDisplay }].filter(Boolean);
 }
 /* (Round r33 / 2) Edit ▸ Context Menu ▸ 2D Pattern ▸ Clone and ▸ Grading: the pattern menu's rows, for the selected pattern (the
@@ -20316,6 +21250,8 @@ function ui() {
   if (GRADE_TOOLS.includes(S.tool)) { pr.innerHTML = gradeTablePanel(); wireGradeTable(pr); return; }
   // (Round FIX-3 / F, W16) the tack selected with Edit Tack (or in the Object Browser's Tack list): its Property Editor
   { const t = (S.tool3 === "edit_tack" || S.tool3 === "tack" || S.tool3 === "tack_avatar") && typeof G3 !== "undefined" && G3.selTack != null ? (S.tacks || []).find(x => x.id === G3.selTack) : null; if (t) { pr.innerHTML = tackPanel(t); wireTackPanel(pr, t); return; } }
+  if (!p && typeof G3 !== "undefined" && G3.accSel && S.av && accOf(G3.accSel)) { const a = accOf(G3.accSel); pr.innerHTML = accPanel(a); wireAccPanel(pr, a); return; }      // (POST8 FIX-8 / C2) an accessory clicked
+  if (!p && typeof G3 !== "undefined" && G3.avSel && S.av) { pr.innerHTML = avatarPanel(); wireAvatarPanel(pr); return; }      // (POST8 FIX-8 / B) the avatar clicked
   if (!p) { pr.innerHTML = '<h2>Nothing selected</h2><div class="note">Select a pattern, or pick something in the Object Browser.</div>' + measuresPanel(); wireMeasures(pr); return; }
   let tot = 0, saTot = 0;
   const dis = p.lock ? ' disabled' : '';
@@ -20392,7 +21328,12 @@ function ui() {
       '<input type="range" id="fo-ar" min="0" max="360" step="1" value="' + fo.angle + '"' + dis + '><input type="text" inputmode="decimal" data-num="1" class="s" id="fo-a" min="0" max="360" step="1" value="' + fo.angle + '"' + dis + '></div>' +
     '<div class="row"><label title="How firmly the line holds its angle in the simulation (5 by default; 100 for a pressed crease or a pin tuck)">Fold Strength</label><input type="text" inputmode="decimal" data-num="1" id="fo-k" min="0" max="100" step="1" value="' + fo.strength + '"' + dis + '></div>' +
     '<div class="row"><label for="fo-rd" title="The fold drawn on the cloth in 3D as a crease, whether internal lines are shown or not">Fold Rendering</label><input type="checkbox" id="fo-rd"' + (sit.foldRender ? ' checked' : '') + dis + '></div>' +
-    '<div class="note" style="margin-bottom:6px">' + (fo.angle === 180 ? 'Flat.' : fo.angle < 180 ? 'Folds back toward back (red).' : 'Folds front toward front (blue).') + '</div>') : '';
+    '<div class="note" style="margin-bottom:6px">' + (fo.angle === 180 ? 'Flat.' : fo.angle < 180 ? 'Folds back toward back (red).' : 'Folds front toward front (blue).') + '</div>') +
+    // (POST8 FIX-6 / D) Show Schematic Line, Z-Offset, Face (frame-notes S01 03:15): how the line is drawn in the schematic render
+    (() => { const so = schLineOf(sit); return sec("Show Schematic Line",
+      '<div class="row"><label for="sc-on" title="The line drawn in the schematic render (Render ▸ Engine ▸ Schematic, and the 3D window\'s Schematic Render)">Show Schematic Line</label><input type="checkbox" id="sc-on"' + (so.show ? ' checked' : '') + dis + '></div>' +
+      '<div class="row"><label title="The line lifted off the cloth toward its front face (below 0 toward its back), so it shows through a fold lying over it">Z-Offset (mm)</label><input type="range" id="sc-zr" min="-' + SCH_Z + '" max="' + SCH_Z + '" step="0.5" value="' + so.z + '"' + (so.show ? dis : ' disabled') + '><input type="text" inputmode="decimal" data-num="1" class="s" id="sc-z" value="' + so.z + '"' + (so.show ? dis : ' disabled') + '></div>' +
+      '<div class="row"><label title="Front or Back: the line only where that face of the cloth is turned toward the camera">Face</label><select class="w" id="sc-f"' + (so.show ? dis : ' disabled') + '>' + SCH_FACES.map(([k, n]) => '<option value="' + k + '"' + (so.face === k ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></div>'); })() : '';
   // (Round r14 / 3) the selected line(s), outline or internal: Elastic (B1 p.37: Elastic, Strength, Ratio, Segment Length,
   // Total Length; strength and ratio do nothing unless it is ticked)
   const elL = S.tool === "edit_pattern" || S.tool === "transform_pattern" ? selLines().filter(elasticLine) : [], el0 = elL.length ? elasticOf(elL[0].sh.segs[elL[0].i]) : null;
@@ -20480,6 +21421,9 @@ function ui() {
       '<div class="row"><label title="0 is straight up and down; positive leans to the left at the top">Grain Direction (\u00b0)</label><input type="text" inputmode="decimal" data-num="1" id="pp-grain" step="1" value="' + +grainAngle(gr).toFixed(2) + '"' + dis + ' title="The Up and Down arrows step it by 45° (One Way) or 90° (Two or Four Way)"></div>' +
       // (Round r25 / 3) Grain Orientation: how Print Layout may turn it (the reference's One / Two / Four Way); "Layout's" = Nest Settings
       '<div class="row"><label title="How Print Layout may turn this pattern: One Way never, Two Way by half a turn, Four Way by quarter turns. Layout\'s: as the layout\'s Grain Direction (Nest Settings)">Grain Orientation</label><select class="w" id="pp-gway"' + dis + '><option value="0"' + (p.grainWay ? '' : ' selected') + '>Layout\'s (' + (GRAINS.find(x => x[0] === layoutOf().grain) || GRAINS[0])[1] + ')</option>' + GRAIN_WAYS.map(([v, n]) => '<option value="' + v + '"' + (p.grainWay === v ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></div>' +
+      // (Round UV-1 / D, W20, S4) Pattern Matching and its Lock, under Grain Orientation (Print Based left out: guess uv1/25)
+      '<div class="row"><label title="None: the fabric’s texture lies along the grainline. Texture Based: one print over the 2D window, so patterns laid side by side there match across their edges. Lock in Place: the texture stays where it is now on the pattern">Pattern Matching</label><select class="w" id="pp-match"' + dis + '>' + [["", "None"], ["texture", "Texture Based"], ["lock", "Lock in Place"]].map(([v, n]) => '<option value="' + v + '"' + ((p.match || "") === v ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></div>' +
+      '<div class="row"><label title="On: Edit Texture cannot move this pattern’s texture">Pattern Matching Lock</label><input type="checkbox" id="pp-mlock"' + (p.matchLock ? ' checked' : '') + dis + '></div>' +
       '<div class="row"><label title="100 = no shrinkage. Stored with the pattern for print and export; the draft itself is not resized.">Shrinkage W / H %</label>' +
         '<input type="text" inputmode="decimal" data-num="1" class="s" id="pp-sw" min="1" step="0.1" value="' + p.shrink.w + '"' + dis + '>' +
         '<input type="text" inputmode="decimal" data-num="1" class="s" id="pp-sh" min="1" step="0.1" value="' + p.shrink.h + '"' + dis + '></div>') +
@@ -20494,6 +21438,10 @@ function ui() {
         '<input type="range" id="pp-s3s-r" min="0" max="100" step="1" value="' + (p.solid3s ?? SOLID_S) + '"' + dis + '><input type="text" inputmode="decimal" data-num="1" class="s" id="pp-s3s" value="' + (p.solid3s ?? SOLID_S) + '"' + dis + '></div>' : '') +
       '<div class="row"><label title="0 is no filling. With fill the pattern swells away from the patterns it is sewn to, as a cushion or a padded jacket does: more fill, fuller">Fill</label>' +
         '<input type="range" id="pp-fill-r" min="0" max="100" step="1" value="' + (p.fill || 0) + '"' + dis + '><input type="text" inputmode="decimal" data-num="1" class="s" id="pp-fill" min="0" max="100" step="1" value="' + (p.fill || 0) + '"' + dis + '></div>') +
+    // (Round POST8 / FIX-5 C) Miscellaneous ▸ Mesh Type (A10 p.20, M:115002727468)
+    sec("Miscellaneous",
+      '<div class="row"><label for="pp-mesh" title="Triangle: the cloth an even mesh of triangles (use it for everything else). Quad: a square grid along the grainline, for a part that must fold or round smoothly, such as a collar">Mesh Type</label><select class="w" id="pp-mesh"' + dis + '>' +
+        MESH_TYPES.map(([k, n]) => '<option value="' + k + '"' + (meshTypeOf(p) === k ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></div>') +
     // (Round FIX-3b / C) Pressure (W20: a slider under the number, 0)
     sec("Pressure",
       '<div class="row"><label title="A push on the cloth along its front (below 0: along its back), in Pa; 0 is none. A medium cloth weighs about 2 Pa">Pressure (Pa)</label>' +
@@ -20549,6 +21497,10 @@ function ui() {
     g("fo-k").onchange = (e) => { const k = +e.target.value; if (Number.isFinite(k)) setFold({ strength: k }); };
     // (r20 / 9) Fold Rendering: kept on the line only when on; one step
     if (g("fo-rd")) g("fo-rd").onchange = (e) => { push("Fold Rendering"); if (e.target.checked) sit.foldRender = true; else delete sit.foldRender; commit(); };
+    // (POST8 FIX-6 / D) Show Schematic Line: one step each
+    if (g("sc-on")) g("sc-on").onchange = (e) => setSchLine(sit, "show", e.target.checked);
+    for (const id of ["sc-z", "sc-zr"]) if (g(id)) g(id).onchange = (e) => { const v = numOf(e.target.value); if (Number.isFinite(v)) setSchLine(sit, "z", v); };
+    if (g("sc-f")) g("sc-f").onchange = (e) => setSchLine(sit, "face", e.target.value);
   }
   // the selected line's seam allowance and corners
   if (sg && !p.lock) {
@@ -20583,6 +21535,8 @@ function ui() {
     // (r25 / 3) the arrows step the angle as the reference's do: 45° for One Way, 90° for Two or Four Way
     g("pp-grain").onkeydown = (e) => { if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return; e.preventDefault(); e.stopPropagation();
       const st = grainRots(p).length > 1 ? 90 : 45, a = grainAngle(gr) + (e.key === "ArrowUp" ? st : -st); push("Grain Direction"); grainSet(p, mul(add(gr.a, gr.b), 0.5), a, dist(gr.a, gr.b)); commit(); };
+    if (g("pp-match")) g("pp-match").onchange = (e) => setMatch(selPieces().length ? selPieces() : [p], e.target.value);      // (Round UV-1 / D)
+    if (g("pp-mlock")) g("pp-mlock").onchange = (e) => { push("Pattern Matching Lock"); for (const q of selPieces().length ? selPieces() : [p]) { if (e.target.checked) q.matchLock = true; else delete q.matchLock; } commit(); };
     if (g("pp-gway")) g("pp-gway").onchange = (e) => { push("Grain Orientation"); const v = +e.target.value; if (v) p.grainWay = v; else delete p.grainWay; commit(); }; }
   pr.querySelectorAll("tr[data-i]").forEach(tr => tr.onclick = () => { S.selSeg = +tr.dataset.i; S.selPt = -1; S.selInt = -1; S.selKind = "outline"; ui(); draw(); });
   if (p.block && BLOCKS[p.block.type]) document.getElementById("p-blk").onclick = (e2) => {
@@ -20600,6 +21554,7 @@ function ui() {
   prop("pp-press", (el) => { p.press3 = numOf(el.value); }); prop("pp-press-r", (el) => { p.press3 = +el.value; });
   prop("pp-fill-r", (el) => { p.fill = el.value; });
   prop("pp-sw", (el) => { p.shrink.w = el.value; });
+  { const el = document.getElementById("pp-mesh"); if (el) el.onchange = () => { setMeshType([p.id], el.value === "quad" ? "quad" : "tri"); ui(); }; }
   prop("pp-res3", (el) => { const v = numOf(el.value); if (isFinite(v) && v >= 5 && v < BROWSER_LIMIT.res && !DESK) { el.value = p.res3 || ""; deskOnly("A particle distance under " + BROWSER_LIMIT.res + " mm"); } else if (isFinite(v) && v >= 5 && v <= 60) p.res3 = v; else { delete p.res3; if (String(el.value).trim()) toast("A particle distance of 5 to 60 mm (empty: the document's)"); } });
   prop("pp-thick3", (el) => { p.thick3 = { ...(p.thick3 || {}), t: numOf(el.value) }; });
   prop("pp-extr", (el) => { p.thick3 = { ...(p.thick3 || {}), dir: el.value }; });
@@ -20649,10 +21604,35 @@ function seamsPanel(p) {
   return '<h2 style="margin-top:12px">Seams <span>' + mine.length + ' · ' + S.unit + '</span></h2>' + rows;
 }
 let tT;
+var TOAST_HOLD = null;                                       // (var: draw() may ask before this line has run)
+var TOAST_ACT = null;                                        // (POST8 batch 0e) a held message's button: { label, f }
 function toast(m, ms) {
   const t = document.getElementById("toast");
+  TOAST_HOLD = null; TOAST_ACT = null;                       // another message takes a held one's place
   t.textContent = macKeys(m); t.classList.add("show");
   clearTimeout(tT); tT = setTimeout(() => t.classList.remove("show"), ms || 1800);
+}
+/* (POST8 batch 0d) A command's result that stays until the next action (Auto Sewing's "Sewed …", Roll Up's hint): the toast, held while
+   no step, undo, redo or other tool came since (actionStamp()), checked on every 2D and 3D frame (holdCheck()); at most two minutes. */
+function actionStamp() { return { push: pushCount, n: S.undo.length, tool: S.tool }; }
+function stampSame(a) { return !!a && a.push === pushCount && a.n === S.undo.length && a.tool === S.tool; }
+function holdToast(m, act) {
+  toast(m, 120000); TOAST_HOLD = actionStamp();
+  // (POST8 batch 0e) a button after the words, e.g. Lay Flat's Set T-Pose: pressed, it does its command (its own step), which ends the hold
+  const t = document.getElementById("toast");
+  if (act && t && document.createElement) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "toast-act"; b.textContent = act.label;
+    b.onclick = (e) => { if (e && e.stopPropagation) e.stopPropagation(); TOAST_ACT = null; act.f(); };
+    t.appendChild(b); TOAST_ACT = act;
+  }
+}
+function holdNow() { return stampSame(TOAST_HOLD); }
+function holdCheck() {
+  if (!TOAST_HOLD || stampSame(TOAST_HOLD)) return;
+  TOAST_HOLD = null; clearTimeout(tT);
+  const t = document.getElementById("toast");
+  if (t) t.classList.remove("show");
 }
 document.getElementById("s-unit").onclick = () => setPrefs({ unit: { mm: "cm", cm: "in", in: "mm" }[S.unit] });
 { const b = document.getElementById("s-sa"); if (b) b.onclick = () => setView("sa", !S.show.sa); }
@@ -20676,16 +21656,17 @@ document.getElementById("s-snap").onclick = () => setPrefs({ grid: { 0: 5, 5: 1,
    told apart by usemtl) and Multiple Objects (an object a pattern, what this program wrote before). (Round r25 follow-up,
    the maintainer's decision 1) Single Object is the default, as the reference's, and the last choice is a preference (S.prefs.objKind) */
 const OBJ_KINDS = [["single", "Single Object"], ["multi", "Multiple Objects"]];
+// (Round UV-1 / B, guess uv1/4) each point's texture place (vt) is its place in the UV square (the UV Editor's: 0 to 1 a tile), no longer mm
 function objText(only, kind) {
-  const ps = S.pieces.filter(p => G3.items.has(p.id) && !p.hide3 && (!only || S.sel.includes(p.id))), one = kind === "single";
-  let out = "# Gusset: the garment as draped, millimeters, y up" + (one ? ", one object" : "") + "\n" + (one ? "o Garment\n" : ""), base = 1, n = 0;
+  const ps = S.pieces.filter(p => G3.items.has(p.id) && !p.hide3 && (!only || S.sel.includes(p.id))), one = kind === "single", fit = uvFit();
+  let out = "# Gusset: the garment as draped, millimeters, y up; texture places in the UV square (0 to 1)" + (one ? ", one object" : "") + "\n" + (one ? "o Garment\n" : ""), base = 1, n = 0;
   for (const p of ps) {
     const it = G3.items.get(p.id), X = it.X, T = it.mesh.tri, xy = it.mesh.xy;
     if (!X || !T || !T.length) continue;
     const m = X.length/3;
     out += (one ? "usemtl " : "o ") + String(p.name || "Pattern").replace(/\s+/g, "_") + "\n";
     for (let i = 0; i < m; i++) out += "v " + +X[3*i].toFixed(3) + " " + +X[3*i+1].toFixed(3) + " " + +X[3*i+2].toFixed(3) + "\n";
-    if (xy && xy.length >= 2*m) for (let i = 0; i < m; i++) out += "vt " + +xy[2*i].toFixed(3) + " " + +(-xy[2*i+1]).toFixed(3) + "\n";
+    if (xy && xy.length >= 2*m) { const pl = uvPlace(p, fit); for (let i = 0; i < m; i++) { const [u, v] = uvOf(pl, { x: xy[2*i], y: xy[2*i+1] }); out += "vt " + +u.toFixed(6) + " " + +v.toFixed(6) + "\n"; } }
     const vt = xy && xy.length >= 2*m;
     for (let k = 0; k < T.length; k += 3) { const a = T[k] + base, b = T[k+1] + base, c = T[k+2] + base; out += vt ? "f " + a + "/" + a + " " + b + "/" + b + " " + c + "/" + c + "\n" : "f " + a + " " + b + " " + c + "\n"; }
     base += m; n++;
@@ -20700,6 +21681,134 @@ function exportOBJ(only, kind) {
   const r = objText(only, kind);
   if (!r.n) return toast(only ? "Select a pattern that is in the 3D window" : "There is no cloth in the 3D window to write");
   dl(only ? "garment-selected.obj" : "garment.obj", r.text, "text/plain", () => toast("OBJ: " + r.n + (r.n === 1 ? " pattern" : " patterns") + " as draped"));
+}
+/* (run 14d, FMT-1 / D, roadmap 3.A5) File ▸ Export ▸ USD and FBX: the garment as draped, as the OBJ export writes it (each pattern's cloth
+   as the 3D window shows it, hidden patterns left out, no avatar; guess fmt1/10), with each pattern's texture places (its UV place, 0-1)
+   and its fabric's colour:
+     USD  a text file (.usda) of our own writing: a Mesh prim a pattern under /Garment (points, faces, its st primvar, displayColor),
+          millimetres (metersPerUnit 0.001), y up.
+     FBX  a binary FBX 7.4 file of our own writing (no library: fbxBytes()): a Model, Geometry (Vertices, PolygonVertexIndex, a UV layer)
+          and Material (DiffuseColor) a pattern, connected to the scene's root; GlobalSettings y up, UnitScaleFactor 0.1 (a unit a
+          millimetre). Read back by three.js's own FBX loader in the tests (fmt1 / D2). */
+// the cloth to write: [{ name (a name a USD prim may have, unique), label, X, T, uv (per point, 0-1) | null, color: [r, g, b] 0-1 }]
+function garmentMeshes(only) {
+  const ps = S.pieces.filter(p => G3.items.has(p.id) && !p.hide3 && (!only || S.sel.includes(p.id))), fit = uvFit(), out = [], used = new Set();
+  for (const p of ps) {
+    const it = G3.items.get(p.id), X = it.X, T = it.mesh && it.mesh.tri, xy = it.mesh && it.mesh.xy;
+    if (!X || !T || !T.length) continue;
+    const m = X.length/3, pl = xy && xy.length >= 2*m ? uvPlace(p, fit) : null;
+    let uv = null;
+    if (pl) { uv = new Float64Array(2*m); for (let i = 0; i < m; i++) { const [u, v] = uvOf(pl, { x: xy[2*i], y: xy[2*i+1] }); uv[2*i] = u; uv[2*i+1] = v; } }
+    const f = fabricOf(p), hex = f && /^#[0-9a-f]{6}$/i.test(f.color) ? f.color : "#e6e6e6", color = [1, 3, 5].map(k => parseInt(hex.slice(k, k + 2), 16)/255);
+    const base = String(p.name || "Pattern").replace(/[^A-Za-z0-9_]+/g, "_").replace(/^([0-9])/, "_$1") || "Pattern";
+    let nm = base, k = 2;
+    while (used.has(nm)) nm = base + "_" + (k++);
+    used.add(nm); out.push({ name: nm, label: p.name || "Pattern", X, T, uv, color });
+  }
+  return out;
+}
+function usdText(L) {
+  const f = (v) => +v.toFixed(3), g = (v) => +v.toFixed(6);
+  let s = '#usda 1.0\n(\n    defaultPrim = "Garment"\n    metersPerUnit = 0.001\n    upAxis = "Y"\n    doc = "Gusset: the garment as draped, millimeters, y up"\n)\n\ndef Xform "Garment"\n{\n';
+  for (const m of L) {
+    const n = m.X.length/3, pts = [];
+    for (let i = 0; i < n; i++) pts.push("(" + f(m.X[3*i]) + ", " + f(m.X[3*i+1]) + ", " + f(m.X[3*i+2]) + ")");
+    s += '    def Mesh "' + m.name + '"\n    {\n        uniform token subdivisionScheme = "none"\n        uniform bool doubleSided = 1\n';
+    s += "        int[] faceVertexCounts = [" + new Array(m.T.length/3).fill(3).join(", ") + "]\n";
+    s += "        int[] faceVertexIndices = [" + Array.from(m.T).join(", ") + "]\n";
+    s += "        point3f[] points = [" + pts.join(", ") + "]\n";
+    s += "        color3f[] primvars:displayColor = [(" + m.color.map(g).join(", ") + ')] (\n            interpolation = "constant"\n        )\n';
+    if (m.uv) { const st = []; for (let i = 0; i < n; i++) st.push("(" + g(m.uv[2*i]) + ", " + g(m.uv[2*i+1]) + ")"); s += "        texCoord2f[] primvars:st = [" + st.join(", ") + '] (\n            interpolation = "vertex"\n        )\n'; }
+    s += '        custom string userProperties:gussetPattern = "' + String(m.label).replace(/["\\\n]/g, "_") + '"\n    }\n';
+  }
+  return s + "}\n";
+}
+/* the FBX binary writer: a node is [name, [properties], [children]]; a property { t, v } of the types FBX has (I int32, L int64, D double,
+   S string, C bool, d / i arrays of doubles / int32, written uncompressed); each node's end offset is where it ends in the file */
+const FBX_MAGIC = "Kaydara FBX Binary  ";
+const FBX_FOOT = [0xfa, 0xbc, 0xab, 0x09, 0xd0, 0xc8, 0xd4, 0x66, 0xb1, 0x76, 0xfb, 0x83, 0x1c, 0xf7, 0x26, 0x7e];
+const FBX_END = [0xf8, 0x5a, 0x8c, 0x6a, 0xde, 0xf5, 0xd9, 0x7e, 0xec, 0xe9, 0x0c, 0xe3, 0x75, 0x8f, 0x29, 0x0b];
+function fbxBytes(nodes) {
+  const parts = [], enc = new TextEncoder();
+  let size = 0;
+  const put = (u8) => { parts.push(u8); size += u8.length; };
+  const prop = (p) => {
+    const t = p.t, v = p.v;
+    if (t === "I") { const b = new Uint8Array(5); b[0] = 73; new DataView(b.buffer).setInt32(1, v, true); return b; }
+    if (t === "D") { const b = new Uint8Array(9); b[0] = 68; new DataView(b.buffer).setFloat64(1, v, true); return b; }
+    if (t === "L") { const b = new Uint8Array(9); b[0] = 76; new DataView(b.buffer).setBigInt64(1, BigInt(v), true); return b; }
+    if (t === "C") return new Uint8Array([67, v ? 1 : 0]);
+    if (t === "S") { const s = enc.encode(v), b = new Uint8Array(5 + s.length); b[0] = 83; new DataView(b.buffer).setUint32(1, s.length, true); b.set(s, 5); return b; }
+    if (t === "d" || t === "i") {
+      const w = t === "d" ? 8 : 4, b = new Uint8Array(13 + w*v.length), dv = new DataView(b.buffer);
+      b[0] = t.charCodeAt(0); dv.setUint32(1, v.length, true); dv.setUint32(5, 0, true); dv.setUint32(9, w*v.length, true);
+      for (let k = 0; k < v.length; k++) { if (t === "d") dv.setFloat64(13 + 8*k, v[k], true); else dv.setInt32(13 + 4*k, v[k], true); }
+      return b;
+    }
+    throw new Error("FBX: no property type " + t);
+  };
+  const node = (nd, at) => {
+    const [name, props, kids] = nd, nm = enc.encode(name), ps = props.map(prop), plen = ps.reduce((n, b) => n + b.length, 0);
+    let len = 13 + nm.length + plen;
+    const kb = [];
+    for (const k of kids || []) { const b = node(k, at + len); kb.push(b); len += b.length; }
+    if ((kids && kids.length) || !props.length) len += 13;      // the null record closing a node's children
+    const all = new Uint8Array(len), dv = new DataView(all.buffer);
+    dv.setUint32(0, at + len, true); dv.setUint32(4, ps.length, true); dv.setUint32(8, plen, true); all[12] = nm.length; all.set(nm, 13);
+    let o = 13 + nm.length;
+    for (const b of ps) { all.set(b, o); o += b.length; }
+    for (const b of kb) { all.set(b, o); o += b.length; }
+    return all;
+  };
+  const head = new Uint8Array(27);
+  head.set(enc.encode(FBX_MAGIC), 0); head[21] = 0x1a; new DataView(head.buffer).setUint32(23, 7400, true);
+  put(head);
+  for (const nd of nodes) put(node(nd, size));
+  put(new Uint8Array(13));
+  put(Uint8Array.from(FBX_FOOT)); put(new Uint8Array(4));
+  const pad = (16 - (size % 16)) % 16; put(new Uint8Array(pad || 16));
+  const ver = new Uint8Array(4); new DataView(ver.buffer).setUint32(0, 7400, true); put(ver);
+  put(new Uint8Array(120)); put(Uint8Array.from(FBX_END));
+  const out = new Uint8Array(size);
+  let o = 0; for (const b of parts) { out.set(b, o); o += b.length; }
+  return out;
+}
+// the garment as FBX nodes
+function fbxGarment(L) {
+  const S_ = (v) => ({ t: "S", v }), I = (v) => ({ t: "I", v }), D = (v) => ({ t: "D", v }), Lg = (v) => ({ t: "L", v });
+  const P70 = (rows) => ["Properties70", [], rows.map(r => ["P", r, []])], name = (n, cls) => S_(n + "\x00\x01" + cls);
+  const objects = [], conns = [];
+  let id = 100000;
+  for (const m of L) {
+    const g = ++id, md = ++id, mt = ++id, pvi = new Array(m.T.length);
+    for (let k = 0; k < m.T.length; k += 3) { pvi[k] = m.T[k]; pvi[k+1] = m.T[k+1]; pvi[k+2] = -m.T[k+2] - 1; }
+    const geo = [["GeometryVersion", [I(124)], []], ["Vertices", [{ t: "d", v: Array.from(m.X) }], []], ["PolygonVertexIndex", [{ t: "i", v: pvi }], []]];
+    if (m.uv) {
+      geo.push(["LayerElementUV", [I(0)], [["Version", [I(101)], []], ["Name", [S_("UVMap")], []], ["MappingInformationType", [S_("ByPolygonVertex")], []], ["ReferenceInformationType", [S_("IndexToDirect")], []],
+        ["UV", [{ t: "d", v: Array.from(m.uv) }], []], ["UVIndex", [{ t: "i", v: Array.from(m.T) }], []]]]);
+      geo.push(["Layer", [I(0)], [["Version", [I(100)], []], ["LayerElement", [], [["Type", [S_("LayerElementUV")], []], ["TypedIndex", [I(0)], []]]]]]);
+    }
+    objects.push(["Geometry", [Lg(g), name(m.name, "Geometry"), S_("Mesh")], geo]);
+    objects.push(["Model", [Lg(md), name(m.name, "Model"), S_("Mesh")], [["Version", [I(232)], []], P70([[S_("DefaultAttributeIndex"), S_("int"), S_("Integer"), S_(""), I(0)]]), ["Shading", [{ t: "C", v: 1 }], []], ["Culling", [S_("CullingOff")], []]]]);
+    objects.push(["Material", [Lg(mt), name(m.name, "Material"), S_("")], [["Version", [I(102)], []], ["ShadingModel", [S_("phong")], []], ["MultiLayer", [I(0)], []],
+      P70([[S_("DiffuseColor"), S_("Color"), S_(""), S_("A"), D(m.color[0]), D(m.color[1]), D(m.color[2])]])]]);
+    conns.push(["C", [S_("OO"), Lg(md), Lg(0)], []], ["C", [S_("OO"), Lg(g), Lg(md)], []], ["C", [S_("OO"), Lg(mt), Lg(md)], []]);
+  }
+  const ax = (n, v) => [S_(n), S_("int"), S_("Integer"), S_(""), I(v)];
+  return [
+    ["FBXHeaderExtension", [], [["FBXHeaderVersion", [I(1003)], []], ["FBXVersion", [I(7400)], []], ["Creator", [S_("Gusset")], []]]],
+    ["GlobalSettings", [], [["Version", [I(1000)], []], P70([ax("UpAxis", 1), ax("UpAxisSign", 1), ax("FrontAxis", 2), ax("FrontAxisSign", 1), ax("CoordAxis", 0), ax("CoordAxisSign", 1), [S_("UnitScaleFactor"), S_("double"), S_("Number"), S_(""), D(0.1)]])]],
+    ["Objects", [], objects],
+    ["Connections", [], conns]];
+}
+function exportMesh3(kind, only) {
+  const K = kind === "usd" ? "USD" : "FBX";
+  if (!G3.items || !G3.items.size) return toast("Open the 3D window first: the " + K + " file is the garment as it is draped there");
+  const L = garmentMeshes(only);
+  if (!L.length) return toast(only ? "Select a pattern that is in the 3D window" : "There is no cloth in the 3D window to write");
+  const say = () => toast(K + ": " + L.length + (L.length === 1 ? " pattern" : " patterns") + " as draped");
+  if (kind === "usd") return dl("garment.usda", usdText(L), "text/plain", say);
+  dl("garment.fbx", fbxBytes(fbxGarment(L)), "application/octet-stream", say);
 }
 function dl(n, t, m, then) {
   if (DESK && DESK.exportFile) {
@@ -20907,8 +22016,10 @@ function zipUnpack(b, done) {
   step(0);
 }
 // the document as the parts of a version 12 file: [{ name, data, raw? }]
-function pdraftFiles() {
-  const d = docObj(), files = [], pics = [], json = (o) => utf8Of(canonJSON(o));
+// (run 14d, FMT-1 / B) sub: a garment's or the patterns' own file instead of the project (garmentDoc(): the document cut down; no avatar,
+// no history, no 3D states; sub.flat: no drape either)
+function pdraftFiles(sub) {
+  const d = sub ? garmentDoc(docObj(), sub) : docObj(), files = [], pics = [], json = (o) => utf8Of(canonJSON(o));
   d.images = d.images.map((im) => {
     const m = /^data:image\/([a-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/i.exec(im.data);
     if (!m || m[2].length % 4) return im;                    // a picture that is not base64 stays in document.json as it is
@@ -20916,13 +22027,15 @@ function pdraftFiles() {
     pics.push({ name: file, data: bytesOf(m[2]), raw: true });
     return { id: im.id, name: im.name, file, type: m[1], w: im.w, h: im.h };
   });
-  const dr = drapeList(), all = new Uint8Array(dr.reduce((n, x) => n + x.bytes.length, 0));
+  const dr = sub && sub.flat ? [] : drapeList().filter(x => !sub || d.pieces.some(p => p.id === x.id)), all = new Uint8Array(dr.reduce((n, x) => n + x.bytes.length, 0));
   if (dr.length) { d.drape = {}; let o = 0; for (const x of dr) { d.drape[x.id] = { k: x.k, n: x.n, o }; all.set(x.bytes, o); o += x.bytes.length; } }
-  const av = avatarEmbedded();
+  const av = sub ? null : avatarEmbedded();
   if (av && d.scene.avatar) d.scene.avatar.file = "avatar/" + av.name.replace(/[^\w.-]+/g, "_");
-  const hcloth = [], hist = histPack(histKeep(), hcloth), st3 = states3Out(true);
+  const hcloth = [], hist = sub ? null : histPack(histKeep(), hcloth), st3 = sub ? { list: null, bin: [] } : states3Out(true);
   if (st3.list) d.states3 = st3.list;
-  files.push({ name: "document.json", data: json(d) });
+  // (run 16) what a newer version wrote that this one does not know, written back (into a copy: docObj() shares the document's own objects)
+  const out = !sub && NEWER ? JSON.parse(JSON.stringify(d)) : d, kept = out !== d ? newerPut(out) : null;
+  files.push({ name: "document.json", data: json(out) });
   if (hist) files.push({ name: "history.json", data: json(hist) });
   files.push(...pics);
   if (dr.length) files.push({ name: "drape.bin", data: all });
@@ -20930,7 +22043,269 @@ function pdraftFiles() {
   // (Round H1 / 1) the cloth of the history's Save States and branch points, each node's patterns by offset (histPack())
   if (hist && hcloth.length) { const all = new Uint8Array(hcloth.reduce((n, b) => n + b.length, 0)); let o = 0; for (const b of hcloth) { all.set(b, o); o += b.length; } files.push({ name: "histcloth.bin", data: all }); }
   if (av && d.scene.avatar) files.push({ name: d.scene.avatar.file, data: av.bytes });
+  if (kept) for (const [name, data] of NEWER.parts) if (!files.some(f => f.name === name)) files.push({ name, data, raw: true });
   return files;
+}
+/* (run 14d, FMT-1 / B, roadmap 3.A2) THE GARMENT AND PATTERN FILES. File ▸ Save As ▸ Garment / Garment (Selected) / Pattern write a
+   .pdraft as a project is written, holding the garment alone (guess fmt1/3): the patterns (all, or the selected ones), the sewing,
+   topstitches, trims, tacks, buttons, lacings and measurements that lie wholly on them, the fabric and trim library, grading, Print
+   Layout and the render settings; and their 3D places and drape. Left out: the avatar (no record, no file: a garment opens with none),
+   its edits, pencil strokes and avatar tacks' holds' avatar (the tack stays), the lights, the 3D states, the background image, the
+   garment measurements of patterns left out, and the history. A Pattern file (guess fmt1/4) is the same without the 3D places and the
+   drape: 2D only, the patterns placed from 2D when opened (the selected patterns, or all with none selected: guess fmt1/5). Open ▸
+   Garment / Pattern and Add ▸ Garment / Pattern read any pattern file through the Open Garment box (Open or Add), as File ▸ Add ▸
+   Project does; a Pattern opened or added has its 3D places taken away (guess fmt1/6). */
+function garmentDoc(d0, sub) {
+  const d = JSON.parse(JSON.stringify(d0)), ids = sub.ids || null;
+  d.pieces = d.pieces.filter(p => !ids || ids.has(p.id));
+  if (sub.flat) for (const p of d.pieces) { delete p.p3; delete p.fold; }
+  const P = d.pieces, ok = new Set(P.map(p => p.id));
+  d.seams = (d.seams || []).filter(sm => [...sm.a, ...sm.b].every(x => ok.has(x.piece)));
+  d.stitches = validStitches(d.stitches || [], P, d.seams);
+  if (d.puckers) d.puckers = validStitches(d.puckers, P, d.seams);
+  d.tacks = validTacks(d.tacks || [], P);      // (an avatar tack stays: it holds once the garment is on an avatar again)
+  d.buttons = validButtons(d.buttons || [], P);
+  d.pipings = validPipings(d.pipings || [], d.seams); d.bindings = validBindings(d.bindings || [], P); d.glues = validGlues(d.glues || [], P, d.seams);
+  if (d.lacings) d.lacings = validLacings(d.lacings, P);
+  d.measures = validMeasures(d.measures || [], P);
+  const onKept = (o) => { const r = pieceRefs(o); return r.length > 0 && r.every(i => ok.has(i)); };
+  d.links = (d.links || []).filter(g => !pieceRefs(g).length || onKept(g));
+  if (d.garMeas) { d.garMeas = d.garMeas.filter(onKept); if (!d.garMeas.length || sub.flat) delete d.garMeas; }
+  if (d.hgroups) { d.hgroups = d.hgroups.map(g => ({ ...g, pieces: (g.pieces || []).filter(i => ok.has(i)) })).filter(g => g.pieces.length); if (!d.hgroups.length) delete d.hgroups; }
+  if (d.scene) { delete d.scene.avatar; if (sub.flat) delete d.scene.camera; }
+  delete d.avedit; delete d.pencil; delete d.lights; delete d.backdrop; delete d.histOff;
+  // only the pictures something kept still names (a graphic, a fabric's texture, another colorway's)
+  const txt = JSON.stringify({ ...d, images: null });
+  d.images = (d.images || []).filter(im => txt.includes(JSON.stringify(im.id)));
+  return d;
+}
+// every pattern id an object names under a key "piece" (seams' parts, measurements' ends, links' members, …)
+function pieceRefs(o) {
+  const out = [];
+  const walk = (x) => { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === "object") for (const k of Object.keys(x)) { if (k === "piece" && Number.isFinite(x[k])) out.push(x[k]); else walk(x[k]); } };
+  walk(o);
+  return out;
+}
+// the file's name: the project's name and the kind
+function garmentName(kind) {
+  const base = (filePath ? filePath.replace(/^.*[\\/]/, "").replace(/\.(pdraft|json)$/i, "") : "") || (kind === "pattern" ? "patterns" : "garment");
+  return base + (kind === "pattern" ? " (patterns)" : kind === "sel" ? " (selected)" : " (garment)") + ".pdraft";
+}
+// Save As ▸ Garment ("all"), Garment (Selected) ("sel"), Pattern ("pattern")
+function garmentSave(kind) {
+  const sel = (S.sel || []).filter(id => byId(id));
+  if (kind === "sel" && !sel.length) return toast("Select the patterns to save first");
+  if (!S.pieces.length) return toast("There are no patterns to save");
+  const ids = kind === "sel" || (kind === "pattern" && sel.length) ? new Set(sel) : null;
+  let files;
+  try { files = pdraftFiles({ ids, flat: kind === "pattern" }); } catch (e) { return toast("Couldn't save: " + deskErr(e), 6000); }
+  const n = ids ? ids.size : S.pieces.length, what = kind === "pattern" ? (n === 1 ? "1 pattern" : n + " patterns") : "the garment" + (ids ? " (" + n + (n === 1 ? " pattern)" : " patterns)") : "");
+  zipPack(files, (bytes) => dl(garmentName(kind), bytes, "application/octet-stream", (f) => toast("Saved " + what + " as " + f + (kind === "pattern" ? " (2D only: no 3D places or drape)" : " (no avatar)"))));
+}
+// Open ▸ / Add ▸ Garment and Pattern: a pattern file through the Open Garment box (Open or Add)
+function garmentOpen(load, flat) {
+  pickBinary(".pdraft,.json,.zip", (name, buf) => readDocBytes(name, new Uint8Array(buf), (err, d) => (err ? toast("Couldn't open " + name + ": " + err, 6000) : garmentTake(name, d, load, flat))), true);
+}
+function garmentTake(name, d, load, flat) {
+  if (flat) { for (const p of d.pieces || []) { delete p.p3; delete p.fold; } d.drape = {}; delete d.states3; delete d.states3Bin; }
+  openGarmentDialog(name, d, load);
+}
+/* (run 14d, FMT-1 / C, roadmap 3.A2) THE SETTINGS FILES of File ▸ Open / Save As (our own JSON, `{ gusset: <kind>, v: 1, … }`, guess fmt1/7):
+     Render Properties      the Render workspace's Image/Video, Camera and Render panes (RW_PANE_KEYS), the document's render settings; a
+                            pane's own file (the pane's open / save) opens here too. Opened: the document's (saveRender(), no undo step, as
+                            a pane's file).
+     Camera Transformation  the 3D window's camera: where it looks from and at (az, el, dist, tx, ty, tz, as a project's scene.camera).
+     Camera Projection      the lens: Field of View, near and far clipping, the camera's kind and lens (the Camera pane's rows).
+     User Setting           this computer's preferences (S.prefs: units, colours, view controls, keys changed by hand, …); opened, they are
+                            this computer's (setPrefs(), as Settings ▸ User Settings does).
+     Hand Pose              the turns of each hand's bones (the hand and every bone under it) as a pose file holds them; opened onto the
+                            avatar only its hands turn, one undo step "Hand Pose" (the document's joint edits, as a pose preset is; guess fmt1/8).
+   Save As ▸ Surface Textures saves every picture the project uses (fabrics' textures, graphics, environment maps) as one .zip, each under
+   its own name (guess fmt1/9). */
+const SETFILES = { render: "render-properties", camT: "camera-transformation", camP: "camera-projection", user: "user-settings", hand: "hand-pose" };
+const SETFILE_NAMES = { render: "Render Properties", camT: "Camera Transformation", camP: "Camera Projection", user: "User Setting", hand: "Hand Pose" };
+const CAMP_KEYS = ["fov", "near", "far", "camType", "lens"];
+const fileBase = () => (typeof filePath === "string" && filePath ? filePath.replace(/^.*[\\/]/, "").replace(/[.][^.]*$/, "") : "gusset").replace(/[\\/:*?\x22<>|]/g, "_");
+// the hand bones of an avatar: each hand's bone and every bone under it
+function handBones(av) {
+  const out = new Set();
+  if (!av) return out;
+  const walk = (b) => { out.add(b.name); for (const c of b.children || []) if (av.bones.has(c.name)) walk(c); };
+  for (const [nm, b] of av.bones) if (/^hand[LR]$/.test(boneRole(nm) || "")) walk(b);
+  return out;
+}
+// the file's body for a kind, or why not
+function setFileBody(kind) {
+  if (kind === "render") { const o = loadRender(), b = {}; for (const p of ["image", "camera", "render"]) for (const k of RW_PANE_KEYS[p]) b[k] = o[k]; return b; }
+  if (kind === "camT") { const c = view3d.cam, r = (v) => Math.round(v*1e4)/1e4; return { az: r(c.az), el: r(c.el), dist: r(c.dist), tx: r(c.tx), ty: r(c.ty), tz: r(c.tz) }; }
+  if (kind === "camP") { const o = loadRender(); return Object.fromEntries(CAMP_KEYS.map(k => [k, o[k]])); }
+  if (kind === "user") return { prefs: S.prefs };
+  if (kind === "hand") {
+    const q = poseNow(), H = handBones(S.av);
+    if (!q) return "There is no avatar";
+    if (!H.size) return "This avatar's hand bones are not known by name";
+    return { q: Object.fromEntries(Object.entries(q).filter(([k]) => H.has(k))) };
+  }
+  return "?";
+}
+function setFileSave(kind) {
+  const b = setFileBody(kind);
+  if (typeof b === "string") return toast(b);
+  const nm = SETFILE_NAMES[kind];
+  dl(fileBase() + " " + nm.toLowerCase() + ".json", JSON.stringify({ gusset: SETFILES[kind], v: 1, ...b }, null, 1), "application/json", (f) => toast("Saved " + nm + " as " + f));
+}
+function setFileOpen(kind) {
+  pickBinary(".json,application/json", (name, buf) => setFileText(kind, new TextDecoder().decode(new Uint8Array(buf)), name), true);
+}
+// a settings file's text put to work; true when it was
+function setFileText(kind, text, name) {
+  let d = null; try { d = JSON.parse(text); } catch (e) {}
+  const nm = SETFILE_NAMES[kind], ok = d && (d.gusset === SETFILES[kind] || (kind === "render" && /^render-(image|camera|render)$/.test(d.gusset)) || (kind === "camP" && d.gusset === "render-camera"));
+  if (!ok) return toast("That is not a " + nm + " file", 6000), false;
+  if (kind === "render" || kind === "camP") {
+    const o = loadRender(), keys = kind === "camP" ? CAMP_KEYS : [...RW_PANE_KEYS.image, ...RW_PANE_KEYS.camera, ...RW_PANE_KEYS.render];
+    for (const k of keys) if (k in d) o[k] = d[k];
+    saveRender(o); renderLensApply();
+    if (typeof RWIN !== "undefined" && RWIN.open) { rwinSide(); rwinPreview(true); }
+  } else if (kind === "camT") {
+    if (!["az", "el", "dist", "tx", "ty", "tz"].every(k => Number.isFinite(d[k])) || d.dist < 150 || d.dist > 30000) return toast("That camera file has no camera in it", 6000), false;
+    Object.assign(view3d.cam, { az: d.az, el: orbitEl(d.el), dist: d.dist, tx: d.tx, ty: d.ty, tz: d.tz }); view3d.ask();
+  } else if (kind === "user") {
+    if (!d.prefs || typeof d.prefs !== "object") return toast("That settings file has no settings in it", 6000), false;
+    setPrefs(d.prefs);
+  } else if (kind === "hand") {
+    const r = poseFileRead(JSON.stringify({ gusset: POSE_FILE, q: d.q }));
+    if (typeof r === "string") return toast(r, 6000), false;
+    if (!S.av) return toast("Load an avatar first (Avatar → Load Avatar…)"), false;
+    const H = handBones(S.av), q = Object.fromEntries(Object.entries(r.q).filter(([k]) => H.has(k)));
+    if (!Object.keys(q).length) return toast("None of its bones is a hand bone of this avatar", 6000), false;
+    simHalt(); push("Hand Pose");
+    S.avedit = normAvEdit({ ...S.avedit, joints: handJointsTo(S.av, q) });
+    commit();
+  }
+  toast(nm + (name ? " from " + name : "") + " opened");
+  return true;
+}
+// the document's joint edits with each hand bone turned to stand as q has it (from where it stands without an edit of its own)
+function handJointsTo(av, q) {
+  const J = { ...((S.avedit && S.avedit.joints) || {}) }, keep = av.joints;
+  for (const n of Object.keys(q)) delete J[n];
+  av.joints = J; poseApply(av);
+  for (const [n, a] of Object.entries(q)) { const b = av.bones.get(n); if (!b) continue; const t = new THREE.Quaternion().fromArray(a), c = b.quaternion.clone(); if (c.angleTo(t) > 1e-6) J[n] = c.invert().multiply(t).toArray().map(v => Math.round(v*1e6)/1e6); }
+  av.joints = keep; poseApply(av);
+  return J;
+}
+// a name not yet in seen (compared without case): base.ext, else base-2.ext, base-3.ext, …; kept in seen
+function uniqName(seen, dir, base, ext) {
+  base = String(base || "file").replace(/[\\/:*?\x22<>|]+/g, "_") || "file";
+  let n = dir + base + ext, k = 2;
+  while (seen.has(n.toLowerCase())) n = dir + base + "-" + (k++) + ext;
+  seen.add(n.toLowerCase());
+  return n;
+}
+// the project's pictures as files under dir, each under its own name: [{ name, data, raw }]
+function imageFiles(ims, dir, seen) {
+  const files = [];
+  for (const im of ims) {
+    const m = /^data:image\/([a-z0-9.+-]+);base64,(.*)$/i.exec(im.data || "");
+    if (!m) continue;
+    const ext = m[1].toLowerCase().replace("jpeg", "jpg").replace(/[^a-z0-9]+.*$/, "") || "img";
+    files.push({ name: uniqName(seen, dir, String(im.name || im.id).replace(/[.][^.]*$/, "") || String(im.id), "." + ext), data: bytesOf(m[2]), raw: true });
+  }
+  return files;
+}
+// Save As ▸ Surface Textures: every picture the project uses, one .zip
+function surfaceTexturesSave() {
+  const ims = usedImages();
+  if (!ims.length) return toast("The project uses no pictures (a fabric's texture, a graphic, an environment map)");
+  const files = imageFiles(ims, "", new Set());
+  zipPack(files, (bytes) => dl(fileBase() + " textures.zip", bytes, "application/zip", (f) => toast("Saved " + files.length + (files.length === 1 ? " picture" : " pictures") + " as " + f)));
+}
+/* (run 15 / part 1, roadmap 3.A2, the maintainer's answer to run 14d's Q1) SAVE AS ▸ PROJECT (WITH OTHER FILES): one .zip holding the
+   project, <name>.pdraft as Save As writes it (it holds every picture and one's own avatar already), and beside it every file the project
+   uses, each under its own name, for sending a project to someone or using its parts elsewhere (guess run15/1): textures/ (every picture:
+   fabric textures, graphics, environment maps, the background image), ies/ (each IES light's profile), accessories/ (each avatar
+   accessory as OBJ), avatar/ (one's own avatar's file as it was loaded). Open, Add and a drop read such a .zip back: its .pdraft is opened
+   (bundleInner()); the other files are copies for other programs and are not read. */
+function bundleFiles(done) {
+  let inner;
+  try { inner = pdraftFiles(); } catch (e) { return done(e); }
+  zipPack(inner, (bytes) => {
+    const seen = new Set(), base = fileBase(), files = [{ name: uniqName(seen, "", base, ".pdraft"), data: bytes, raw: true }];
+    files.push(...imageFiles(usedImages(), "textures/", seen));
+    for (const l of S.lights || []) if (l.ies && typeof l.ies.text === "string") files.push({ name: uniqName(seen, "ies/", String(l.ies.name || "profile").replace(/[.]ies$/i, ""), ".ies"), data: utf8Of(l.ies.text) });
+    if (S.av) for (const a of accList()) { try { files.push({ name: uniqName(seen, "accessories/", a.name || "accessory", ".obj"), data: utf8Of(accObjText(a)) }); } catch (e) {} }
+    const av = avatarEmbedded();
+    if (av) files.push({ name: uniqName(seen, "avatar/", av.name.replace(/[.][^.]*$/, ""), (/[.][^.]*$/.exec(av.name) || [""])[0]), data: av.bytes, raw: true });
+    zipPack(files, (zip) => done(null, zip, files));
+  });
+}
+function projectBundleSave() {
+  bundleFiles((err, zip, files) => {
+    if (err) return toast("Couldn't save: " + deskErr(err), 6000);
+    const n = files.length - 1;
+    dl(fileBase() + " (with other files).zip", zip, "application/zip", (f) => toast("Saved the project with " + (n ? n + (n === 1 ? " other file" : " other files") : "no other files") + " as " + f + ". Open reads it back.", 7000));
+  });
+}
+// a Project (with Other Files) .zip's project: { name, bytes } of its one .pdraft at the top, or null (a pattern file has document.json)
+function bundleInner(parts) {
+  if (!parts || parts.has("document.json")) return null;
+  const top = [...parts.keys()].filter(n => !n.includes("/") && /[.]pdraft$/i.test(n));
+  return top.length === 1 && isZip(parts.get(top[0])) ? { name: top[0], bytes: parts.get(top[0]) } : null;
+}
+/* (run 15 / part 1, roadmap 3.A2) Save As ▸ Avatar…: the avatar's own file as it was loaded (a built-in one's .glb too), to load again
+   with Load Avatar or elsewhere; what the Avatar Editor, the pose and the measurements did is the project's and stays there (guess
+   run15/2). Add ▸ Avatar… picks an avatar file as Load Avatar's Load your own… does: one avatar a scene, so it takes the place of the one
+   there, the garment staying where it hangs (guess run15/3). */
+function avatarSaveFile() {
+  const av = S.av;
+  if (!av || !av.file || !av.file.buf) return toast("There is no avatar (Avatar → Load Avatar…)");
+  const n = String(av.file.name || av.name || "avatar").replace(/[\\/:*?\x22<>|]+/g, "_");
+  dl(n, new Uint8Array(av.file.buf), "application/octet-stream", (f) => toast("Saved " + av.name + " as " + f + ": its model as loaded (the size, pose and measurements set here stay with the project)", 8000));
+}
+/* (run 16 batch 0, the maintainer's answer to run 15's Q2) Add ▸ Avatar… replaces the avatar there as ONE undo step "Add Avatar": the
+   document's avatar edits (pose, size, measurements, accessories, …: S.avedit, made on the old body's skin and bones) go with it, and Undo
+   brings the old avatar back with them (AV_POOL, avBack()). When the avatar there has edits, a box asks first. */
+const avHasEdits = () => !!S.av && (avEditOn() || Object.values((S.avSet && S.avSet.pose) || {}).some(v => Number.isFinite(v) && v !== 0) || !!(S.avSet && S.avSet.base));
+function avPoolPut(av) {
+  if (!av || !av.file || !av.file.buf) return 0;
+  for (const [id, e] of AV_POOL) if (e.buf === av.file.buf) { e.set = clone(S.avSet); return id; }
+  const id = AV_NEXT++;
+  AV_POOL.set(id, { buf: av.file.buf, file: av.file.name, path: S.avSet.path || null, own: !av.preset, set: clone(S.avSet) });
+  return id;
+}
+function avatarAddFile() {
+  const pick = () => pickBinary(".fbx,.glb,.gltf", (name, buf, path) => avatarReplace(buf, name, path));
+  if (!avHasEdits()) return pick();
+  askModal("Replace " + S.av.name + "?", "<p>" + esc(S.av.name) + " has edits of its own (its pose, size, measurements or accessories). The new avatar takes its place without them.</p><p>Undo brings " + esc(S.av.name) + " back as it is now.</p>",
+    [{ n: "Choose Avatar…", k: "go", primary: true, f: pick }, { n: "Cancel", k: "no", esc: true, f: () => {} }]);
+}
+function avatarReplace(buf, name, path) {
+  const was = S.av ? S.av.name : null;
+  AV_NOW = avPoolPut(S.av);                                      // the avatar there (0: none), as it stands now
+  avatarLoaded(buf, name, path, false, true, (av) => {
+    push("Add Avatar");                                          // the step before: AV_NOW still names the avatar it replaces
+    AV_NOW = avPoolPut(av);
+    S.avedit = normAvEdit({});
+    commit();
+    if (was) toast(av.name + " takes the place of " + was + " (one avatar a scene); the garment stays where it hangs: simulate to drape it. Undo brings " + was + " back", 7000);
+  });
+}
+// undo / redo / a step gone to named another avatar (AV_WANT): it is put on, as it stood then; 0 is no avatar
+function avBack() {
+  const id = AV_WANT;
+  AV_WANT = undefined;
+  if (id === undefined || id === AV_NOW) return;
+  if (id === 0) { AV_NOW = 0; if (S.av) avatarNone(); else avatarGone(); return; }
+  const e = AV_POOL.get(id);
+  if (!e) return;
+  if (S.av) avPoolPut(S.av);
+  AV_NOW = id;
+  avatarLoaded(e.buf, e.file, e.path, true, e.own, () => {
+    S.avSet = normAvatar({ ...e.set }); applyAvatar(); posePanel();
+    if (typeof avEditSync === "function") avEditSync();
+    view3d.ask();
+  });
 }
 // the parts of a version 12 file as one document object, as loadDoc() takes it (throws if it is not one)
 function pdraftDoc(parts) {
@@ -20958,6 +22333,101 @@ function pdraftDoc(parts) {
   if (body && fileHash(body) === rec.hash) d.avatarFile = { name: rec.file.slice(rec.file.lastIndexOf("/") + 1), bytes: body };
   return d;
 }
+/* (run 16 batch 1, the maintainer's answer to run 15's Q1) A FILE FROM A NEWER VERSION. After the freeze the version stays 37 and a
+   later 1.x adds only optional fields, so this build opens a later file and would drop what it does not know. When a file of the frozen
+   version opens, its document.json as written is compared with what this build would write of it (newerDiff(): every key, recursively;
+   a list whose items have ids item by id, any other list place by place while its length is the same): what is in the file and not in
+   ours is what this build does not know (a value of a known key is not compared: that is normalising, not a newer field). Then
+     - a box says so on opening (NEWER_TEXT, with the first few paths);
+     - plain Save asks once more before it writes over the file (Save As… / Save Anyway / Cancel);
+     - what can be placed is written back unchanged at every save (newerPut()): an unknown key into its object, found again by the same
+       path (a pattern, seam, light, … by its id, so it survives edits; a place in a list only while that list keeps its length); an item
+       of a list with ids that this build left out, at the list's end; a part of the container that this build does not write (by name).
+       Not kept: what lay in a pattern or item deleted since, in a list whose length changed, inside history.json (the steps are this
+       build's), in crash recovery's text, Save As ▸ Garment / Pattern and Add ▸ Project.
+   NEWER: { name, lost: [{ at, key, val } | { at, item }], parts: [[name, bytes]], loose, asked } or null; NEWER_IN the raw file between
+   openFile() and openLoaded(). Module state of the session, never in a file. */
+let NEWER = null, NEWER_IN = null;
+const NEWER_KNOWN = /^(document[.]json|history[.]json|drape[.]bin|states3[.]bin|histcloth[.]bin|images\/.+|avatar\/.+)$/;
+const NEWER_SKIP = ["images", "drape", "states3"];
+const NEWER_TEXT = "This file was saved by a newer version of Gusset. Some settings will be lost if you save it here — use Save As to keep the original.";
+const newerObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+const newerIds = (a) => a.length > 0 && a.every(x => newerObj(x) && (typeof x.id === "number" || typeof x.id === "string")) && new Set(a.map(x => x.id)).size === a.length;
+function newerDiff(raw, ours, at, out) {
+  if (newerObj(raw) && newerObj(ours)) {
+    for (const k of Object.keys(raw)) if (!(k in ours)) out.lost.push({ at, key: k, val: raw[k] }); else newerDiff(raw[k], ours[k], [...at, k], out);
+  } else if (Array.isArray(raw) && Array.isArray(ours)) {
+    if (newerIds(raw) && (newerIds(ours) || !ours.length)) {
+      const by = new Map(ours.map(x => [x.id, x]));
+      for (const x of raw) if (by.has(x.id)) newerDiff(x, by.get(x.id), [...at, { id: x.id }], out); else out.lost.push({ at, item: x });
+    } else if (raw.length === ours.length) raw.forEach((x, i) => newerDiff(x, ours[i], [...at, { i, n: raw.length }], out));
+    else if (raw.some(x => newerObj(x) || Array.isArray(x))) out.loose++;      // (a list of objects that changed length: not placeable)
+  }
+  return out;
+}
+// the place a path names in a document object, or undefined
+function newerAt(d, at) {
+  let c = d;
+  for (const s of at) {
+    if (c === undefined || c === null) return undefined;
+    if (typeof s === "string") c = newerObj(c) ? c[s] : undefined;
+    else if ("id" in s) c = Array.isArray(c) ? c.find(x => newerObj(x) && x.id === s.id) : undefined;
+    else c = Array.isArray(c) && c.length === s.n ? c[s.i] : undefined;
+  }
+  return c;
+}
+// what a newer version wrote, put back into the document object about to be written: how many of NEWER.lost were placed
+function newerPut(d) {
+  let n = 0;
+  for (const e of NEWER.lost) {
+    const c = newerAt(d, e.at);
+    if (e.item) { if (Array.isArray(c) && !c.some(x => newerObj(x) && x.id === e.item.id)) { c.push(clone(e.item)); n++; } }
+    else if (newerObj(c) && !(e.key in c)) { c[e.key] = clone(e.val); n++; }
+  }
+  return { placed: n };
+}
+// a path as a person reads it: pieces[Front].segs[#3].future
+function newerPath(e) {
+  const d = NEWER_IN && NEWER_IN.raw;
+  let c = d, s = "";
+  for (const st of e.at) {
+    if (typeof st === "string") { s += (s ? "." : "") + st; c = newerObj(c) ? c[st] : undefined; }
+    else if ("id" in st) { c = Array.isArray(c) ? c.find(x => newerObj(x) && x.id === st.id) : undefined; s += "[" + (c && typeof c.name === "string" && c.name ? c.name : "#" + st.id) + "]"; }
+    else { c = Array.isArray(c) ? c[st.i] : undefined; s += "[" + st.i + "]"; }
+  }
+  return s + (e.key !== undefined ? (s ? "." : "") + e.key : "[+ #" + e.item.id + "]");
+}
+// on opening (openLoaded(), the document loaded): compare, and say so
+function newerCheck(name) {
+  const inp = NEWER_IN;
+  NEWER = null;
+  if (!inp || !newerObj(inp.raw) || inp.raw.v !== FILE_VERSION) { NEWER_IN = null; return; }
+  // the document as this build has it (docObj(): cheap, shared, only read here); what only the container's writer adds to it (pictures as
+  // files, the drape's and 3D states' offsets, the avatar's file name) is this build's own layout and left out of the comparison
+  let ours;
+  try { ours = docObj(); } catch (e) { NEWER_IN = null; return; }
+  const raw = { ...inp.raw };
+  for (const k of NEWER_SKIP) delete raw[k];
+  if (newerObj(raw.scene) && newerObj(raw.scene.avatar) && "file" in raw.scene.avatar) raw.scene = { ...raw.scene, avatar: { ...raw.scene.avatar } }, delete raw.scene.avatar.file;
+  const out = newerDiff(raw, ours, [], { lost: [], loose: 0 });
+  const parts = [...inp.parts].filter(([n]) => !NEWER_KNOWN.test(n));
+  // (a list whose length differs is normalising as often as not, never by itself a sign of a newer field: it warns of nothing alone)
+  if (!out.lost.length && !parts.length) { NEWER_IN = null; return; }
+  NEWER = { name, lost: out.lost, parts, loose: out.loose, asked: false };
+  const list = [...out.lost.map(newerPath), ...parts.map(([n]) => n)], more = list.length - 5;
+  NEWER.paths = list;
+  NEWER_IN = null;
+  console.warn("Gusset: " + name + " holds what this version does not know: " + list.join(", "));
+  askModal("Saved by a newer version", "<p>" + esc(NEWER_TEXT) + "</p><p class=\"hint\">Not known here: " + esc(list.slice(0, 5).join(", ")) + (more > 0 ? " and " + more + " more" : "") + ". This version keeps them in the file where it can.</p>",
+    [{ n: "OK", k: "ok", primary: true, esc: true, f: () => {} }]);
+}
+// plain Save of a document from a newer version asks once before writing over it; true if it asked (the save waits for the answer)
+function newerSaveAsk(then) {
+  if (!NEWER || NEWER.asked) return false;
+  askModal("Save over a file from a newer version?", "<p>" + esc(NEWER.name) + " was saved by a newer version of Gusset. Saving it here writes over it, and settings this version does not know may be lost. Save As keeps the original as it is.</p>",
+    [{ n: "Save As…", k: "as", primary: true, f: () => saveDoc(true, then) }, { n: "Save Anyway", k: "save", f: () => { NEWER.asked = true; saveDoc(false, then); } }, { n: "Cancel", k: "no", esc: true, f: () => {} }]);
+  return true;
+}
 /* ---- Save / Open ----
    Pattern files are .pdraft (the container above; the JSON files of earlier versions, .pdraft or .json, open the same).
    In a browser, Save downloads pattern.pdraft and Open reads a file you pick.
@@ -20977,16 +22447,25 @@ function setFile(path) {
 }
 // then (optional): what to do once it is saved (not run if a Save As dialog is cancelled or the save fails)
 function saveDoc(as, then) {
+  if (!as && newerSaveAsk(then)) return;                     // (run 16) a file from a newer version: asked once first
   let files;
   try { files = pdraftFiles(); } catch (e) { return toast("Couldn't save: " + deskErr(e), 6000); }
   zipPack(files, (bytes) => {
-    if (!DESK) { dl("pattern.pdraft", bytes, "application/octet-stream"); markClean(); toast("Saved"); if (typeof then === "function") then(); return; }
+    const wrote = () => { if (NEWER) NEWER.asked = true; };   // (what is written now is this version's own file: no second question)
+    if (!DESK) { dl("pattern.pdraft", bytes, "application/octet-stream"); wrote(); markClean(); toast("Saved"); if (typeof then === "function") then(); return; }
     // a file of an earlier version that is called .json is left as it is: the document is saved beside it as a .pdraft
     const own = !!filePath && /\.pdraft$/i.test(filePath);
     (own && !as ? DESK.save(filePath, bytes) : DESK.saveAs(filePath ? filePath.replace(/\.(json|pdraft)$/i, "") + ".pdraft" : "pattern.pdraft", bytes))
-      .then((f) => { if (f) { setFile(f.path); markClean(); toast("Saved " + f.name + (f.kept ? ". It was a file of an earlier version, which earlier builds can still open: the original is kept beside it as " + f.kept : ""), f.kept ? 9000 : undefined); if (typeof then === "function") then(); } })
+      .then((f) => { if (f) { wrote(); setFile(f.path); markClean(); thumbBeside(f.path); toast("Saved " + f.name + (f.kept ? ". It was a file of an earlier version, which earlier builds can still open: the original is kept beside it as " + f.kept : ""), f.kept ? 9000 : undefined); if (typeof then === "function") then(); } })
       .catch((e) => toast("Couldn't save: " + deskErr(e), 6000));
   });
+}
+/* (Round LIB-1 / C, spec 4.2; guess post8/67) with Default Files ▸ "Also write the picture beside a saved project" (off by default) the desktop
+   app writes <name>.png next to the .pdraft it just saved (the shell writes only beside a file it was just given to save) */
+function thumbBeside(p) {
+  if (!DESK || !DESK.pngBeside || !S.prefs || !S.prefs.thumbBeside || !p) return;
+  const url = libThumbPng(), m = /^data:image[/]png;base64,(.+)$/.exec(url || "");
+  if (m) DESK.pngBeside(p, bytesOf(m[1])).catch((e) => toast("The picture beside the file could not be written: " + deskErr(e), 6000));
 }
 // a file's bytes, by what they are: a version 12 container, or text (an older pattern file, a DXF)
 /* (Round r34 / 8, the check video S04 07:24 "a progress bar while a project loads") a file of BUSY_MIN bytes or more shows a line with a
@@ -21015,8 +22494,12 @@ function openFile(name, bytes, path, sure) {
   if (big) busyStart("Opening " + name + "\u2026");
   zipUnpack(bytes, (err, parts) => {
     let d = null;
+    const inner = !err && bundleInner(parts);                  // (run 15) a Project (with Other Files) .zip: its project
+    if (inner) { busyEnd(); return openFile(inner.name, inner.bytes, null, sure); }
     try { if (err) throw err; d = pdraftDoc(parts); }
     catch (e) { busyEnd(); return toast("Couldn't open " + name + ": " + deskErr(e), 6000); }
+    // (run 16) the file as written, for newerCheck() once it is open
+    try { NEWER_IN = { raw: JSON.parse(utf8Text(parts.get("document.json"))), parts: [...parts].filter(([n]) => !NEWER_KNOWN.test(n)) }; } catch (e) { NEWER_IN = null; }
     if (!big) return openLoaded(name, d, path, sure);
     busySay("Building the patterns\u2026");
     setTimeout(() => { try { openLoaded(name, d, path, sure); } finally { busyEnd(); } }, 40);
@@ -21033,11 +22516,11 @@ function openFile(name, bytes, path, sure) {
    guidelines, measurements, line links, Print Layout, library items other than fabrics, symmetric unfold links (the patterns
    stay as they are drawn), and its 3D arrangement and drape (the patterns stand where 3D puts new patterns). */
 // (Round BETA8-1 / K, roadmap 3.C4) through the Open Garment box, Add chosen (its Translation)
-function addProject() { pickBinary(".pdraft,.json", (name, buf) => readDocBytes(name, new Uint8Array(buf), (err, d) => err ? toast("Couldn't add " + name + ": " + err, 6000) : openGarmentDialog(name, d, "add")), true); }
+function addProject() { pickBinary(".pdraft,.json,.zip",(name, buf) => readDocBytes(name, new Uint8Array(buf), (err, d) => err ? toast("Couldn't add " + name + ": " + err, 6000) : openGarmentDialog(name, d, "add")), true); }
 // a pattern file's bytes as a document object: done(error text or null, d)
 function readDocBytes(name, bytes, done) {
   if (!isZip(bytes)) { let d = null; try { d = JSON.parse(utf8Text(bytes)); } catch (e) {} return d && Array.isArray(d.pieces) ? done(null, d) : done("expected a pattern file (.pdraft or .json)"); }
-  zipUnpack(bytes, (err, parts) => { let d = null; try { if (err) throw err; d = pdraftDoc(parts); } catch (e) { return done(deskErr(e)); } done(null, d); });
+  zipUnpack(bytes, (err, parts) => { const inner = !err && bundleInner(parts); if (inner) return readDocBytes(inner.name, inner.bytes, done); let d = null; try { if (err) throw err; d = pdraftDoc(parts); } catch (e) { return done(deskErr(e)); } done(null, d); });
 }
 function addDocument(name, d, opt) {
   if (!d || !Array.isArray(d.pieces) || !d.pieces.length) { toast("There are no patterns in " + name); return 0; }
@@ -21084,20 +22567,24 @@ function addDocument(name, d, opt) {
   const part = (q) => ({ ...q, piece: pid.get(q.piece), shape: sh0(q.piece, q.shape), sids: q.sids.map(x => segOf(q.piece, x)) });
   let smax = Math.max(0, ...S.seams.map(x => x.id)), tmax = Math.max(0, ...(S.stitches || []).map(x => x.id));
   const seams = incSeams.map(sm => ({ ...sm, id: ++smax, a: sm.a.map(part), b: sm.b.map(part) }));
-  const smap = new Map(incSeams.map((sm, k) => [sm.id, seams[k].id])), tr = { pipings: [], bindings: [], glues: [] }, tid = new Map();
+  const smap = new Map(incSeams.map((sm, k) => [sm.id, seams[k].id])), tr = { pipings: [], bindings: [], glues: [], lacings: [] }, tid = new Map();
   const stitches = incSt.map(st => { const n = ++tmax; tid.set(st.id, n); return { ...st, id: n, part: part(st.part) }; });
   // (Round r14 / 4) a seamline topstitch on its seam's new id, in its group by the new ids
   for (const st of stitches) if (st.seam !== undefined) { st.seam = smap.get(st.seam); st.group = tid.get(st.group) || st.id; }
   // (Round r11) its piping, binding and gluing, on the new seams and patterns
-  { let n = trimNext("piping"); for (const t of validPipings(normPipings(d.pipings), incSeams)) tr.pipings.push({ ...t, id: n++, seam: smap.get(t.seam), fabric: fab.has(t.fabric) ? fab.get(t.fabric) : null }); }
-  { let n = trimNext("binding"); for (const t of validBindings(normBindings(d.bindings), clone(d.pieces).map(migrate))) if (pid.has(t.part.piece)) tr.bindings.push({ ...t, id: n++, part: part(t.part), fabric: fab.has(t.fabric) ? fab.get(t.fabric) : null }); }
+  // (Round PIPE-1) with their strip patterns and seams on the new ids (all there, else they are ordinary patterns and seams)
+  const refs = ({ pat, sew, at, ...t }) => (pat && pat.every(i => pid.has(i)) ? { ...t, pat: pat.map(i => pid.get(i)), ...(sew ? { sew: sew.filter(i => smap.has(i)).map(i => smap.get(i)) } : {}), ...(at ? { at } : {}) } : t);
+  { let n = trimNext("piping"); for (const t of validPipings(normPipings(d.pipings), incSeams)) tr.pipings.push({ ...refs(t), id: n++, seam: smap.get(t.seam), fabric: fab.has(t.fabric) ? fab.get(t.fabric) : null }); }
+  { let n = trimNext("binding"); for (const t of validBindings(normBindings(d.bindings), clone(d.pieces).map(migrate))) if (pid.has(t.part.piece)) tr.bindings.push({ ...refs(t), id: n++, part: part(t.part), fabric: fab.has(t.fabric) ? fab.get(t.fabric) : null }); }
   { let n = trimNext("glue"); for (const g of normGlues(d.glues)) { if (g.kind === "line" && smap.has(g.seam)) tr.glues.push({ ...g, id: n++, seam: smap.get(g.seam) }); else if (g.kind === "area" && pid.has(g.a) && pid.has(g.b)) tr.glues.push({ ...g, id: n++, a: pid.get(g.a), b: pid.get(g.b) }); } }
+  // (POST8 FIX-4b) its lacings, through the new patterns' eyelets
+  { let n = trimNext("lace"); for (const t of normLacings(d.lacings)) if (t.holes.every(h => pid.has(h.piece) && sh0(h.piece, h.shape) != null)) tr.lacings.push({ ...t, id: n++, holes: t.holes.map(h => ({ piece: pid.get(h.piece), shape: sh0(h.piece, h.shape) })), fabric: fab.has(t.fabric) ? fab.get(t.fabric) : null }); }
   // where they were in the saved project; all selected, Transform Pattern in hand, to be moved where wanted
   const bi = bboxOf(inc);
   push("Add Project");
   S.images = [...(S.images || []), ...incImgs];
   S.pieces.push(...inc); S.seams.push(...seams); S.stitches = [...(S.stitches || []), ...stitches];
-  for (const k of ["pipings", "bindings", "glues"]) S[k] = [...(S[k] || []), ...tr[k]];
+  for (const k of ["pipings", "bindings", "glues", "lacings"]) S[k] = [...(S[k] || []), ...tr[k]];
   bakeDarts(inc);                                            // its darts are made of ordinary lines, as a file's are (Round F / 7)
   // (Round BETA8-1 / K) moved by the Translation: in 2D x right and y up (the 2D axes are the 3D floor and center line), then in 3D z
   if (mv && (mv[0] || mv[1])) for (const p of inc) mapPiece(p, (r) => add(r, V(mv[0], -mv[1])));
@@ -21153,21 +22640,23 @@ function saveToLibrary(name) {
     if (!n) return toast("A name is needed");
     const d = JSON.parse(docJSON()); delete d.drape; delete d.scene;
     let kept = true;
-    try { const list = myPatterns().filter(x => x.name !== n); list.push({ name: n, date: new Date().toISOString().slice(0, 10), doc: d }); kv().setItem(LIB_KEY, JSON.stringify(list)); }
+    // (Round LIB-1 / C) into the folder in view when it is one's own garment folder (guess post8/55), with its picture (Save with Thumbnail)
+    const [vc, vf] = LIBUI.path, fo = dlgOpen() && /library/.test(dlg.className) && vc === "garment" && libStore().folders.find(f => f.id === vf && f.cat === "garment"), th = libThumbPng();
+    try { const list = myPatterns().filter(x => x.name !== n); list.push({ name: n, date: new Date().toISOString().slice(0, 10), doc: d, ...(fo ? { folder: fo.id } : {}), ...(th ? { thumb: th } : {}) }); kv().setItem(LIB_KEY, JSON.stringify(list)); }
     catch (e) { kept = false; }
     // and the file, so the pattern is not only in this browser
     let files = null; try { files = pdraftFiles(); } catch (e) {}
     // (Round BETA8-1 / K) in the desktop app the entry remembers the file it was saved as (Copy the Path, Show in Explorer)
-    if (files) zipPack(files, (bytes) => dl(n.replace(/[\\/:*?\x22<>|]+/g, "_") + ".pdraft", bytes, "application/octet-stream", (f, where) => { if (kept && typeof where === "string" && where) libraryPath(n, where); }));
+    if (files) zipPack(files, (bytes) => dl(n.replace(/[\\/:*?\x22<>|]+/g, "_") + ".pdraft", bytes, "application/octet-stream", (f, where) => { if (kept && typeof where === "string" && where) { libraryPath(n, where); thumbBeside(where); } }));
     toast(kept ? "Saved to the library as " + n + ", and as the file " + n + ".pdraft" : "This browser would not keep it (its storage may be full or blocked): saved as the file " + n + ".pdraft only", 6000);
-    if (dlg.className === "library") libraryDialog();
+    libDraw();      // (Round LIB-1 / B) the panel, if open, shows it at once
   };
   if (name !== undefined) return ask(name);
   askText("Save to Library", (S.pieces[0] && S.pieces[0].name) || "My pattern", (t) => ask(t));
 }
 function libraryDelete(name) {
   try { kv().setItem(LIB_KEY, JSON.stringify(myPatterns().filter(x => x.name !== name))); } catch (e) { return toast("This browser would not change its storage"); }
-  toast(name + " taken out of the library"); libraryDialog();
+  toast(name + " taken out of the library"); libDraw();      // (Round LIB-1 / B: the panel drawn again where it is, if open)
 }
 // (Round BETA8-1 / K) a library entry's file, once the desktop app saved it (saveToLibrary())
 function libraryPath(name, where) {
@@ -21206,43 +22695,726 @@ function openGarmentGo(name, d, v) {
   if (!mv.every(Number.isFinite)) return toast("Numbers only");
   return addDocument(name, d, { move: mv });
 }
+/* (Round LIB-1 / B, roadmap 1.T1 3.C16 2.D1; the round's spec, from the maintainer's library video and W39) THE LIBRARY
+   PANEL. It still drops from the Library button (r15 / 10), its head still moves it (r19 / H33), Y and File \u25b8 Library\u2026 still open it. Inside,
+   as the reference's: a tree at the left (Garment, Avatar, Fabric, Trim; Stage and the online sources left out, \u00a71), at the right a
+   breadcrumb, Search for Keyword\u2026, a tiles / list switch and a sort, then folders first and the items as tiles (a thumbnail drawn from the
+   item, its name, a dim second line). The panel is made larger and smaller at its lower right corner; its size, the folder and the view are
+   kept for the session (LIBUI: view state, never written, guess post8/45). What it holds is what ships with the program and the user's own
+   garments (Save to Library\u2026, pdraft:library as before); a folder with nothing in it is not shown (no empty shells). An item is used by a
+   double-click (or Enter): a garment opens the Open Garment box (W9) as before, an avatar loads, a pose is put on, a fabric or a trim is
+   added to the document (one step), each by the code that does it elsewhere; a click only selects; its right-click is W8's (Add to
+   Workspace, the path rows for one's own file) with this program's own rows under More \u25b8 (guess post8/63, post8/65). */
+const LIBUI = { path: ["garment"], q: "", view: "tile", sort: "name", sel: null, w: 0, h: 0 };
+const LIB_CATS = [["garment", "Garment"], ["avatar", "Avatar"], ["fabric", "Fabric"], ["trim", "Trim"]];
+const LIB_SVG = (inner, vb) => '<svg viewBox="' + (vb || "0 0 24 24") + '" aria-hidden="true">' + inner + '</svg>';
+const LIB_ICON = {
+  folder: LIB_SVG('<path d="M3 6h7l2 2h9v11H3z" fill="#77777c" stroke="#9a9aa0" stroke-width="1"/>'),
+  garment: LIB_SVG('<path d="M8 3l-5 3 2 4 2-1v12h10V9l2 1 2-4-5-3c-1 2-2 3-4 3S9 5 8 3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'),
+  avatar: LIB_SVG('<circle cx="12" cy="4.5" r="2.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M12 7v8M7 10l5-2 5 2M9 22l3-7 3 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'),
+  fabric: LIB_SVG('<path d="M4 5h13l3 3v11H7l-3-3z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M17 5v3h3M7 9h9M7 12h9M7 15h6" stroke="currentColor" stroke-width="1"/>'),
+  trim: LIB_SVG('<circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="1.2" fill="currentColor"/><circle cx="14" cy="10" r="1.2" fill="currentColor"/><circle cx="10" cy="14" r="1.2" fill="currentColor"/><circle cx="14" cy="14" r="1.2" fill="currentColor"/>'),
+  pose: LIB_SVG('<circle cx="12" cy="4.5" r="2.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M12 7v8M3 8l9 1 9-1M9 22l3-7 3 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'),
+  zipper: LIB_SVG('<path d="M12 2v20" stroke="currentColor" stroke-width="1.4"/><path d="M9 4h3M12 6h3M9 8h3M12 10h3M9 12h3M12 14h3" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="15" width="6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>'),
+  topstitch: LIB_SVG('<path d="M3 17C8 7 16 7 21 17" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 13C8 3 16 3 21 13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.5 2"/>'),
+  buttonhole: LIB_SVG('<rect x="3" y="9" width="18" height="6" rx="3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 12h12" stroke="currentColor" stroke-width="1.2"/>'),
+};
+// a garment's thumbnail: its patterns' outlines laid out as in the 2D window, cached per document object (guess post8/51)
+const LIB_THUMBS = new WeakMap();
+function libGarmentSVG(doc) {
+  if (doc && LIB_THUMBS.has(doc)) return LIB_THUMBS.get(doc);
+  const loops = [];
+  for (const p of (doc && doc.pieces) || []) {
+    if (!p || p.on === false || !Array.isArray(p.pts) || p.pts.length < 2) continue;
+    let pts = null;
+    try { pts = flatten(p, 10); } catch (e) { pts = null; }
+    if (!Array.isArray(pts) || pts.length < 2 || !pts.every(q => q && Number.isFinite(q.x) && Number.isFinite(q.y))) pts = p.pts.filter(q => q && Number.isFinite(q.x) && Number.isFinite(q.y));
+    if (pts.length > 1) loops.push(pts);
+  }
+  let out = LIB_ICON.garment;
+  if (loops.length) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const l of loops) for (const q of l) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+    const s = Math.max(x1 - x0, y1 - y0, 1), pad = s*0.06, r = (v) => Math.round(v*10)/10;
+    out = '<svg viewBox="' + r(x0 - pad) + " " + r(y0 - pad) + " " + r(s + 2*pad) + " " + r(s + 2*pad) + '" aria-hidden="true">' +
+      loops.map(l => '<path d="M' + l.map(q => r(q.x) + " " + r(q.y)).join("L") + 'Z" fill="#d9d9dc" fill-opacity=".18" stroke="currentColor" stroke-width="1.2" vector-effect="non-scaling-stroke"/>').join("") + '</svg>';
+  }
+  if (doc) LIB_THUMBS.set(doc, out);
+  return out;
+}
+// a button's thumbnail: its shape, colour and holes as its type has them
+function libButtonSVG(c) {
+  const sq = c.shape === "Square", col = /^#[0-9a-f]{6}$/i.test(c.color) ? c.color : "#ffffff";
+  const lum = [1, 3, 5].reduce((s, i, k) => s + parseInt(col.slice(i, i + 2), 16)*[0.299, 0.587, 0.114][k], 0), ink = lum < 110 ? "#d0d0d4" : "#202022";
+  const holes = c.thread === "None" ? [] : c.thread === "Parallel" && !/4 holes/i.test(c.name || "") && /2 holes|Blouse/i.test(c.name || "") ? [[10, 12], [14, 12]] : [[10, 10], [14, 10], [10, 14], [14, 14]];
+  return LIB_SVG((sq ? '<rect x="4" y="4" width="16" height="16" rx="2"' : '<circle cx="12" cy="12" r="8.5"') + ' fill="' + col + '" stroke="#9a9aa0" stroke-width="1"/>' +
+    '<circle cx="12" cy="12" r="6" fill="none" stroke="' + ink + '" stroke-opacity=".35" stroke-width=".8"/>' + holes.map(([x, y]) => '<circle cx="' + x + '" cy="' + y + '" r="1.1" fill="' + ink + '"/>').join(""));
+}
+// a fabric's thumbnail: a swatch whose weave lines are as dense as the fabric is heavy, and a knit's loops for a knit
+function libFabricSVG(name, p) {
+  const knit = /jersey|knit/i.test(name), n = Math.max(3, Math.min(9, Math.round((p.weight || 150)/45)));
+  let lines = "";
+  for (let k = 1; k < n; k++) { const v = 3 + 18*k/n; lines += knit ? '<path d="M3 ' + v + 'q1.5 -2 3 0t3 0t3 0t3 0t3 0t3 0" fill="none" stroke="#3a3a3e" stroke-width=".7"/>' : '<path d="M3 ' + v + 'H21M' + v + ' 3V21" stroke="#3a3a3e" stroke-width=".5"/>'; }
+  return LIB_SVG('<rect x="3" y="3" width="18" height="18" fill="#d9d9dc" stroke="#3a3a3e" stroke-width=".8"/>' + lines);
+}
+const libItemKey = (it) => it.cat + "/" + it.folder + "/" + it.id;
+/* Every folder the library has now: [{ cat, id, name, items: [item] }], an item { cat, folder, id, kind, name, sub, date, thumb, use(), add(),
+   rows: [] (W8's), more: [] (ours) }. Built afresh each time the panel draws: nothing is cached but the thumbnails. */
+function libFolders() {
+  // (Round LIB-1 / C) a folder of one's own is shown even with nothing in it; every other only with items (no empty shells)
+  const out = [], F = (cat, id, name, items) => { if (items.length) out.push({ cat, id, name, items }); };
+  const st = libStore(), own = new Set(st.folders.map(f => f.id));
+  const garment = (folder, e, k, ship, sub) => ({ cat: "garment", folder, id: (e.id || e.name) + "#" + k, kind: "garment", name: e.name, sub, date: e.date || "", ent: e, ship,
+    thumb: libThumbOf(e) || libGarmentSVG(e.doc), use: () => openGarmentDialog(e.name, libDoc(e), "open"), rows: () => libraryItemRows(e),
+    more: () => [{ n: "Open", f: () => openGarmentDialog(e.name, libDoc(e), "open") }, ...(ship ? [] : [{ n: "Rename…", f: () => libGarmentRename(e.name) }, libMoveRow("garment", e.folder || "", (to) => libGarmentMove(e.name, to)), { sep: 1 }, { n: "Delete", f: () => libraryDelete(e.name) }])] });
+  F("garment", "blocks", "Blocks", shippedBlocks().map((e, k) => garment("blocks", e, k, true, "Gusset")));
+  F("garment", "examples", "Examples", shippedExamples().map((e, k) => garment("examples", e, k, true, "Gusset")));
+  const mine = myPatterns();
+  F("garment", "mine", "My Garments", mine.filter(e => !own.has(e.folder)).map((e, k) => garment("mine", e, k, false, e.date || "")));
+  for (const f of st.folders.filter(x => x.cat === "garment")) out.push({ cat: "garment", id: f.id, name: f.name, own: true, items: mine.filter(e => e.folder === f.id).map((e, k) => garment(f.id, e, k, false, e.date || "")) });
+  // Avatar: the two built-in avatars, the pose presets and the poses kept on this machine (guess post8/53)
+  const avatar = (folder, p) => ({ cat: "avatar", folder, id: p.key, kind: "avatar", name: p.name, sub: "Gusset", ship: true, thumb: AV_FIGURE[p.key] || LIB_ICON.avatar,
+    use: () => avatarPresetPick(p.key), rows: () => [{ hd: esc(p.name) }, { n: "Add to Workspace", f: () => avatarPresetPick(p.key) }], more: () => [] });
+  F("avatar", "male", "Male", AV_PRESETS.filter(p => p.key === "male" && !p.soon).map(p => avatar("male", p)));
+  F("avatar", "female", "Female", AV_PRESETS.filter(p => p.key === "female" && !p.soon).map(p => avatar("female", p)));
+  const pose = (id, name, sub, ship, go) => ({ cat: "avatar", folder: "pose", id, kind: "pose", name, sub, ship, thumb: LIB_ICON.pose, use: go, rows: () => [{ hd: esc(name) }, { n: "Add to Workspace", f: go }], more: () => [] });
+  F("avatar", "pose", "Pose", [...POSE_PRESETS.filter(([k]) => k !== "file").map(([k, n]) => pose("pre-" + k, n, "Gusset", true, () => posePresetStep(k))),
+    ...(S.poses || []).map(p => ({ ...pose("own-" + p.name, p.name, "Pose file", false, () => (S.av ? (setAvatar({ base: p.name, pose: {} }), toast("Pose \u201c" + p.name + "\u201d on " + avatarShown(S.av.name))) : toast("Load an avatar first (Avatar \u2192 Load Avatar\u2026)"))),
+      more: () => [{ n: "Delete", f: () => { deletePose(p.name); libDraw(); } }] }))]);      // (Round LIB-1 / C: the pose list is the library's Pose folder; Register Pose keeps one there, guess post8/66)
+  // Fabric: the five presets, each a fabric of the library with its preset's weight, thickness and Max Stretch
+  F("fabric", "presets", "Presets", Object.keys(FABRIC_PHYS).filter(k => k !== "Custom").map(k => ({ cat: "fabric", folder: "presets", id: k, kind: "fabric", name: k, sub: "Gusset", ship: true,
+    thumb: libFabricSVG(k, FABRIC_PHYS[k]), use: () => libUseFabric(k), rows: () => [{ hd: esc(k) }, { n: "Add to Workspace", f: () => libUseFabric(k) }],
+    more: () => [{ n: "Assign to Selected Patterns", f: () => libUseFabric(k, true) }] })));
+  // Trim: the button catalogue, the default buttonhole and topstitch, the zipper kinds
+  const trim = (folder, id, kind, name, thumb, go) => ({ cat: "trim", folder, id, kind, name, sub: "Gusset", ship: true, thumb, use: go, rows: () => [{ hd: esc(name) }, { n: "Add to Workspace", f: go }], more: () => [] });
+  F("trim", "button", "Button", BUTTON_CATALOGUE.map(([n, c], k) => trim("button", "cat" + k, "button", n, libButtonSVG({ name: n, ...c }), () => libUseTrim("button", () => catalogueAdd(k)))));
+  F("trim", "buttonhole", "Buttonhole", [trim("buttonhole", "default", "buttonhole", LIB.buttonhole.one, LIB_ICON.buttonhole, () => libUseTrim("buttonhole", () => libUseNew("buttonhole", {})))]);
+  F("trim", "topstitch", "Topstitch", [trim("topstitch", "default", "topstitch", LIB.topstitch.one, LIB_ICON.topstitch, () => libUseTrim("topstitch", () => libUseNew("topstitch", {})))]);
+  F("trim", "zipper", "Zipper", ZIP_TYPES.map(t => trim("zipper", t, "zipper", t + " zipper", LIB_ICON.zipper, () => libUseTrim("zipper", () => libUseNew("zipper", { type: t, name: t + " zipper" })))));
+  // (Round LIB-1 / C) one's own items: in their folder of one's own, else in their kind's home folder (made when it is not there yet);
+  // then one's own folders of the other categories, and the folders on disk the desktop app reads (libDiskFolders())
+  for (const f of st.folders.filter(x => x.cat !== "garment")) out.push({ cat: f.cat, id: f.id, name: f.name, own: true, items: [] });
+  for (const r of st.items) {
+    const h = LIB_HOME[r.kind], fid = own.has(r.folder) ? r.folder : h[1];
+    let f = out.find(x => x.cat === h[0] && x.id === fid);
+    if (!f) out.push(f = { cat: h[0], id: fid, name: h[2], items: [] });
+    f.items.push(libOwnItem(r, f));
+  }
+  out.push(...libDiskFolders());
+  return out;
+}
+// a library fabric made from a preset, one step; with `assign`, given to the selected patterns too
+function libUseFabric(k, assign) {
+  const ph = FABRIC_PHYS[k];
+  if (!ph) return null;
+  const ps = assign ? freeSel() : [];
+  if (assign && !ps.length) return toast("Select the patterns to give this fabric to"), null;
+  push(assign ? "Assign Fabric" : "Add Fabric");
+  const L = libOf(), it = normLibItem("fabric", { name: k, physical: k, weight: ph.weight, thickness: ph.thickness, maxStretch: ph.maxStretch }, L.nextId++);
+  L.fabric.push(it);
+  for (const p of ps) p.fabric = it.id;
+  const o = obState(); o.tab = "fabric"; o.sel = it.id;
+  commit(); toast("Fabric added: " + k + (ps.length ? ", on " + ps.length + (ps.length === 1 ? " pattern" : " patterns") : ""));
+  return it;
+}
+// a library item of `kind` made from `from`, one step, selected in its tab
+function libUseNew(kind, from) {
+  push("Add " + LIB[kind].name);
+  const L = libOf(), it = normLibItem(kind, from, L.nextId++);
+  L[kind].push(it); obState().sel = it.id;
+  commit(); toast(LIB[kind].name + " added: " + it.name);
+  return it;
+}
+const libUseTrim = (tab, go) => { obState().tab = tab; return go(); };
+// the folder or category in view, and what it shows: { cat, folder, folders, items }
+function libView(all) {
+  const [cat, fid] = LIBUI.path, folders = all.filter(f => f.cat === cat), f = fid && folders.find(x => x.id === fid);
+  const q = LIBUI.q.trim().toLowerCase();
+  let items = f ? f.items : q ? folders.flatMap(x => x.items) : [];
+  if (q) items = items.filter(it => it.name.toLowerCase().includes(q));
+  items = items.slice();
+  if (LIBUI.sort === "date") items.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || a.name.localeCompare(b.name));
+  else if (LIBUI.sort === "name") items.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return { cat, folder: f || null, folders: f || q ? [] : folders, items };
+}
+// a name shortened in the middle, as the reference's tiles have it ("Straight sk\u2026on Marty")
+const libShort = (s, n) => (s.length <= n ? s : s.slice(0, Math.ceil(n*0.6) - 1) + "\u2026" + s.slice(s.length - Math.floor(n*0.4)));
 function libraryDialog() {
   hideMenu(); closeFlyouts(); hideDlg();
-  const row = (kind, k, e) => '<div class="lb-row"><span class="lb-name">' + esc(e.name) + (e.note ? '<i>' + esc(e.note) + '</i>' : e.date ? '<i>' + esc(e.date) + '</i>' : '') + '</span>' +
-    '<button class="btn" data-a="open" data-kind="' + kind + '" data-k="' + k + '" title="Open as a new document">Open</button><button class="btn" data-a="add" data-kind="' + kind + '" data-k="' + k + '" title="Add to the open document, beside what is there">Add</button>' +
-    (kind === "mine" ? '<button class="btn" data-a="del" data-kind="mine" data-k="' + k + '" title="Take it out of the library (a file saved with it stays)">Delete</button>' : '') + '</div>';
-  const blocks = shippedBlocks(), mine = myPatterns();
   // (Round r15 / 10, the check videos S02: the reference's library is a panel that drops down from its button at the top right,
-  // The maintainer's wish for this one too.) Under the Library button, its right edge at the button's; no title bar to move it by
+  // The maintainer's wish for this one too.) Under the Library button, its right edge at the button's
   const lbBtn = document.getElementById("s-lib"), br = lbBtn && lbBtn.getBoundingClientRect ? lbBtn.getBoundingClientRect() : null;
   // (Round r19 / H33, the video 15:56: "you can also move it") its head is a title strip: dragged, it moves the library, and it
   // opens where it was left for the session, as every dialog does (dlgPos)
-  dlg.innerHTML = '<div class="lb-head dt">Library</div><div class="db"><h3>Blocks</h3>' + (blocks.length ? blocks.map((b, k) => row("block", k, b)).join("") : '<div class="hint">No blocks are shipped with this copy.</div>') +
-    '<h3>My Patterns</h3>' + (mine.length ? mine.map((m, k) => row("mine", k, m)).join("") : '<div class="hint">None yet. Save to Library keeps the open document here (in this browser) and as a file.</div>') +
-    '<div class="da"><button class="btn" id="lb-save">Save to Library\u2026</button><button class="btn" id="dlg-x">Close</button></div></div>';
+  const P = libParts(), vw = (k) => (LIBUI.view === k ? " on" : "");
+  // (Round LIB-1 / C, spec 2.4) + at the tab's right: Add Folder\u2026, New Folder\u2026, Save to Library\u2026
+  dlg.innerHTML = '<div class="lb-wrap"><div class="lb-top"><div class="lb-head dt">Library</div><button class="lb-ib" id="lb-plus" title="Add Folder, New Folder, Save to Library">+</button><button class="lb-ib" id="dlg-x" title="Close (Y)">\u2715</button></div>' +
+    '<div class="lb-main"><div class="lb-tree" role="tree">' + P.tree + '</div><div class="lb-pane">' +
+    '<div class="lb-bar"><span class="lb-pin" aria-hidden="true">\u{1F4CD}\ufe0e</span><span class="lb-crumb">' + P.crumb + '</span><span class="grow"></span>' +
+    '<button class="lb-ib' + vw("tile") + '" data-v="tile" title="Tiles">\u25a6</button><button class="lb-ib' + vw("list") + '" data-v="list" title="List">\u2261</button></div>' +
+    '<div class="lb-bar"><input type="text" id="lb-q" placeholder="Search for Keyword\u2026" autocomplete="off" spellcheck="false"><select id="lb-sort" title="Sort"><option value="name">Name</option><option value="date">Date Added</option></select></div>' +
+    '<div class="lb-items ' + (LIBUI.view === "list" ? "list" : "tile") + '" tabindex="0">' + P.items + '</div>' +
+    '<div class="da"><button class="btn" id="lb-save">Save to Library\u2026</button></div></div></div></div>';
   dlg.className = "library drop"; dlg.style.display = "block";
-  const w = dlg.offsetWidth || 440;
+  const wrap = dlg.querySelector(".lb-wrap");
+  if (wrap && LIBUI.w > 0 && LIBUI.h > 0) { wrap.style.width = LIBUI.w + "px"; wrap.style.height = LIBUI.h + "px"; }
+  const w = dlg.offsetWidth || 600;
   if (br && br.width) { dlg.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, br.right - w)) + "px"; dlg.style.top = Math.round(br.bottom + 3) + "px"; }
-  else { dlg.style.left = Math.max(6, window.innerWidth/2 - 220) + "px"; dlg.style.top = "80px"; }
-  if (dlg.querySelectorAll) dlg.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => {
-    const e = (b.dataset.kind === "block" ? blocks : mine)[+b.dataset.k];
-    if (!e) return;
-    if (b.dataset.a === "del") return libraryDelete(e.name);
-    hideDlg(); if (b.dataset.a === "open") libraryOpen(e); else libraryAdd(e);
-  });
-  // (Round BETA8-1 / K, W8 / W9) a row's right-click: its menu; a double-click on its name: the Open Garment box
-  if (dlg.querySelectorAll) dlg.querySelectorAll(".lb-row").forEach((r, k) => {
-    const e = k < blocks.length ? blocks[k] : mine[k - blocks.length];
-    if (!e) return;
-    r.oncontextmenu = (ev) => { ev.preventDefault(); listMenu(libraryItemRows(e), ev.clientX, ev.clientY); };
-    const nm = r.querySelector && r.querySelector(".lb-name"); if (nm) nm.ondblclick = () => { hideDlg(); openGarmentDialog(e.name, libDoc(e), "open"); };
-  });
+  else { dlg.style.left = Math.max(6, window.innerWidth/2 - w/2) + "px"; dlg.style.top = "80px"; }
+  // the size dragged at the corner is kept for the session
+  if (wrap && wrap.addEventListener) wrap.addEventListener("pointerup", () => { if (wrap.style.width) { LIBUI.w = parseInt(wrap.style.width, 10) || 0; LIBUI.h = parseInt(wrap.style.height, 10) || 0; } });
+  const q = dlg.querySelector("#lb-q"), sort = dlg.querySelector("#lb-sort");
+  if (q) { q.value = LIBUI.q; q.oninput = () => { LIBUI.q = q.value; libDraw(); }; q.onkeydown = (e) => { if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = LIBUI.q = ""; libDraw(); } }; }
+  if (sort) { sort.value = LIBUI.sort; sort.onchange = () => { LIBUI.sort = sort.value; libDraw(); }; }
+  if (dlg.querySelectorAll) [...dlg.querySelectorAll("button[data-v]")].forEach(b => b.onclick = () => { LIBUI.view = b.dataset.v; libDraw(); });
   const sv = dlg.querySelector("#lb-save"); if (sv) sv.onclick = () => saveToLibrary();
   const x = dlg.querySelector("#dlg-x"); if (x) x.onclick = hideDlg;
-  dlgEsc = (e) => { if (e.key === "Escape") { e.stopPropagation(); hideDlg(); } };
+  const plus = dlg.querySelector("#lb-plus");
+  if (plus) plus.onclick = () => { const r = plus.getBoundingClientRect ? plus.getBoundingClientRect() : { left: 0, bottom: 0 }; listMenu(libPlusRows(), r.left, r.bottom + 2); };
+  libDiskRefresh();      // (Round LIB-1 / C) the folders on disk read again: the panel draws again once they are in
+  dlgEsc = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); hideDlg(); }
+    else if (e.key === "Enter" && LIBUI.sel && !(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName || ""))) { const it = libFolders().flatMap(f => f.items).find(i => libItemKey(i) === LIBUI.sel); if (it) { e.stopPropagation(); e.preventDefault(); libUse(it); } }
+  };
   window.addEventListener("keydown", dlgEsc, true);
-  return { blocks: blocks.length, mine: mine.length };
+  libDraw();
+  return { blocks: shippedBlocks().length, mine: myPatterns().length };
 }
+// (Round LIB-1 / C) the panel's + menu: a folder of one's own goes into the category in view
+function libPlusRows() {
+  const cat = LIBUI.path[0];
+  return [{ n: "Add Folder…", f: libAddFolder }, { n: "New Folder…", f: () => libFolderNew(cat) }, { sep: 1 }, { n: "Save to Library…", f: () => saveToLibrary() }];
+}
+// a library item used (a double-click, Enter, Add to Workspace): the panel closes first for a garment (its box takes the place)
+function libUse(it) { if (it.kind === "garment" && !it.disk) hideDlg(); return it.use(); }
+function libItemMenuRows(it) {
+  const more = it.more();
+  return [...it.rows(), ...(more.length ? [{ sep: 1 }, { n: "More", menu: () => more }] : [])];
+}
+// the panel's three changing parts as HTML, from the library as it is now: { tree, crumb, items, v, all }
+function libParts() {
+  const all = libFolders(), cats = LIB_CATS.filter(([c]) => all.some(f => f.cat === c));
+  if (!cats.some(([c]) => c === LIBUI.path[0])) LIBUI.path = [cats.length ? cats[0][0] : "garment"];
+  if (LIBUI.path[1] && !all.some(f => f.cat === LIBUI.path[0] && f.id === LIBUI.path[1])) LIBUI.path = [LIBUI.path[0]];
+  const v = libView(all), [cat, fid] = LIBUI.path, list = LIBUI.view === "list";
+  // the tree: a category row (icon, name, chevron) and, under the open one, its folders indented; the chosen row a bar and bold (not colour alone)
+  const tree = cats.map(([c, n]) => '<div class="lb-tr cat' + (c === cat && !fid ? " on" : "") + '" role="treeitem" data-c="' + c + '"><span class="lb-ti">' + LIB_ICON[c] + '</span>' + n + '<span class="lb-chev">' + (c === cat ? "\u2304" : "\u203a") + '</span></div>' +
+    (c === cat ? all.filter(f => f.cat === c).map(f => '<div class="lb-tr sub' + (f.id === fid ? " on" : "") + '" role="treeitem" data-c="' + c + '" data-f="' + esc(f.id) + '">' + esc(f.name) + '</div>').join("") : "")).join("");
+  const crumb = '<a data-up="1">' + esc((LIB_CATS.find(c => c[0] === cat) || [cat, cat])[1]) + '</a>' + (v.folder ? ' \u203a <b>' + esc(v.folder.name) + '</b>' : '');
+  const folderTile = (f) => '<div class="lb-tile lb-folder" data-f="' + esc(f.id) + '" title="' + esc(f.name) + ': ' + f.items.length + (f.items.length === 1 ? " item" : " items") + '"><span class="lb-th">' + LIB_ICON.folder + '</span><span class="lb-nm">' + esc(f.name) + '</span><i>' + f.items.length + '</i></div>';
+  const tile = (it) => {
+    const k = libItemKey(it), tip = it.name + "\n" + (it.kind === "garment" ? "Double-click: Open Garment (Open or Add)" : "Double-click: add it to the workspace");
+    return '<div class="lb-tile' + (LIBUI.sel === k ? " sel" : "") + '" data-k="' + esc(k) + '" title="' + esc(tip) + '"><span class="lb-th' + (it.kind === "avatar" ? " fig" : "") + '">' + it.thumb + '</span><span class="lb-nm">' + esc(list ? it.name : libShort(it.name, 16)) + '</span><i>' + esc(it.sub || "") + '</i></div>';
+  };
+  const items = v.folders.map(folderTile).join("") + v.items.map(tile).join("") +
+    (!v.folders.length && !v.items.length ? '<div class="hint">' + (LIBUI.q.trim() ? "Nothing here is called \u201c" + esc(LIBUI.q.trim()) + "\u201d." : "Nothing here yet.") + '</div>' : "");
+  return { tree, crumb, items, v, all };
+}
+// the tree, the breadcrumb and the items drawn afresh and wired; what it shows, for the tests: { cat, folder, folders, items, html }
+function libDraw() {
+  if (!dlgOpen() || !/library/.test(dlg.className)) return null;
+  const P = libParts(), v = P.v, [cat, fid] = LIBUI.path, q1 = (s) => (dlg.querySelector ? dlg.querySelector(s) : null), qa = (el, s) => (el && el.querySelectorAll ? [...el.querySelectorAll(s)] : []);
+  const tree = q1(".lb-tree"), crumb = q1(".lb-crumb"), box = q1(".lb-items");
+  if (tree) { tree.innerHTML = P.tree; qa(tree, ".lb-tr").forEach(r => r.onclick = () => { LIBUI.path = r.dataset.f ? [r.dataset.c, r.dataset.f] : [r.dataset.c]; LIBUI.sel = null; libDraw(); }); }
+  if (crumb) { crumb.innerHTML = P.crumb; const up = crumb.querySelector && crumb.querySelector("a"); if (up) up.onclick = () => { LIBUI.path = [cat]; libDraw(); }; }
+  qa(dlg, "button[data-v]").forEach(b => b.classList.toggle("on", b.dataset.v === LIBUI.view));
+  if (box) {
+    box.className = "lb-items " + (LIBUI.view === "list" ? "list" : "tile");
+    box.innerHTML = P.items;
+    const byKey = new Map(v.items.map(it => [libItemKey(it), it]));
+    qa(box, ".lb-folder").forEach(t => t.ondblclick = t.onclick = () => { LIBUI.path = [cat, t.dataset.f]; LIBUI.sel = null; libDraw(); });
+    qa(box, ".lb-tile[data-k]").forEach(t => {
+      const it = byKey.get(t.dataset.k); if (!it) return;
+      t.onclick = () => { LIBUI.sel = t.dataset.k; qa(box, ".lb-tile.sel").forEach(o => o.classList.remove("sel")); t.classList.add("sel"); };
+      t.ondblclick = () => libUse(it);
+      t.draggable = true;      // (Round LIB-1 / D) dragged out onto the windows or the Object Browser (libItemDrop())
+      t.ondragstart = (ev) => { try { ev.dataTransfer.setData(LIB_ITEM_DRAG, t.dataset.k); ev.dataTransfer.effectAllowed = "copy"; } catch (er) {} };
+      t.oncontextmenu = (ev) => { ev.preventDefault(); LIBUI.sel = t.dataset.k; t.classList.add("sel"); listMenu(libItemMenuRows(it), ev.clientX, ev.clientY); };
+    });
+  }
+  // (Round LIB-1 / C) a right-click on a category of the tree or on a folder of one's own (in the tree or as a tile): its folder rows
+  qa(tree, ".lb-tr").forEach(r => r.oncontextmenu = (ev) => { ev.preventDefault(); const rows = libFolderRows(r.dataset.c, r.dataset.f || ""); if (rows.length) listMenu(rows, ev.clientX, ev.clientY); });
+  qa(box, ".lb-folder").forEach(t => t.oncontextmenu = (ev) => { ev.preventDefault(); const rows = libFolderRows(cat, t.dataset.f); if (rows.length) listMenu(rows, ev.clientX, ev.clientY); });
+  return { cat, folder: fid || null, folders: v.folders.map(f => f.id), items: v.items.map(it => it.name), html: P.items };
+}
+/* (Round LIB-1 / C, the spec \u00a74: HOW ITEMS GET IN) One's own items besides one's own garments (which stay in pdraft:library as they were,
+   now with a folder and a picture, both ignored by an older beta): folders of one's own and every other kind of item in a second store,
+   pdraft:libitems { v: 1, next, folders: [{ id "u<n>", cat, name, date }], items: [{ id "i<n>", kind, folder, name, date, data }] } (guess
+   post8/62). data is the item as text: a fabric, button, buttonhole, topstitch, puckering, trim or zipper as its library-item file (2.C33's
+   export, a fabric's texture inside), an accessory as its record ({ name, bone, pos, idx, col }) or an OBJ's text ({ obj }). A browser keeps
+   it in IndexedDB (its own database, pdraft-library), read once at the start, so pictures and meshes do not fill localStorage; the desktop
+   app in its store (store/libitems.json); kv() where there is no IndexedDB (a page in a test). Nothing of it goes into a document. */
+const LIB_ITEMS = "pdraft:libitems", LIB_IDB = "pdraft-library";
+// a kind of one's own item: [its category, its home folder (where it goes when no folder of one's own is chosen), that folder's name]
+const LIB_HOME = { fabric: ["fabric", "myfab", "My Fabrics"], button: ["trim", "button", "Button"], buttonhole: ["trim", "buttonhole", "Buttonhole"], topstitch: ["trim", "topstitch", "Topstitch"],
+  puckering: ["trim", "puckering", "Puckering"], trim: ["trim", "trims", "Other Trims"], zipper: ["trim", "zipper", "Zipper"], accessory: ["avatar", "accessory", "Accessory"] };
+let LIBST = null, libIdbState = 0;      // the store as read; IndexedDB 0 not asked, 1 being read, 2 read (a write waits for the read)
+const libToday = () => new Date().toISOString().slice(0, 10);
+function normLibStore(o) {
+  o = o && typeof o === "object" ? o : {};
+  const folders = [], items = [], fids = new Set(), iids = new Set();
+  for (const f of Array.isArray(o.folders) ? o.folders : []) {
+    if (!f || typeof f.id !== "string" || !/^u[0-9]+$/.test(f.id) || fids.has(f.id) || !LIB_CATS.some(c => c[0] === f.cat) || typeof f.name !== "string" || !f.name.trim()) continue;
+    fids.add(f.id); folders.push({ id: f.id, cat: f.cat, name: f.name.trim().slice(0, 60), date: typeof f.date === "string" ? f.date : "" });
+  }
+  for (const it of Array.isArray(o.items) ? o.items : []) {
+    if (!it || typeof it.id !== "string" || !/^i[0-9]+$/.test(it.id) || iids.has(it.id) || !LIB_HOME[it.kind] || typeof it.data !== "string" || typeof it.name !== "string") continue;
+    iids.add(it.id);
+    const f = folders.find(x => x.id === it.folder && x.cat === LIB_HOME[it.kind][0]);
+    items.push({ id: it.id, kind: it.kind, folder: f ? f.id : "", name: it.name.trim().slice(0, 80) || LIB_HOME[it.kind][2], date: typeof it.date === "string" ? it.date : "", data: it.data });
+  }
+  const top = (list) => list.reduce((m, x) => Math.max(m, +x.id.slice(1) || 0), 0);
+  return { v: 1, next: Math.max(Number.isInteger(o.next) ? o.next : 1, top(folders) + 1, top(items) + 1), folders, items };
+}
+// one request in the library's own IndexedDB database: resolves with its result once written
+function libIdb(mode, f) {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(LIB_IDB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onerror = () => rej(r.error || new Error("IndexedDB could not be opened"));
+    r.onblocked = () => rej(new Error("IndexedDB is blocked by another tab"));
+    r.onsuccess = () => {
+      const db = r.result, tx = db.transaction("kv", mode), q = f(tx.objectStore("kv"));
+      const shut = () => { try { if (db.close) db.close(); } catch (e) {} };
+      tx.oncomplete = () => { shut(); res(q ? q.result : undefined); };
+      tx.onerror = tx.onabort = () => { shut(); rej(tx.error || new Error("the library could not be written")); };
+    };
+  });
+}
+function libStore() {
+  if (LIBST) return LIBST;
+  if (!useIdb()) { let o = null; try { o = JSON.parse(kv().getItem(LIB_ITEMS) || "null"); } catch (e) {} return (LIBST = normLibStore(o)); }
+  LIBST = normLibStore(null);
+  if (!libIdbState) {
+    libIdbState = 1;
+    const done = (raw) => {
+      let o = null; try { o = raw ? JSON.parse(raw) : null; } catch (e) {}
+      const got = normLibStore(o), meanwhile = LIBST, map = new Map();
+      // what was added before the store was read (a moment after the start) is kept, with ids after the store's
+      for (const f of meanwhile.folders) { const id = "u" + got.next++; map.set(f.id, id); got.folders.push({ ...f, id }); }
+      for (const it of meanwhile.items) got.items.push({ ...it, id: "i" + got.next++, folder: map.get(it.folder) || it.folder });
+      LIBST = got; libIdbState = 2;
+      if (meanwhile.folders.length || meanwhile.items.length) libStoreSave();
+      libDraw();
+    };
+    libIdb("readonly", (st) => st.get(LIB_ITEMS)).then(done, (e) => { console.warn("Gusset: the library could not be read (" + shortErr(e) + ")"); done(null); });
+  }
+  return LIBST;
+}
+// the store written: true when it was (a browser that will not keep it says so)
+function libStoreSave() {
+  const st = libStore(), text = JSON.stringify(st);
+  if (useIdb()) {
+    if (libIdbState !== 2) return true;      // (written once the read is done: done() above)
+    libIdb("readwrite", (o) => o.put(text, LIB_ITEMS)).catch((e) => toast("The library could not keep that (" + shortErr(e) + ")", 8000));
+    return true;
+  }
+  try { kv().setItem(LIB_ITEMS, text); return true; } catch (e) { toast("The library could not keep that: this browser's storage may be full or blocked", 8000); return false; }
+}
+// an item of one's own put into the library (a folder of one's own of its category, else its home folder): the entry
+function libStoreAdd(kind, name, data, folder) {
+  const st = libStore(), h = LIB_HOME[kind];
+  if (!h) return null;
+  const f = folder && st.folders.find(x => x.id === folder && x.cat === h[0]);
+  const it = { id: "i" + st.next++, kind, folder: f ? f.id : "", name: String(name || "").trim().slice(0, 80) || h[2], date: libToday(), data: String(data) };
+  st.items.push(it);
+  libStoreSave(); libDraw();
+  return it;
+}
+// a garment's own picture (Save with Thumbnail): a PNG kept with it
+const libThumbOf = (e) => (e && typeof e.thumb === "string" && /^data:image[/]png;base64,[A-Za-z0-9+/=]+$/.test(e.thumb) ? '<img alt="" src="' + e.thumb + '">' : "");
+// the folder rows of a category (New Folder…) or of a folder (one's own: Rename…, Delete; a folder on disk: Remove from Library)
+function libFolderRows(cat, fid) {
+  const st = libStore(), f = fid && st.folders.find(x => x.id === fid), d = fid && /^d:/.test(fid) && libDiskOf(fid);
+  if (d) return [{ hd: esc(d.name) }, { n: "Remove from Library", f: () => libDiskRemove(d.id) }];
+  if (f) return [{ hd: esc(f.name) }, { n: "New Folder\u2026", f: () => libFolderNew(cat) }, { n: "Rename\u2026", f: () => libFolderRename(f.id) }, { sep: 1 }, { n: "Delete", f: () => libFolderDelete(f.id) }];
+  if (!fid) return [{ hd: esc((LIB_CATS.find(c => c[0] === cat) || [cat, cat])[1]) }, { n: "New Folder\u2026", f: () => libFolderNew(cat) }];
+  return [];
+}
+function libFolderNew(cat, name) {
+  const go = (t) => {
+    t = String(t || "").trim().slice(0, 60);
+    if (!t) return null;
+    const st = libStore(), f = { id: "u" + st.next++, cat, name: t, date: libToday() };
+    st.folders.push(f); libStoreSave();
+    LIBUI.path = [cat, f.id]; LIBUI.sel = null; libDraw();
+    return f;
+  };
+  if (name !== undefined) return go(name);
+  askText("New Folder", "New Folder", go);
+}
+function libFolderRename(id, name) {
+  const f = libStore().folders.find(x => x.id === id);
+  if (!f) return;
+  const go = (t) => { t = String(t || "").trim().slice(0, 60); if (!t || t === f.name) return; f.name = t; libStoreSave(); libDraw(); };
+  if (name !== undefined) return go(name);
+  askText("Rename Folder", f.name, go);
+}
+// a folder of one's own deleted with what is in it; asked first when something is (it cannot be undone: the library is no document)
+function libFolderDelete(id, sure) {
+  const st = libStore(), f = st.folders.find(x => x.id === id);
+  if (!f) return;
+  const n = st.items.filter(x => x.folder === id).length + myPatterns().filter(e => e.folder === id).length;
+  const go = () => {
+    st.folders = st.folders.filter(x => x.id !== id); st.items = st.items.filter(x => x.folder !== id);
+    if (myPatterns().some(e => e.folder === id)) try { kv().setItem(LIB_KEY, JSON.stringify(myPatterns().filter(e => e.folder !== id))); } catch (e) {}
+    libStoreSave();
+    if (LIBUI.path[1] === id) LIBUI.path = [f.cat];
+    toast("Folder \u201c" + f.name + "\u201d deleted" + (n ? " with " + n + (n === 1 ? " item" : " items") : "")); libDraw();
+  };
+  if (!n || sure) return go();
+  askModal("Delete Folder", esc("\u201c" + f.name + "\u201d holds " + n + (n === 1 ? " item" : " items") + ". They are deleted with it, and this cannot be undone."), [{ k: "del", n: "Delete", f: go }, { k: "x", n: "Cancel", esc: true, primary: true, f: () => {} }]);
+}
+// More ▸ Move to ▸: the category's home folder and its folders of one's own (the one it is in left out)
+function libMoveRow(cat, cur, go) {
+  const home = cat === "garment" ? [["", "My Garments"]] : [], list = [...home, ...libStore().folders.filter(f => f.cat === cat).map(f => [f.id, f.name])].filter(([id]) => id !== cur);
+  return { n: "Move to", menu: () => (list.length ? list.map(([id, n]) => ({ n: esc(n), f: () => go(id) })) : [{ n: "(no folder of your own: New Folder\u2026)", off: true }]) };
+}
+function libGarmentMove(name, to) {
+  try { kv().setItem(LIB_KEY, JSON.stringify(myPatterns().map(x => (x.name === name ? (to ? { ...x, folder: to } : (({ folder, ...y }) => y)(x)) : x)))); } catch (e) { return toast("This browser would not change its storage"); }
+  libDraw();
+}
+function libGarmentRename(name, to) {
+  const go = (t) => {
+    t = String(t || "").trim().slice(0, 80);
+    if (!t || t === name) return;
+    if (myPatterns().some(x => x.name === t)) return toast("There is a garment called " + t + " in the library already");
+    try { kv().setItem(LIB_KEY, JSON.stringify(myPatterns().map(x => (x.name === name ? { ...x, name: t } : x)))); } catch (e) { return toast("This browser would not change its storage"); }
+    libDraw();
+  };
+  if (to !== undefined) return go(to);
+  askText("Rename", name, go);
+}
+const LIB_ICON_OF = (kind) => LIB_ICON[kind] || (kind === "puckering" ? LIB_ICON.topstitch : kind === "accessory" ? LIB_ICON.avatar : LIB_ICON.trim);
+// an item of one's own as the panel shows it
+function libOwnItem(r, f) {
+  let d = null;
+  if (r.kind !== "accessory") try { d = JSON.parse(r.data); } catch (e) {}
+  const it = d && d.item, thumb = r.kind === "fabric" ? libFabricSVG(r.name, { weight: it && it.weight }) : r.kind === "button" && it ? libButtonSVG({ name: r.name, shape: it.shape, color: it.color, thread: it.thread }) : LIB_ICON_OF(r.kind);
+  return { cat: f.cat, folder: f.id, id: r.id, kind: r.kind, name: r.name, sub: r.date, date: r.date, own: true, rec: r, thumb,
+    use: () => libUseOwn(r), rows: () => [{ hd: esc(r.name) }, { n: r.kind === "accessory" ? "Add to Avatar" : "Add to Workspace", f: () => libUseOwn(r) }],
+    more: () => [...(r.kind === "fabric" ? [{ n: "Assign to Selected Patterns", f: () => libAssignSel(libSpecText(r.data, r.name)) }, { sep: 1 }] : []), { n: "Rename\u2026", f: () => libItemRenameOwn(r.id) }, libMoveRow(f.cat, r.folder, (to) => { r.folder = to; libStoreSave(); libDraw(); }), { sep: 1 }, { n: "Delete", f: () => libItemDeleteOwn(r.id) }] };
+}
+function libItemRenameOwn(id, name) {
+  const r = libStore().items.find(x => x.id === id);
+  if (!r) return;
+  const go = (t) => { t = String(t || "").trim().slice(0, 80); if (!t || t === r.name) return; r.name = t; libStoreSave(); libDraw(); };
+  if (name !== undefined) return go(name);
+  askText("Rename", r.name, go);
+}
+function libItemDeleteOwn(id) {
+  const st = libStore(), r = st.items.find(x => x.id === id);
+  if (!r) return;
+  st.items = st.items.filter(x => x.id !== id); libStoreSave();
+  toast(r.name + " taken out of the library"); libDraw();
+}
+// a library-item file's item made an item of this document's library (its id given; a fabric's texture brought in as a picture)
+function libItemOf(kind, d, id) {
+  const src = { ...d.item }; delete src.tex;
+  const it = normLibItem(kind, src, id);
+  if (kind === "fabric" && d.image && /^data:image[/]/.test(String(d.image.data))) {
+    const im = addImage(String(d.image.name || "texture"), d.image.data, +d.image.w > 0 ? +d.image.w : 100, +d.image.h > 0 ? +d.image.h : 100);
+    const t = normFabTex({ ...(d.item.tex || {}), img: im.id }); if (t) it.tex = t;
+  }
+  return it;
+}
+// a library-item file's text added to the document's library, selected in its tab: one step (null and why when it is no such file)
+function libAddItemText(text, name) {
+  let d = null; try { d = JSON.parse(text); } catch (e) {}
+  if (!d || d.gusset !== LIB_FILE || !LIB[d.kind] || !d.item || typeof d.item !== "object") return toast("That is not a library item"), null;
+  push("Add " + LIB[d.kind].name);
+  const L = libOf(), it = libItemOf(d.kind, d, L.nextId++);
+  if (name) it.name = String(name).slice(0, 80);      // (the name it has in the library, renamed there or not)
+  L[d.kind].push(it);
+  const o = obState(); o.tab = d.kind; o.sel = it.id;
+  commit(); toast(LIB[d.kind].name + " added: " + it.name);
+  return it;
+}
+// an item of one's own used (a double-click, Enter, Add to Workspace)
+function libUseOwn(r) {
+  if (r.kind !== "accessory") return libAddItemText(r.data, r.name);
+  let d = null; try { d = JSON.parse(r.data); } catch (e) {}
+  if (!d) return toast("That accessory could not be read"), null;
+  if (!accNeed()) return null;
+  if (typeof d.obj === "string") { const m = objParse(d.obj); return m ? accFileDialog(r.name + ".obj", m) : toast("There is no mesh in " + r.name); }
+  const id = accList().reduce((m, a) => Math.max(m, a.id), 0) + 1, rec = normAcc([{ ...d, id, name: r.name }])[0];
+  if (!rec) return toast("That accessory could not be read"), null;
+  if (typeof simHalt === "function") simHalt();
+  accAdd(rec, "Add Accessory");
+  S.sel = []; G3.giz = null; G3.accSel = rec.id; G3.avSel = false;
+  commit(); toast("Accessory \u201c" + rec.name + "\u201d on the avatar, following its bone " + (S.av.bones.has(rec.bone) ? rec.bone : "(not on this avatar: the root)"));
+  return rec;
+}
+// (spec 4.3) an item of the document's library kept in the library panel: Add to Library on its "…" menu, or dragged onto the panel
+function libAddFromScene(kind, it, folder) {
+  if (!LIB_HOME[kind] || !it) return null;
+  const r = libStoreAdd(kind, it.name, libItemText(kind, it), folder);
+  const f = libFolders().find(x => x.items.some(i => i.id === (r && r.id)));
+  if (r) toast(it.name + " kept in the library" + (f ? " (" + (LIB_CATS.find(c => c[0] === f.cat) || ["", ""])[1] + " \u25b8 " + f.name + ")" : ""));
+  return r;
+}
+// (spec 4.7) an accessory kept in the library: its record in its bone's frame, so it goes onto any avatar with that bone
+function accToLibrary(id) {
+  const a = accOf(id);
+  if (!a) return null;
+  const r = libStoreAdd("accessory", a.name, JSON.stringify({ name: a.name, bone: a.bone, pos: a.pos, idx: a.idx, ...(a.col ? { col: a.col } : {}) }));
+  if (r) toast("\u201c" + a.name + "\u201d kept in the library (Avatar \u25b8 Accessory)");
+  return r;
+}
+/* (spec 4.2, the reference's Default Files ▸ Save with Thumbnail (PNG); guess post8/56) a garment saved to the library keeps a picture, 256 px:
+   the 3D window's view when the garment is draped there, else its patterns as they lie in 2D (filled, outlined, on the panel's grey). A
+   preference, on by default. Where nothing can draw (a page in a test) there is no picture and the tile is drawn from the patterns. */
+const LIB_THUMB_PX = 256;
+function libThumbPng() {
+  if (S.prefs && S.prefs.libThumb === false) return "";
+  try {
+    if (typeof view3d !== "undefined" && view3d.ready() && drapeList().length && view3d.shot) {
+      const c = view3d.shot(LIB_THUMB_PX, LIB_THUMB_PX);
+      if (c && c.toDataURL) return c.toDataURL("image/png");
+    }
+    const loops = S.pieces.filter(p => p.on !== false).map(p => { try { return flatten(p, 10); } catch (e) { return null; } }).filter(l => Array.isArray(l) && l.length > 1 && l.every(q => Number.isFinite(q.x) && Number.isFinite(q.y)));
+    if (!loops.length) return "";
+    const c = document.createElement("canvas"); c.width = c.height = LIB_THUMB_PX;
+    const g = c.getContext && c.getContext("2d");
+    if (!g || !c.toDataURL) return "";
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const l of loops) for (const q of l) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+    const s = (LIB_THUMB_PX*0.88)/Math.max(x1 - x0, y1 - y0, 1), ox = (LIB_THUMB_PX - (x1 - x0)*s)/2, oy = (LIB_THUMB_PX - (y1 - y0)*s)/2;
+    g.fillStyle = "#3a3a3e"; g.fillRect(0, 0, LIB_THUMB_PX, LIB_THUMB_PX);
+    g.lineWidth = 2; g.strokeStyle = "#e6e6e9"; g.fillStyle = "rgba(217,217,220,0.3)";
+    for (const l of loops) { g.beginPath(); l.forEach((q, k) => g[k ? "lineTo" : "moveTo"](ox + (q.x - x0)*s, oy + (q.y - y0)*s)); g.closePath(); g.fill(); g.stroke(); }
+    return c.toDataURL("image/png");
+  } catch (e) { return ""; }
+}
+/* (spec 4.5, 4.9; guess post8/58) + ▸ Add Folder…: the desktop app keeps a folder on disk (chosen in the system's dialog; the shell holds its
+   path, the page sees its name and its files' names only, desktop.libFolders) and reads it when the panel opens: never writes it. A browser
+   cannot keep a folder: the folder's files are read once and copied into folders of one's own of that name (one per category with
+   something in it). Files dropped on the open panel are copied the same way into the folder in view (one's own) or their home folders. What
+   is taken: a pattern file (.pdraft, a pattern .json) as a garment, a library-item file (.json, Export… of the Object Browser) as its
+   kind, a pose file (.json, File ▸ Save As ▸ Pose) into the pose list, an OBJ as an accessory; an avatar (.glb, .gltf, .fbx) only from a
+   folder on disk (too large for a browser's library: Load Avatar…); anything else is named and left out. */
+const LIB_DESK = () => !!(DESK && DESK.libFolders);
+let LIBDISK = { list: [], asked: 0 };
+// what a file is, by its name and (a .json) its first bytes: "garment", "pose", an item kind, "accessory", "avatar", or "" when nothing
+function libFileKind(name, head) {
+  if (/\.pdraft$/i.test(name)) return "garment";
+  if (/\.(glb|gltf|fbx)$/i.test(name)) return "avatar";
+  if (/\.obj$/i.test(name)) return "accessory";
+  if (!/\.json$/i.test(name)) return "";
+  const g = /"gusset"\s*:\s*"([a-z-]+)"/.exec(head || ""), k = /"kind"\s*:\s*"([a-z]+)"/.exec(head || "");
+  if (g && g[1] === POSE_FILE) return "pose";
+  if (g && g[1] === LIB_FILE) return k && LIB_HOME[k[1]] && k[1] !== "accessory" ? k[1] : "";
+  return /"pieces"\s*:/.test(head || "") || !g ? "garment" : "";
+}
+const LIB_CAT_OF = (kind) => (kind === "garment" ? "garment" : kind === "avatar" || kind === "pose" ? "avatar" : LIB_HOME[kind] ? LIB_HOME[kind][0] : "");
+function libAddFolder() {
+  if (LIB_DESK()) return DESK.libFolders.add().then((list) => { libDiskTake(list, true); }).catch((e) => toast("Couldn't add the folder: " + shortErr(e), 6000));
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.multiple = true; inp.setAttribute("webkitdirectory", ""); inp.webkitdirectory = true;
+  inp.onchange = () => { const fs = Array.from(inp.files || []); if (!fs.length) return; const top = String(fs[0].webkitRelativePath || "").split("/")[0] || "Folder"; libImportFiles(fs, top); };
+  inp.click();
+}
+// files read and copied into the library: into folders of one's own called `name` (Add Folder in a browser), else the folder in view or home
+function libImportFiles(files, name, done) {
+  const got = [], left = [];
+  let n = files.length;
+  const end = () => { if (--n > 0) return; libImportTake(got, left, name); if (typeof done === "function") done(got, left); };
+  if (!n) { n = 1; return end(); }
+  for (const f of files) {
+    const nm = String(f.name || ""), rd = new FileReader();
+    rd.onload = () => { const bytes = new Uint8Array(rd.result), kind = libFileKind(nm, utf8Text(bytes.subarray(0, 4096))); if (!kind || kind === "avatar") left.push([nm, kind]); else got.push({ name: nm, kind, bytes }); end(); };
+    rd.onerror = () => { left.push([nm, "unread"]); end(); };
+    rd.readAsArrayBuffer(f);
+  }
+}
+// the files read (libImportFiles()) put into the library; a garment's file is read as a document first, so this finishes a moment later
+function libImportTake(got, left, name) {
+  const st = libStore(), [vc, vf] = LIBUI.path, inView = !name && vf && st.folders.find(f => f.id === vf && f.cat === vc);
+  const folderOf = (cat) => {
+    if (name) { let f = st.folders.find(x => x.cat === cat && x.name === name); if (!f) st.folders.push(f = { id: "u" + st.next++, cat, name: String(name).slice(0, 60), date: libToday() }); return f.id; }
+    return inView && inView.cat === cat ? inView.id : "";
+  };
+  let added = 0, poses = 0, pending = 0;
+  const said = () => {
+    if (pending) return;
+    libStoreSave(); libDraw();
+    const why = left.map(([nm, k]) => nm + (k === "avatar" ? " (an avatar: Load Avatar\u2026 loads it; in the desktop app Add Folder keeps it in the library)" : ""));
+    toast((added + poses ? "Added to the library: " + (added + poses) + (added + poses === 1 ? " item" : " items") : "Nothing was added to the library") + (why.length ? ". Left out: " + why.join(", ") : ""), why.length ? 9000 : 4000);
+  };
+  for (const g of got) {
+    if (g.kind === "garment") {
+      pending++;
+      readDocBytes(g.name, g.bytes, (err, d) => {
+        pending--;
+        if (err || !d) left.push([g.name, "unread"]);
+        else {
+          const nm = g.name.replace(/\.(pdraft|json)$/i, ""), fid = folderOf("garment"); delete d.drape; delete d.scene;
+          try { const list = myPatterns().filter(x => x.name !== nm); list.push({ name: nm, date: libToday(), doc: d, ...(fid ? { folder: fid } : {}) }); kv().setItem(LIB_KEY, JSON.stringify(list)); added++; }
+          catch (e) { left.push([g.name, "full"]); }
+        }
+        said();
+      });
+      continue;
+    }
+    const text = utf8Text(g.bytes);
+    if (g.kind === "pose") { const r = poseFileRead(text); if (typeof r === "string") left.push([g.name, "unread"]); else { S.poses = normPoses([{ name: r.name, q: r.q }, ...S.poses.filter(p => p.name !== r.name)]); try { localStorage.setItem(POSES_KEY, JSON.stringify(S.poses)); } catch (e) {} poses++; } continue; }
+    if (g.kind === "accessory") { if (!objParse(text)) { left.push([g.name, "unread"]); continue; } st.items.push({ id: "i" + st.next++, kind: "accessory", folder: folderOf("avatar"), name: g.name.replace(/\.obj$/i, ""), date: libToday(), data: JSON.stringify({ obj: text }) }); added++; continue; }
+    let d = null; try { d = JSON.parse(text); } catch (e) {}
+    if (!d || !d.item) { left.push([g.name, "unread"]); continue; }
+    st.items.push({ id: "i" + st.next++, kind: g.kind, folder: folderOf(LIB_HOME[g.kind][0]), name: String(d.item.name || g.name.replace(/(\.[a-z]+)?\.json$/i, "")).slice(0, 80), date: libToday(), data: text }); added++;
+  }
+  said();
+}
+// the folders on disk, as the panel shows them: one per category with files of it ("d:<id>")
+function libDiskFolders() {
+  const out = [];
+  for (const d of LIBDISK.list) for (const [cat] of LIB_CATS) {
+    const files = (d.files || []).filter(f => LIB_CAT_OF(f.kind) === cat);
+    if (!files.length) continue;
+    const fo = { cat, id: "d:" + d.id, name: d.name, disk: true, items: [] };
+    fo.items = files.map(f => ({ cat, folder: fo.id, id: f.name, kind: f.kind, name: f.name.replace(/(\.[a-z]+)?\.(pdraft|json|glb|gltf|fbx|obj)$/i, ""), sub: d.name, date: f.date || "", disk: true,
+      thumb: f.kind === "garment" ? LIB_ICON.garment : LIB_ICON_OF(f.kind), use: () => libDiskUse(d.id, f),
+      rows: () => [{ hd: esc(f.name) }, { n: f.kind === "accessory" ? "Add to Avatar" : "Add to Workspace", f: () => libDiskUse(d.id, f) }, { n: "Show in Explorer", f: () => DESK.libFolders.show(d.id, f.name).then((ok) => { if (!ok) toast("That file is no longer there: " + f.name); }) }],
+      more: () => [] }));
+    out.push(fo);
+  }
+  return out;
+}
+const libDiskOf = (fid) => LIBDISK.list.find(d => "d:" + d.id === fid) || null;
+// the shell's list of folders and each one's files, read again (the panel draws once they are in)
+function libDiskRefresh() {
+  if (!LIB_DESK()) return Promise.resolve([]);
+  return DESK.libFolders.list().then((list) => libDiskTake(list, false)).catch(() => []);
+}
+function libDiskTake(list, added) {
+  list = Array.isArray(list) ? list : [];
+  return Promise.all(list.map(d => (d.there ? DESK.libFolders.files(d.id).catch(() => []) : Promise.resolve([])).then((files) => ({ ...d, files: Array.isArray(files) ? files : [] })))).then((full) => {
+    LIBDISK = { list: full, asked: Date.now() };
+    const last = added && full[full.length - 1];
+    if (last) { const f = libDiskFolders().find(x => x.id === "d:" + last.id); if (f) LIBUI.path = [f.cat, f.id]; toast("The folder " + last.name + " is in the library (read only: nothing is written into it)"); }
+    libDraw();
+    return full;
+  });
+}
+function libDiskRemove(id) {
+  if (!LIB_DESK()) return;
+  DESK.libFolders.remove(id).then((list) => { if (/^d:/.test(LIBUI.path[1] || "")) LIBUI.path = [LIBUI.path[0]]; toast("Taken out of the library (the folder itself stays as it is)"); libDiskTake(list, false); }).catch((e) => toast("Couldn't: " + shortErr(e)));
+}
+// a file of a folder on disk used, by its kind
+function libDiskUse(id, f, load) {
+  return DESK.libFolders.read(id, f.name).then((data) => {
+    const buf = toBuffer(data), bytes = new Uint8Array(buf);
+    if (!buf) return toast("That file could not be read: " + f.name);
+    if (f.kind === "garment") { hideDlg(); return readDocBytes(f.name, bytes, (err, d) => (err ? toast("Couldn't open " + f.name + ": " + err, 6000) : openGarmentDialog(f.name, d, load || "open"))); }
+    if (f.kind === "avatar") { hideDlg(); return avatarLoaded(buf, f.name, null); }
+    const text = utf8Text(bytes);
+    if (f.kind === "pose") { const r = poseFileRead(text); if (typeof r === "string") return toast(r); S.poses = normPoses([{ name: r.name, q: r.q }, ...S.poses.filter(p => p.name !== r.name)]); return S.av ? setAvatar({ base: r.name, pose: {} }) : toast("Load an avatar first (Avatar \u2192 Load Avatar\u2026)"); }
+    if (f.kind === "accessory") { if (!accNeed()) return; const m = objParse(text); return m ? accFileDialog(f.name, m) : toast("There is no mesh in " + f.name); }
+    return libAddItemText(text);
+  }).catch((e) => toast("That file could not be read: " + shortErr(e), 6000));
+}
+// (spec 4.4, guess post8/57) an item of the Object Browser dropped on the panel: kept in the folder it was dropped on (one's own of its
+// category), else in the folder in view if that is one's own of its category, else its home folder
+function libPanelDrop(e) {
+  const [kind, id] = String(e.dataTransfer.getData(LIB_DRAG) || "").split(":"), it = LIB[kind] && libOf()[kind].find(x => x.id === +id);
+  if (!it || !LIB_HOME[kind]) return toast("That cannot be kept in the library"), null;
+  const el = e.target && e.target.closest ? e.target.closest("[data-f]") : null, st = libStore(), cat = LIB_HOME[kind][0];
+  const own = (fid) => st.folders.find(f => f.id === fid && f.cat === cat);
+  const to = (el && own(el.dataset.f)) || own(LIBUI.path[1]);
+  return libAddFromScene(kind, it, to ? to.id : "");
+}
+const libPanelHas = (el) => !!(el && dlgOpen() && /library/.test(dlg.className) && dlg.contains && dlg.contains(el));
+/* (Round LIB-1 / D, the spec §5.2; guess post8/64) AN ITEM DRAGGED OUT OF THE PANEL. A tile is dragged (LIB_ITEM_DRAG: its key) and dropped:
+     a garment          on the 2D or the 3D window: the Open Garment box with Add chosen
+     an avatar          on the 3D window: loaded (as its card does)
+     a pose             on the 3D window: put on the avatar
+     an accessory       on the 3D window: onto the avatar
+     a fabric           on a pattern (in either window): that pattern gets it, added to the document first unless an equal one is there
+                        (one step "Assign Fabric"); on the Object Browser: added (one step)
+     a button type      on a placed button (a buttonhole type on a placed buttonhole), in either window: that one gets the type, added first
+                        unless an equal one is there (one step "Assign Button Type"); on the Object Browser: added
+     a buttonhole, topstitch, puckering, trim or zipper: on the Object Browser: added
+   Anywhere else it says where it goes. Nothing is used by the drag itself. */
+const LIB_ITEM_DRAG = "application/x-pdraft-libitem";
+const libItemDragOf = (e) => !!(e && e.dataTransfer && Array.from(e.dataTransfer.types || []).includes(LIB_ITEM_DRAG));
+// how an item of the panel becomes an item of the document's library: { kind, mk(id) } (a promise: a file on disk is read first), or null
+function libSpecOf(it) {
+  const mkNew = (kind, from) => ({ kind, mk: (id) => normLibItem(kind, from, id) });
+  if (it.disk) {
+    if (!LIB[it.kind]) return Promise.resolve(null);
+    const d = LIBDISK.list.find(x => "d:" + x.id === it.folder);
+    return d ? DESK.libFolders.read(d.id, it.id).then((data) => libSpecText(utf8Text(new Uint8Array(toBuffer(data))), "")).catch(() => null) : Promise.resolve(null);
+  }
+  if (it.rec) return Promise.resolve(it.kind === "accessory" ? null : libSpecText(it.rec.data, it.name));
+  if (it.cat === "fabric") { const ph = FABRIC_PHYS[it.id]; return Promise.resolve(ph ? mkNew("fabric", { name: it.id, physical: it.id, weight: ph.weight, thickness: ph.thickness, maxStretch: ph.maxStretch }) : null); }
+  if (it.kind === "button" && /^cat[0-9]+$/.test(it.id)) { const c = BUTTON_CATALOGUE[+it.id.slice(3)]; return Promise.resolve(c ? mkNew("button", { name: c[0], ...c[1] }) : null); }
+  if (it.kind === "zipper") return Promise.resolve(mkNew("zipper", { type: it.id, name: it.id + " zipper" }));
+  if (it.kind === "buttonhole" || it.kind === "topstitch") return Promise.resolve(mkNew(it.kind, {}));
+  return Promise.resolve(null);
+}
+function libSpecText(text, name) {
+  let d = null; try { d = JSON.parse(text); } catch (e) {}
+  if (!d || d.gusset !== LIB_FILE || !LIB[d.kind] || !d.item || typeof d.item !== "object") return null;
+  return { kind: d.kind, mk: (id) => { const x = libItemOf(d.kind, d, id); if (name) x.name = String(name).slice(0, 80); return x; } };
+}
+// the document's item equal to the one the spec makes (everything but its id), or a new one pushed into the library; within a step
+function libSpecTake(spec) {
+  const L = libOf(), x = spec.mk(L.nextId), same = (y) => { const a = { ...x }, b = { ...y }; delete a.id; delete b.id; return canonJSON(a) === canonJSON(b); };
+  const old = L[spec.kind].find(same);
+  if (old) return old;
+  L.nextId++; L[spec.kind].push(x);
+  return x;
+}
+// (Round LIB-1 / D, spec 5.3) a fabric of one's own given to the selected patterns: one step (none selected: says so, no step)
+function libAssignSel(spec) {
+  const ps = freeSel();
+  if (!spec || spec.kind !== "fabric") return toast("That fabric could not be read"), null;
+  if (!ps.length) return toast("Select the patterns to give this fabric to"), null;
+  push("Assign Fabric");
+  const f = libSpecTake(spec);
+  for (const p of ps) p.fabric = f.id;
+  const o = obState(); o.tab = "fabric"; o.sel = f.id;
+  commit(); toast(f.name + " on " + ps.length + (ps.length === 1 ? " pattern" : " patterns"));
+  return f;
+}
+function libItemDrop(e) {
+  const key = String(e.dataTransfer.getData(LIB_ITEM_DRAG) || ""), it = libFolders().flatMap(f => f.items).find(i => libItemKey(i) === key);
+  if (!it) return;
+  const c3 = view3d.ready() && view3d.canvas(), on3 = !!c3 && e.target === c3, on2 = e.target === cv, ob = document.getElementById("ob"), onOb = !!ob && (e.target === ob || !!(ob.contains && ob.contains(e.target)));
+  const say = (m) => (toast(m, 5000), null);
+  if (it.kind === "garment") return on2 || on3 ? (it.disk ? libDiskUse(it.folder.slice(2), { name: it.id, kind: "garment" }, "add") : (hideDlg(), openGarmentDialog(it.name, libDoc(it.ent), "add"))) : say("Drop a garment on the 2D or the 3D window to add it");
+  if (it.kind === "avatar" || it.kind === "pose" || it.kind === "accessory") return on3 ? libUse(it) : say("Drop " + (it.kind === "avatar" ? "an avatar" : it.kind === "pose" ? "a pose" : "an accessory") + " on the 3D window");
+  if (onOb) return libUse(it);
+  if (it.kind === "fabric") {
+    let p = null;
+    if (on2) { const r = cv.getBoundingClientRect(); p = pieceAt(e.clientX - r.left, e.clientY - r.top); }
+    else if (on3) { const h = pick3(e); p = h && !h.edge && h.it ? byId(h.it.pid) : null; }
+    if (!p) return say("Drop a fabric on a pattern to give it that fabric, or on the Object Browser to add it");
+    return libSpecOf(it).then((spec) => {
+      if (!spec || spec.kind !== "fabric") return say("That fabric could not be read");
+      push("Assign Fabric");
+      const f = libSpecTake(spec); p.fabric = f.id;
+      const o = obState(); o.tab = "fabric"; o.sel = f.id;
+      commit(); toast(f.name + " on " + p.name);
+      return f;
+    });
+  }
+  if (it.kind === "button" || it.kind === "buttonhole") {
+    const bid = on2 || on3 ? libDropTarget(e, it.kind) : null, b = bid != null && (S.buttons || []).find(x => x.id === bid);
+    if (!b) return say("Drop a " + it.kind + " type on a placed " + it.kind + " to give it that type, or on the Object Browser to add it");
+    return libSpecOf(it).then((spec) => {
+      if (!spec || spec.kind !== it.kind) return say("That " + it.kind + " could not be read");
+      push("Assign Button Type");
+      const t = libSpecTake(spec); b.lib = t.id;
+      const o = obState(); o.tab = it.kind; o.sel = t.id;
+      commit(); toast(t.name + " on " + (b.kind === "button" ? "button " : "buttonhole ") + b.id);
+      return t;
+    });
+  }
+  return say("Drop it on the Object Browser to add it to the project");
+}
+window.addEventListener("dragover", (e) => { if (!libItemDragOf(e) || libPanelHas(e.target)) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+window.addEventListener("drop", (e) => { if (!libItemDragOf(e) || libPanelHas(e.target) || textField(e.target)) return; e.preventDefault(); libItemDrop(e); });
 // a file's text, by its kind: a DXF goes to the import dialog, anything else is a pattern document
 function openText(name, text, path, sure) {
   if (/\.dxf$/i.test(name)) return dxfInNumeric({ x: window.innerWidth - 640, y: 120 }, text, name);
@@ -21250,6 +23422,7 @@ function openText(name, text, path, sure) {
   let d = null;
   try { d = JSON.parse(text); } catch (e) {}
   if (!d || typeof d !== "object" || !Array.isArray(d.pieces)) return toast("Couldn't read that — expected a pattern file (.pdraft or .json)");
+  NEWER_IN = null;                                             // (run 16: only a container of the frozen version is compared)
   openLoaded(name, d, path, sure);
 }
 // a pattern document read from a file replaces the one that is open (after asking about unsaved work) and brings its own history timeline
@@ -21271,7 +23444,9 @@ function openLoaded(name, d, path, sure) {
     if (DESK) setFile(path);
     avatarCheck();
     try { grainOffer(name, d.v || 0); } catch (e) { console.error(e); }      // (r25 follow-up) a file from before version 25 with imported grainlines: never in the way of opening it
+    try { newerCheck(name); } catch (e) { NEWER = null; NEWER_IN = null; console.error(e); }      // (run 16) a file from a newer version: said, and kept where it can be
   } catch (err) {
+    NEWER_IN = null;
     // back to the document that was open
     try { loadDoc(was.doc); S.images = was.images; S.undo = was.undo; S.redo = was.redo; S.un = was.un; S.rn = was.rn; [S.hoff, S.hsave, S.hui, S.histNext] = was.tree; [S.docAv, S.docAvAsk, S.docAvTried, S.docAvFile, S.avEmbed] = was.av; commit(); } catch (e) {}
     toast("Couldn't open " + name + ": " + ((err && err.message) || "it is not a pattern file this program can draw"), 6000);
@@ -21877,7 +24052,7 @@ function hgTidy() {
   for (const p of fresh) g.pieces.push(p.id);
 }
 // the lists whose items name patterns: what goes with a group's patterns when the group goes to another step
-const HG_LISTS = [["seams", "seams"], ["stitches", "stitches"], ["puckers", "puckers"], ["measures", "measures"], ["tacks", "tacks"], ["buttons", "buttons"], ["pipings", "pipings"], ["bindings", "bindings"], ["glues", "glues"], ["links", "lineLinks"]];
+const HG_LISTS = [["seams", "seams"], ["stitches", "stitches"], ["puckers", "puckers"], ["measures", "measures"], ["tacks", "tacks"], ["buttons", "buttons"], ["pipings", "pipings"], ["bindings", "bindings"], ["glues", "glues"], ["links", "lineLinks"], ["lacings", "lacings"]];
 function hgRefsIn(it, G) { let any = false; for (const m of JSON.stringify(it).matchAll(HG_REF)) { any = true; if (!G.has(+m[1])) return false; } return any; }
 // the group's patterns, and what lies wholly among them, as they were in the document d (a state's object)
 function hgCompose(gid, d) {
@@ -22202,7 +24377,37 @@ function normLayout(o) {
   return { name: typeof o.name === "string" ? o.name : "", paper: PAPERS.some(p => p[0] === o.paper && p[0] !== "full") ? o.paper : "a4", orient: o.orient === "landscape" ? "landscape" : "portrait",
     customW: num(o.customW, 500, 20, 5000), customH: num(o.customH, 700, 20, 20000), margin: num(o.margin, 10, 0, 50), overlap: num(o.overlap, 0, 0, 50) /* (Round r29: 0, the sheets butt edge to edge; it was 10; a file keeps its own) */, cols: Math.round(num(o.cols, 3, 1, 20)),
     grain: GRAINS.some(g => g[0] === o.grain) ? o.grain : "1way", gap: num(o.gap, 5, 0, 100), outline: o.outline === "seam" ? "seam" : "sa", pairs: o.pairs !== false,
-    labels: o.labels === "center" ? "center" : "pattern", lock: o.lock === true, place, buffer: normBuffer(o.buffer), ...normRolls(o.rolls) };
+    labels: o.labels === "center" ? "center" : "pattern", lock: o.lock === true, place, buffer: normBuffer(o.buffer), ...normRolls(o.rolls), ...normGarments(o.garments) };
+}
+/* (Round PLOT-1, roadmap 1.H22; the reference's Nesting ▸ Number of Garment, frame-notes Number 31 "Number of Garment Current · Total 1", its
+   functions list "Number of Garment (Select Grading: sizes and quantities)") HOW MANY GARMENTS GO ON THE MARKER. layout.garments, kept only
+   when not one garment of the size in use: { n } that many of the size picked in the Grading panel (Current), or { sizes: { size id: n } }
+   that many of each size of the active size group (Select Grading). Every pattern is laid out its quantity times for each garment, its
+   copies keyed "<pattern>:<k>" as before (k runs on through the garments), a copy of another size drawn at that size and named with it.
+   Remove Add'l Nesting Patterns takes the garments after the first away (back to one, one step). Guesses plot1/1-3. */
+const GARMENTS_MAX = 50;
+function normGarments(o) {
+  if (!o || typeof o !== "object") return {};
+  const cnt = (v) => (Number.isFinite(+v) && v !== null && v !== "" ? Math.max(0, Math.min(GARMENTS_MAX, Math.round(+v))) : 0);
+  if (o.sizes && typeof o.sizes === "object") {
+    const sizes = {};
+    for (const k of Object.keys(o.sizes)) { const n = cnt(o.sizes[k]); if (n > 0 && /^[\w.-]+$/.test(k)) sizes[k] = n; }
+    return Object.keys(sizes).length ? { garments: { sizes } } : {};
+  }
+  const n = cnt(o.n);
+  return n > 1 ? { garments: { n } } : {};
+}
+// the garments on the marker: [{ size (a size object, or null: the size in use), n }]
+function garmentRuns() {
+  const G = layoutOf().garments, grp = garmentGroup();
+  if (G && G.sizes && grp) { const out = (grp.sizes || []).filter(z => G.sizes[z.id] > 0).map(z => ({ size: z, n: G.sizes[z.id] })); if (out.length) return out; }
+  return [{ size: null, n: G && G.n > 1 ? G.n : 1 }];
+}
+const garmentTotal = () => garmentRuns().reduce((s, r) => s + r.n, 0);
+// the size group Select Grading lists: the one of the size in use, else the first (null: the document has none)
+function garmentGroup() {
+  const G = S.grading, gs = (G && G.groups) || [];
+  return gs.find(g => g.sizes.some(z => z.id === G.active)) || gs[0] || null;
 }
 /* (Round r19 follow-up, the maintainer's H25: "each fabric tab in Print Layout gets its own roll width and margins; All shows each fabric's own")
    layout.rolls = { fabric id (or "none"): { paper, orient, customW, customH, margin, overlap, cols } }: a fabric's own paper or roll,
@@ -22280,12 +24485,17 @@ function placeMap(p, pl) {
 }
 // one entry for every copy to cut: { key, p (the pattern as it goes out: picked size, shrinkage), k }
 function layoutCopies() {
-  const gs = gSize(S.grading, S.grading.active), L = layoutOf(), out = [];
+  const gs = gSize(S.grading, S.grading.active), L = layoutOf(), out = [], runs = garmentRuns();
   for (const p0 of S.pieces) {
     if (!p0.on) continue;
-    let p = (gs && gradedPiece(S.grading, p0, gs.id)) || p0;
-    p = shrunkPiece(p);
-    for (let k = 0; k < (p0.quantity || 1); k++) out.push({ key: p0.id + ":" + k, p, k, src: p0, pair: L.pairs && k % 2 === 1 });
+    const q = p0.quantity || 1;
+    let k = 0;
+    // (Round PLOT-1) for every garment on the marker (Number of Garment): its quantity, at the garment's size; j the copy within one garment
+    for (const r of runs) {
+      const sz = r.size || gs;
+      const p = shrunkPiece((sz && gradedPiece(S.grading, p0, sz.id)) || p0);
+      for (let g = 0; g < r.n; g++) for (let j = 0; j < q; j++, k++) out.push({ key: p0.id + ":" + k, p, k, j, src: p0, pair: L.pairs && j % 2 === 1, size: r.size ? r.size.name : null });
+    }
   }
   return out;
 }
@@ -22329,7 +24539,7 @@ function layoutPieces(fk) {
     delete q.link; delete q.half; delete q.grade; delete q.block;
     mapPiece(q, f);
     if (L.labels === "center") q.anno = null;
-    if (c.k > 0) q.name = c.p.name + " (" + (c.k + 1) + ")";
+    if (c.k > 0 || c.size) q.name = c.p.name + (c.size ? " " + c.size : "") + (c.k > 0 ? " (" + (c.k + 1) + ")" : "");      // (Round PLOT-1: a garment of another size is named with it)
     return { key: c.key, src: c.src, k: c.k, piece: q, poly: layoutShape(c.p).map(f), fab: fabKey(c.src), oy };
   });
 }
@@ -22863,6 +25073,8 @@ function layoutCmd(what) {
   nestStop(true);
   if (what === "nest") { push("Nest Patterns"); const note = nestLayout(); commit(); layoutFit(); const s = layoutStats(); nestStart(); return toast(note || "Nested: " + metricAnd(s.length, true) + " long, " + s.use.toFixed(1) + " % of the cloth used" + (NEST_RUN.on ? "; looking for a shorter one (Stop Nesting ends it)" : ""), note ? 6000 : 3500); }
   if (what === "unnest") { push("Remove All Nesting"); L.place = {}; Object.assign(L.place, defaultPlaces(layoutCopies(), "window")); commit(); layoutFit(); return toast("Back as the patterns lie in the 2D window"); }
+  // (Round PLOT-1) Remove Add'l Nesting Patterns: one garment again (the copies of the others go, the first's keep their places)
+  if (what === "unnestAdd") { if (garmentTotal() <= 1) return toast("There is one garment on the marker: nothing to remove (Nest Settings ▸ Number of Garment adds more)"); push("Remove Add'l Nesting Patterns"); delete L.garments; layoutSync(); commit(); layoutFit(); return toast("One garment on the marker again"); }
   if (what === "row") { push("Default Arrangement"); L.place = defaultPlaces(layoutCopies(), "row"); commit(); layoutFit(); return toast("One row, side by side"); }
   if (what === "labels") { push("Auto Arrange Labels"); L.labels = L.labels === "center" ? "pattern" : "center"; commit(); return toast(L.labels === "center" ? "Names at the middle of each pattern" : "Names where they are in the 2D window"); }
   if (what === "snap") { let url = ""; try { url = lcv.toDataURL("image/png"); } catch (e) { return toast("The picture could not be made"); } return dlURL("print-layout.png", url, (f) => toast("Snapshot saved as " + f)); }
@@ -22888,7 +25100,7 @@ function layoutProps(pr) {
         '<div class="row"><label title="How far each sheet overlaps the next, for gluing">Overlap (mm)</label><input type="text" inputmode="decimal" data-num="1" id="ly-ov" min="0" max="50" value="' + L.overlap + '"></div>') +
       '<div class="row"><label title="The border round each sheet that is cut off (0 to 30 mm); the printer needs some, and the printed sheet has a cut line there. Nothing is laid on it">Cut-off margin (mm)</label><input type="text" inputmode="decimal" data-num="1" id="ly-margin" min="0" max="30" value="' + L.margin + '"></div>' +
       ro("Width", metricAnd(st.width)) + ro("Length", metricAnd(st.length, true))) +
-    sec("Nesting", '<div class="row"><label title="How a pattern may be turned when nesting: 1-way never, 2-way by half a turn, Any by quarter turns">Grain Direction</label><select class="w" id="ly-grain">' + GRAINS.map(g => opt(g[0], L.grain, g[1])).join("") + '</select></div>' +
+    sec("Nesting", garmentRows(opt) + cwRow("cwl", "Colorway", "row") /* (Round CW-1 / D, S4 085: the marker's fills in that colorway, made current) */ + '<div class="row"><label title="How a pattern may be turned when nesting: 1-way never, 2-way by half a turn, Any by quarter turns">Grain Direction</label><select class="w" id="ly-grain">' + GRAINS.map(g => opt(g[0], L.grain, g[1])).join("") + '</select></div>' +
       '<div class="row"><label>Pattern spacing (mm)</label><input type="text" inputmode="decimal" data-num="1" id="ly-gap" min="0" max="100" value="' + L.gap + '"></div>' +
       // (Round r13 / 9) Buffer Spacing: room round each pattern on its own four sides; Link types the four as one
       '<div class="row"><label title="Room kept clear round each pattern, on its own left, right, top and bottom (they turn with the pattern), on top of the pattern spacing">Buffer Spacing (mm)</label><span></span></div>' +
@@ -22897,7 +25109,7 @@ function layoutProps(pr) {
       '<div class="row"><label>Preferred outline</label><select class="w" id="ly-outline">' + opt("sa", L.outline, "Seam Allowance") + opt("seam", L.outline, "Seam Line") + '</select></div>' +
       '<div class="row"><label for="ly-pairs" title="Of a pattern cut more than once, every second copy is mirrored (a left and a right)">Mirror every second copy</label><input type="checkbox" id="ly-pairs"' + (L.pairs ? ' checked' : '') + '></div>' +
       '<div class="btns"><button class="btn" id="ly-nest">Nest Patterns</button><button class="btn" id="ly-un">Remove Nesting</button></div>') +
-    sec("Efficiency", ro("Marker Length", metricAnd(st.length, true)) + ro("Consumption", st.use.toFixed(2) + " %") + ro("Remnant", st.waste.toFixed(2) + " %") + ro("Pattern placed", (st.placed/100).toFixed(1) + " cm\u00b2") + ro("Remnant", (Math.max(0, st.total - st.placed)/100).toFixed(1) + " cm\u00b2")) +
+    sec("Efficiency", ro("Marker Length", metricAnd(st.length, true)) + (garmentTotal() > 1 ? ro("Average Per Garment", metricAnd(st.length/garmentTotal(), true)) : "") + ro("Consumption", st.use.toFixed(2) + " %") + ro("Remnant", st.waste.toFixed(2) + " %") + ro("Pattern placed", (st.placed/100).toFixed(1) + " cm\u00b2") + ro("Remnant", (Math.max(0, st.total - st.placed)/100).toFixed(1) + " cm\u00b2")) +
     sec("Pattern", ro("Patterns", st.patterns) + ro("Placed pieces", st.count) + ro(sheet.roll ? "Roll" : "Sheets", sheet.roll ? metricAnd(sheet.pw) + " wide" : st.sheets + " (" + sheet.cols + " \u00d7 " + st.rows + ")")) +
     '<div class="note" style="margin-top:6px">Quantity is set on each pattern (Simulation mode, Property Editor). What is printed (seam allowance, notches, names\u2026) is chosen with the buttons in the corner of the layout.</div>';
   const g = (id) => document.getElementById(id), set = (id, f, fit) => { const el = g(id); if (el) el.onchange = () => { push(); f(el); S.layout = normLayout(L0); commit(); if (fit) layoutFit(); }; };
@@ -22911,6 +25123,26 @@ function layoutProps(pr) {
   set("ly-grain", (el) => { L0.grain = el.value; }); set("ly-gap", (el) => { L0.gap = el.value; }); set("ly-outline", (el) => { L0.outline = el.value; }); set("ly-pairs", (el) => { L0.pairs = el.checked; L0.place = {}; }, true);
   if (g("ly-nest")) g("ly-nest").onclick = () => layoutCmd("nest");
   if (g("ly-un")) g("ly-un").onclick = () => layoutCmd("unnest");
+  // (Round PLOT-1) Number of Garment: Current with its Total, or Select Grading with a number per size; one step each change
+  set("ly-gmode", (el) => { L0.garments = el.value === "sizes" ? { sizes: garmentSizesNow() } : { n: garmentTotal() }; });
+  set("ly-gtotal", (el) => { L0.garments = { n: numOf(el.value) }; });
+  if (pr.querySelectorAll) pr.querySelectorAll("[data-cwl]").forEach(el => { el.onchange = () => cwSwitch(+el.value); });      // (Round CW-1 / D)
+  if (pr.querySelectorAll) pr.querySelectorAll("[data-gsize]").forEach(el => { el.onchange = () => { push(); L0.garments = { sizes: { ...garmentSizesNow(), [el.dataset.gsize]: numOf(el.value) } }; S.layout = normLayout(L0); commit(); }; });
+}
+// (Round PLOT-1) the Nesting section's Number of Garment rows
+function garmentRows(opt) {
+  const G = layoutOf().garments, sizes = !!(G && G.sizes), grp = garmentGroup(), nOf = (z) => (G && G.sizes && G.sizes[z.id]) || 0;
+  return '<div class="row"><label title="How many garments go on the marker: of the size in use (Current), or a number of each size (Select Grading)">Number of Garment</label><select class="w" id="ly-gmode">' +
+    opt("current", sizes ? "sizes" : "current", "Current") + (grp ? opt("sizes", sizes ? "sizes" : "current", "Select Grading") : "") + '</select></div>' +
+    (sizes && grp ? grp.sizes.map(z => '<div class="row"><label style="padding-left:12px">' + esc(z.name) + '</label><input type="text" inputmode="decimal" data-num="1" data-gsize="' + z.id + '" value="' + nOf(z) + '"></div>').join("")
+      : '<div class="row"><label style="padding-left:12px">Total</label><input type="text" inputmode="decimal" data-num="1" id="ly-gtotal" value="' + garmentTotal() + '"></div>');
+}
+// Select Grading's numbers as they stand: the garments' own, else one of the size in use
+function garmentSizesNow() {
+  const G = layoutOf().garments, grp = garmentGroup();
+  if (G && G.sizes) return { ...G.sizes };
+  const z = grp && (grp.sizes.find(x => x.id === S.grading.active) || grp.sizes.find(x => x.id === grp.base) || grp.sizes[0]);
+  return z ? { [z.id]: Math.max(1, G && G.n || 1) } : {};
 }
 // the layout's three selectors: what is printed (lines, information) and the layout lock
 function layoutSelector(group) {
@@ -22978,7 +25210,7 @@ const LAY_TOOLS = [
   ["stop", "Stop Nesting", "M6 6h12v12H6z", true],      // (Round BETA8-1 / F: built; pressed only while nesting)
   ["settings", "Nest Settings", "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2", true],
   ["unnest", "Remove All Nesting Patterns", "M4 4h7v7H4zM13 13h7v7h-7zM14 4l6 6M20 4l-6 6", true],
-  ["unnestAdd", "Remove Add'l Nesting Patterns", "M4 4h7v7H4zM14 7h6", false],
+  ["unnestAdd", "Remove Add'l Nesting Patterns", "M4 4h7v7H4zM14 7h6", true],      // (Round PLOT-1: built, with Number of Garment)
   ["labels", "Auto-Arrange Labels", "M4 6h10M4 12h16M4 18h8", true],
   ["manual", "Manual Nesting", "M9 11V5a1.5 1.5 0 0 1 3 0v6M12 10V4a1.5 1.5 0 0 1 3 0v7M15 10.5V6a1.5 1.5 0 0 1 3 0v8a6 6 0 0 1-6 6h-1a6 6 0 0 1-5-3l-2.5-4a1.5 1.5 0 0 1 2.5-1.6L9 13", true],
   ["row", "Reset Default Arrangement", "M4 12a8 8 0 1 0 2.3-5.7M4 4v5h5", true],
@@ -22989,7 +25221,7 @@ const LAY_TOOLS = [
   ["print", "Print\u2026", "M6 9V3h12v6M6 18H4v-7h16v7h-2M7 14h10v7H7z", true],
   ["file", "Save Print File", "M5 3h11l3 3v15H5zM8 3v6h8V3M8 21v-7h8v7", true]];
 const LAY_TIPS = { paper: "On: the whole sheets, with the margin that is cut off. Off: the pattern as it looks after cutting and taping the sheets together", manual: "Drag or nudge (arrow keys) the patterns by hand: they keep clear of each other and inside the roll. Shift + an arrow selects the next pattern", nest: "Arrange every pattern on the width as tightly as it will go, turning them only as the grain direction allows", settings: "The nesting settings, in the Property Editor",
-  unnest: "Back as the patterns lie in the 2D window", labels: "Names at the middle of each pattern, or where they are in the 2D window", row: "One row, side by side", snap: "The layout as a picture",
+  unnest: "Back as the patterns lie in the 2D window", unnestAdd: "Only one garment on the marker again: the copies Number of Garment added (Nest Settings) are taken away", labels: "Names at the middle of each pattern, or where they are in the 2D window", row: "One row, side by side", snap: "The layout as a picture",
   plotter: "The lines and information to print, with a preview, then Plot or Save", tape: "Click two places on the layout for the distance between them; every measurement stays until the tape is switched off or Esc", print: "Print the sheets as they are laid out", file: "The same pages as an HTML file to print later" };
 function layoutToolsBuild() {
   const bar = document.getElementById("lay-tools");
@@ -23243,7 +25475,7 @@ function avatarItems() {
     { n: "Show Avatar", k: keyOf("show3:avatar"), on: show3("avatar"), f: () => setShow3("avatar", !show3("avatar")), keep: again },
     { n: "Show Arrangement Points", k: keyOf("arr_points"), on: !!S.ui.arrPts, f: () => setArrPoints(!S.ui.arrPts), keep: again },
     { n: "Show Bounding Volumes", on: !!S.ui.bv3, f: () => { S.ui.bv3 = !S.ui.bv3; saveUI(); arrShowBVs(); }, keep: again }, { n: "Show Avatar Joints", k: keyOf("joints3"), on: !!S.ui.joints3, f: () => setJoints3(!S.ui.joints3), keep: again },
-    { n: "Show Avatar Measures", on: S.ui.meas3 !== false, f: () => { S.ui.meas3 = S.ui.meas3 === false; saveUI(); showMeasures(); }, keep: again }, nbRow("Show 3D Pen (Avatar)"), nbRow("Show NURBS Curves"),
+    { n: "Show Avatar Measures", on: S.ui.meas3 !== false, f: () => { S.ui.meas3 = S.ui.meas3 === false; saveUI(); showMeasures(); }, keep: again }, { n: "Show 3D Pen (Avatar)", on: S.ui.pen3 !== false, f: () => { S.ui.pen3 = S.ui.pen3 === false; saveUI(); penShow(); }, keep: again }, nbRow("Show NURBS Curves"),
     { n: "Show Avatar Fitting Suit", on: !!S.ui.suit3, f: () => { S.ui.suit3 = !S.ui.suit3; saveUI(); suitShow(); }, keep: again }, nbRow("Show Scene and Props", keyOf("kept:Shift+P")),
     { n: "Show Collision Mesh", on: !!st.showCol, off: !S.av, f: () => { if (S.av) setAvatar({ showCol: !st.showCol }); else toast("No avatar is loaded"); }, keep: again }].filter(Boolean);
 }
@@ -23253,7 +25485,7 @@ const svgIcon = (d) => '<svg viewBox="0 0 24 24"><path d="' + d + '"/><\/svg>';
 // the 3D window's two selectors are lists of switches for things that are not built yet; the choices are kept
 const VIEW3D = { garment: [["garment", "Show Garment"], ["sewing3", "Show Seamlines"], ["threads3", "Show Threads"], ["internal3", "Show Internal Lines"], ["baseline3", "Show Baselines"], ["pins3", "Show Pins"], ["unsewn", "Show Unsewn Edges"]],
   avatar: [["avatar", "Show Avatar"]],
-  trim: [["zippers", "Show Zippers"], ["topstitch3", "Show Topstitch"], ["buttons", "Show Buttons"], ["buttonholes", "Show Buttonholes"], ["piping", "Show Piping"], ["bond", "Show Bond/Skive (none yet)"]] };
+  trim: [["zippers", "Show Zippers"], ["topstitch3", "Show Topstitch"], ["buttons", "Show Buttons"], ["buttonholes", "Show Buttonholes"], ["piping", "Show Piping"], ["bond", "Show Bond/Skive"] /* (POST8 FIX-7 / B: the glues on the cloth) */, ["pucker3", "Show Puckering"]] };
 function buildSelectors() {
   const mk = (host, key, title, icon, items) => {
     const b = document.createElement("button");
@@ -23301,7 +25533,8 @@ const OB_TABS = [["scene", "Scene", "M4 6h16M4 12h16M4 18h16M7 6v.01M7 12v.01M7 
   ["puckering", "Puckering", "M3 14c2-4 3 4 5 0s3 4 5 0 3 4 5 0 2 2 3 0M3 8h18"], ["trim", "Trim", "M7 4h10v5a5 5 0 0 1-10 0zM12 14v6M9 20h6"], ["zipper", "Zipper", "M12 3v18M9 5h3M12 8h3M9 11h3M12 14h3M9 17h3M12 20h3"],
   ["grading", "Grading", "M4 20V10M9 20V6M14 20v-9M19 20V4"], ["pom", "POM", "M3 9h18v6H3zM6 9v3M9 9v2M12 9v3M15 9v2M18 9v3"]];
 const OB_SUB = [["tack", "Tack", "M6 6l12 12M6 18L18 6M4 4h4v4H4zM16 16h4v4h-4z"],
-  ["piping", "Piping", "M4 7c6 0 6 9 16 9M4 10c6 0 6 9 16 9"], ["binding", "Binding", "M4 5v14M4 5h7a4 4 0 0 1 0 8H4M11 13h9"], ["glue", "Gluing", "M12 3.5s6 6.5 6 10.5a6 6 0 0 1-12 0c0-4 6-10.5 6-10.5z"]];      // (Round r11)
+  ["piping", "Piping", "M4 7c6 0 6 9 16 9M4 10c6 0 6 9 16 9"], ["binding", "Binding", "M4 5v14M4 5h7a4 4 0 0 1 0 8H4M11 13h9"], ["glue", "Gluing", "M12 3.5s6 6.5 6 10.5a6 6 0 0 1-12 0c0-4 6-10.5 6-10.5z"],
+  ["lace", "Lacing", "M8 4l8 4-8 4 8 4-8 4M16 4l-8 4 8 4-8 4 8 4"]];      // (Round r11; POST8 FIX-4b: Lacing)
 const obName = (tab) => ([...OB_TABS, ...OB_SUB].find(t => t[0] === tab) || [, ""])[1];
 const obState = () => S.ob || (S.ob = { tab: "patterns", sel: null });
 function obSelect(tab, id) { const o = obState(); o.tab = tab; o.sel = id === undefined ? null : id; if ((tab === "button" || tab === "buttonhole") && o.sel != null) (S.btnPick = S.btnPick || {})[tab] = o.sel; ui(); draw(); }
@@ -23339,13 +25572,7 @@ function libItemImportText(kind, id, text) {
   const L = libOf(), k = L[kind].findIndex(x => x.id === id);
   if (k < 0) return "That item is gone";
   push("Import " + LIB[kind].name);
-  const src = { ...d.item }; delete src.tex;
-  const it = normLibItem(kind, src, id);
-  if (kind === "fabric" && d.image && /^data:image[/]/.test(String(d.image.data))) {
-    const im = addImage(String(d.image.name || "texture"), d.image.data, +d.image.w > 0 ? +d.image.w : 100, +d.image.h > 0 ? +d.image.h : 100);
-    const t = normFabTex({ ...(d.item.tex || {}), img: im.id }); if (t) it.tex = t;
-  }
-  L[kind][k] = it;
+  L[kind][k] = libItemOf(kind, d, id);
   commit();
   return "";
 }
@@ -23370,6 +25597,7 @@ function libItemRows(kind, it) {
     { n: "Rename…", f: () => libItemRename(kind, it) },
     { n: "Export…", f: () => libItemExport(kind, it) },
     { n: "Import…", f: () => libItemImport(kind, it.id) },
+    ...(LIB_HOME[kind] ? [{ n: "Add to Library", f: () => libAddFromScene(kind, it) }] : []),      // (Round LIB-1 / C, spec 4.3)
     { n: "Delete", f: () => libItemDelete(kind, it.id) }];
 }
 function libItemMenu(kind, it, x, y) { listMenu(libItemRows(kind, it), x, y); }
@@ -23425,8 +25653,15 @@ function renderOB() {
       b.onclick = (e) => { e.stopPropagation(); const r = b.getBoundingClientRect ? b.getBoundingClientRect() : { left: 200, bottom: 200 }; libItemMenu(kind, it, r.left, r.bottom + 2); };
       d.insertBefore(b, x); }
     // (Round r20 continued (4)) a button or buttonhole type is dragged onto a placed one (libDrop())
-    if (o.tab === "button" || o.tab === "buttonhole") for (let k = 0; k < items.children.length; k++) { const d = items.children[k], it = libOf()[o.tab][k]; if (!it) continue; d.draggable = true; d.title = "Drag onto a placed " + (o.tab === "button" ? "button" : "buttonhole") + " to give it this type"; d.ondragstart = (e) => { try { e.dataTransfer.setData(LIB_DRAG, o.tab + ":" + it.id); e.dataTransfer.effectAllowed = "copy"; } catch (er) {} }; }
+    // (Round LIB-1 / C, spec 4.4) every kind the library keeps is dragged onto the library panel too
+    const btn = o.tab === "button" || o.tab === "buttonhole";
+    if (btn || LIB_HOME[o.tab]) for (let k = 0; k < items.children.length; k++) { const d = items.children[k], it = libOf()[o.tab][k]; if (!it) continue; d.draggable = true; d.title = btn ? "Drag onto a placed " + (o.tab === "button" ? "button" : "buttonhole") + " to give it this type, or onto the Library to keep it there" : "Drag onto the Library to keep it there"; d.ondragstart = (e) => { try { e.dataTransfer.setData(LIB_DRAG, o.tab + ":" + it.id); e.dataTransfer.effectAllowed = "copy"; } catch (er) {} }; }
     if (!libOf()[o.tab].length) items.innerHTML = '<div class="note">None yet. <b>+ Add</b> makes one.</div>';
+    // (Round CW-1 / B, spec 2.5: the reference's Switch Colorway) the Fabric tab's colorway chips: a click makes that colorway current
+    if (o.tab === "fabric" && cwOn()) { const bar = document.createElement("div"); bar.className = "cw-chips"; const used = cwUsed();
+      bar.innerHTML = S.colorways.list.map(c => { const cols = cwColors(c, used).slice(0, 3); return '<button type="button" class="cw-chip' + (c.id === S.colorways.cur ? ' cur' : '') + '" data-cwchip="' + c.id + '"' + (c.id === S.colorways.cur ? ' aria-pressed="true"' : '') + ' title="' + esc(c.name) + (c.id === S.colorways.cur ? ' (current)' : ': make it current') + '">' + cols.map(v => '<span style="background:' + v + '"></span>').join("") + '<b>' + esc(c.name.replace(/^Colorway /, "")) + '</b></button>'; }).join("");
+      for (const b of bar.querySelectorAll ? bar.querySelectorAll("[data-cwchip]") : []) b.onclick = () => cwSwitch(+b.dataset.cwchip);
+      items.insertBefore ? items.insertBefore(bar, items.firstChild) : items.appendChild(bar); }
     // (Round BETA8-1 / C3, roadmap 1.T2) the Button tab: ready-made buttons from the catalogue
     if (o.tab === "button") { const bar = document.createElement("div"); bar.className = "note"; bar.innerHTML = '<button type="button" class="btn" data-bcat="1" title="Ready-made buttons: shirt, blouse, trousers, jacket, coat, jeans, snap">Catalogue\u2026</button>';
       const b = bar.querySelector && bar.querySelector("[data-bcat]"); if (b) b.onclick = (e) => { const r = b.getBoundingClientRect ? b.getBoundingClientRect() : { left: 200, bottom: 200 }; catalogueMenu(r.left, r.bottom + 2); };
@@ -23471,7 +25706,7 @@ function sceneRows(row) {
   head("2D Pattern"); line("Patterns", S.pieces.length, () => obSelect("patterns", null));
   head("Sewing"); line("Seams", S.seams.filter(s => !s.zip).length, () => setTool("edit_sewing")); line("Zippers", S.seams.filter(s => s.zip).length, () => obSelect("zipper", null));
   head("3D Form"); line("Tacks", n("tacks"), () => obSelect("tack", null)); line("Piping", n("pipings"), () => obSelect("piping", null));
-  line("Binding", n("bindings"), () => obSelect("binding", null)); line("Gluing", n("glues"), () => obSelect("glue", null));
+  line("Binding", n("bindings"), () => obSelect("binding", null)); line("Gluing", n("glues"), () => obSelect("glue", null)); line("Lacing", n("lacings"), () => obSelect("lace", null));
   head("Material"); line("Fabrics", (libOf().fabric || []).length, () => obSelect("fabric", null));
   head("Environment"); line("Avatar", esc(av && av.name ? av.name : "none"), () => {});
 }
@@ -23569,6 +25804,10 @@ function libProps(pr, kind, it) {
   for (const f of L.fields) { let s = secs.find(x => x.n === f[0]); if (!s) secs.push(s = { n: f[0], f: [] }); s.f.push(f); }
   const field = ([, k, label, type, unit]) => {
     const id = 'lp-' + k, v = it[k];
+    // (Q2 of the overnight report, the maintainer's answer, guess post8/75) a button's or buttonhole's registered mesh is a choice of its
+    // Shape list: "Mesh: <name>" (selected while it has one) or "Mesh…" (registers one onto this type); the stored shape stays underneath
+    if (k === "shape" && meshShaped(kind)) return '<div class="row"><label>' + label + '</label><select class="w" id="' + id + '">' + type.map(o => '<option' + (!it.mesh && o === v ? ' selected' : '') + '>' + esc(o) + '</option>').join("") +
+      '<option value="' + MESH_OPT + '"' + (it.mesh ? ' selected' : '') + '>' + (it.mesh ? 'Mesh: ' + esc(it.mesh.name) + ' (' + ((accGeom(it.mesh) || { I: [] }).I.length/3) + ' triangles)' : 'Mesh…') + '</option></select></div>';
     const input = Array.isArray(type) ? '<select class="w" id="' + id + '">' + type.map(o => '<option' + (o === v ? ' selected' : '') + '>' + esc(o) + '</option>').join("") + '</select>'
       : type === "color" ? '<input type="color" id="' + id + '" value="' + v + '">' : type === "check" ? '<input type="checkbox" id="' + id + '"' + (v ? ' checked' : '') + '>'
       : type === "num" ? '<input type="text" inputmode="decimal" data-num="1" step="0.1" id="' + id + '" value="' + v + '">' : '<input type="text" class="w" id="' + id + '" value="' + esc(v) + '">';
@@ -23586,7 +25825,9 @@ function libProps(pr, kind, it) {
   const fabDetail = () => { const ph = fabricPhys(it), d = it.dir || {}, row = (id, label, v) => '<div class="row"><label>' + label + '</label><input type="text" inputmode="decimal" data-num="1" id="' + id + '" value="' + v + '"></div>';
     return '<details class="pe" id="lp-detail"' + (LIB_FACE.detail ? ' open' : '') + '><summary>Detail</summary>' + FAB_DETAIL.map(([k, label]) => row("ld-" + k, label + " (%)", Number.isFinite(d[k]) ? d[k] : 100)).join("") +
       row("ld-friction", "Friction", +ph.friction.toFixed(3)) + '<div class="note">100 % is the preset as it is. Weft runs across the grain line, warp along it, the right bias up and to the right of it.</div></details>'; };
-  pr.innerHTML = '<h2>' + L.name + '</h2>' + secs.map(s => '<details class="pe" open><summary>' + s.n + '</summary>' + (kind === "fabric" && s.n === "Material" ? fabMat(s) : s.f.map(field).join("") + (kind === "fabric" && s.n === "Physical Property" ? fabDetail() : "")) + '</details>').join("") +
+  // (Round LIB-1 / E) a type's registered mesh: its name and triangles, Remove (back to its Shape), or Register… for one
+  const meshSec = TRIM_REG[kind] && !meshShaped(kind) ? '<details class="pe" open><summary>Mesh</summary><div class="row"><label>Mesh</label>' + (it.mesh ? '<span class="w">' + esc(it.mesh.name) + ' (' + ((accGeom(it.mesh) || { I: [] }).I.length/3) + ' triangles)</span> <button type="button" class="btn" id="lp-mesh-x">Remove</button>' : '<span class="w">None: drawn by its Shape</span> <button type="button" class="btn" id="lp-mesh-reg">' + TRIM_REG[kind] + '…</button>') + '</div></details>' : '';
+  pr.innerHTML = '<h2>' + L.name + '</h2>' + secs.map(s => '<details class="pe" open><summary>' + s.n + '</summary>' + (kind === "fabric" && s.n === "Material" ? fabMat(s) : s.f.map(field).join("") + (kind === "fabric" && s.n === "Physical Property" ? fabDetail() : "")) + '</details>').join("") + meshSec +
     '<div class="note" style="margin-top:6px">' + (kind === "fabric" ? "The colors show in the 2D window (Front and Back Texture Surface). A preset fills in a typical weight and thickness and sets how the cloth stretches and bends in the 3D window: approximate starting points, not measured fabrics."
       : kind === "topstitch" ? "Assign gives the selected topstitch this preset's name and offset." : kind === "zipper" ? "Assign gives the selected zipper this type. Tape width is each side's tape, for the 3D export."
       : kind === "button" || kind === "buttonhole" ? "The Button and Buttonhole tools place this type; Assign gives it to the placed one selected. Its size and shape show in the 2D and 3D windows."
@@ -23610,8 +25851,12 @@ function libProps(pr, kind, it) {
       Object.assign(it, normLibItem(kind, it, it.id)); if (!normFaces(it.faces)) delete it.faces; commit();
     }; }
   }
+  const mx = document.getElementById("lp-mesh-x"), mr = document.getElementById("lp-mesh-reg");
+  if (mx) mx.onclick = () => { push("Remove Mesh"); delete it.mesh; commit(); };
+  if (mr) mr.onclick = () => registerTrim(kind);
   for (const [, k, , type] of L.fields) {
     const el = document.getElementById('lp-' + k);
+    if (el && k === "shape" && meshShaped(kind)) { el.onchange = () => trimShapeSet(kind, it, el.value, () => libProps(pr, kind, it)); continue; }
     if (el) el.onchange = () => {
       push(); it[k] = type === "check" ? el.checked : type === "num" ? +el.value : el.value;
       // a fabric preset brings its typical weight and thickness with it; both can be typed over afterwards
@@ -23671,6 +25916,7 @@ function act(id) {
 // File → New: a blank document (after asking about unsaved work)
 function newDoc(sure) {
   if (sure !== true && unsavedWork()) return askUnsaved("start a new document", () => newDoc(true));
+  if (defProjOpen()) return;      // (POST8 FIX-7 / C) Settings ▸ Default Files ▸ Project File
   blankDoc(); commit(); fitAll(); markClean();
   if (DESK) setFile(null);
   toast("New document");
@@ -23768,8 +26014,8 @@ function normSnap(o) {
   if (["px", "mm", "in"].includes(y.unit)) b.unit = y.unit;
   b.w = num(y.w, b.w, 1, 100000); b.h = num(y.h, b.h, 1, 100000); b.ppi = num(y.ppi, b.ppi, 10, 1200); b.count = Math.round(num(y.count, b.count, 1, 10));
   if (["horizontal", "vertical", "box"].includes(y.layout)) b.layout = y.layout;
-  for (const k of ["transparent", "separate", "map"]) if (typeof y[k] === "boolean") b[k] = y[k];
-  if (Array.isArray(y.views)) y.views.slice(0, 10).forEach((v, i) => { if (CAM_VIEWS.some(c => c[0] === v)) b.views[i] = v; });
+  for (const k of ["transparent", "separate", "map", "html"]) if (typeof y[k] === "boolean") b[k] = y[k];      // (Round CW-1 / D: Save HTML File)
+  if (Array.isArray(y.views)) y.views.slice(0, 10).forEach((v, i) => { if (CAM_VIEWS.some(c => c[0] === v) || /^custom:\d+$/.test(v)) b.views[i] = v; });      // (Round CW-1 / D, spec 4.7: a custom view)
   return { d2: a, d3: b };
 }
 const loadSnap = () => { try { return normSnap(JSON.parse(kv().getItem(SNAP_KEY) || "{}")); } catch (e) { return normSnap(null); } };
@@ -23933,16 +26179,24 @@ function snap2Dialog(at) {
    LATER (the not-built inventory).
    ================================================================ */
 // the 3D window's working marks a render leaves out (its groups by name): what is kept is the avatar, the garment, buttons, trims, zippers
-const RENDER_HIDE = ["arr", "arrbv", "collision", "gizmo", "joints", "lights3", "lines", "measure", "names3", "ov3", "pins", "rwaxis", "sewing", "sizelines", "strain", "suit", "tacks", "tacklive", "unsewn"];      // (Round FIX-3 / C: the tack tools' live marks too)
+const RENDER_HIDE = ["arr", "arrbv", "cams3", "collision", "gizmo", "joints", "lights3", "lines", "measure", "names3", "ov3", "pens", "pins", "rwaxis", "sewing", "sizelines", "strain", "suit", "tacks", "tacklive", "unsewn"];      // (Round FIX-3 / C: the tack tools' live marks too)
 // (Round r29) the reference's kinds as far as ours has them: its Sphere is our "point" (the data key stays), Rectangle is new; the rows' opening values, kept on a light only when set
-const LIGHT_TYPES = [["rect", "Rectangle"], ["point", "Sphere"], ["dir", "Directional"], ["spot", "Spot"], ["dome", "Dome"]], LIGHT_ROWS = { w: 1000, h: 1000, radius: 60, penumbra: 0, shadowR: 0 };
+// (POST8 FIX-6 / C) IES, the reference's sixth kind (frame 145)
+const LIGHT_TYPES = [["rect", "Rectangle"], ["point", "Sphere"], ["dir", "Directional"], ["spot", "Spot"], ["ies", "IES"], ["dome", "Dome"]], LIGHT_ROWS = { w: 1000, h: 1000, radius: 60, penumbra: 0, shadowR: 0 };
 function normLight(l, id) {
   l = l && typeof l === "object" ? l : {};
   const num = (v, d, lo, hi) => (v !== null && v !== "" && Number.isFinite(+v)) ? Math.min(hi, Math.max(lo, +v)) : d;
+  const ies = l.ies && typeof l.ies === "object" && typeof l.ies.text === "string" && l.ies.text.length <= IES_MAX ? l.ies : null;
   return { id: Number.isInteger(id) ? id : Number.isInteger(l.id) ? l.id : 1, name: typeof l.name === "string" && l.name.trim() ? l.name.slice(0, 60) : "Light",
     type: LIGHT_TYPES.some(t => t[0] === l.type) ? l.type : "dir", on: l.on !== false, intensity: num(l.intensity, 2, 0, 20),
     color: /^#[0-9a-fA-F]{6}$/.test(l.color) ? l.color.toLowerCase() : "#ffffff", az: num(l.az, 30, -180, 180), el: num(l.el, 45, -89, 89), spread: num(l.spread, 30, 2, 85),
-    ...Object.fromEntries(Object.entries(LIGHT_ROWS).filter(([k, d]) => l[k] != null && l[k] !== "" && Number.isFinite(+l[k]) && +l[k] !== d).map(([k]) => [k, num(l[k], LIGHT_ROWS[k], k === "w" || k === "h" || k === "radius" ? 1 : 0, 20000)])) };
+    ...Object.fromEntries(Object.entries(LIGHT_ROWS).filter(([k, d]) => l[k] != null && l[k] !== "" && Number.isFinite(+l[k]) && +l[k] !== d).map(([k]) => [k, num(l[k], LIGHT_ROWS[k], k === "w" || k === "h" || k === "radius" ? 1 : 0, 20000)])),
+    // (POST8 FIX-6 / C) each kept only when set, whatever the kind (a kind changed and changed back keeps them): an IES profile, a dome's picture, its Light Angle
+    // (degrees, -180 to 180; 0 is the picture unturned, not a default that could change, so it is no row of LIGHT_ROWS / fileDefaults()) and its two switches
+    ...(l.angle != null && l.angle !== "" && Number.isFinite(+l.angle) && +l.angle !== 0 ? { angle: num(l.angle, 0, -180, 180) } : {}),
+    ...(ies ? { ies: { name: typeof ies.name === "string" && ies.name.trim() ? ies.name.slice(0, 80) : "profile.ies", text: ies.text } } : {}),
+    ...(l.env && typeof l.env === "object" && Number.isInteger(l.env.img) ? { env: { img: l.env.img } } : {}),
+    ...(l.lockCam === true ? { lockCam: true } : {}), ...(l.finite === true ? { finite: true } : {}) };
 }
 function normLights(list) {
   const out = [], seen = new Set();
@@ -23958,7 +26212,9 @@ function lightAdd(type) {
 }
 function lightSet(id, k, v) {
   const l = (S.lights || []).find(x => x.id === id); if (!l) return;
-  push("Edit Light"); Object.assign(l, normLight({ ...l, [k]: v }, l.id)); commit();
+  // (POST8 FIX-6 / C) the light becomes exactly what normLight() makes of it: a switch turned off or a row taken away goes (Object.assign alone kept it)
+  const n = normLight({ ...l, [k]: v }, l.id);
+  push("Edit Light"); for (const x of Object.keys(l)) if (!(x in n)) delete l[x]; Object.assign(l, n); commit();
 }
 function lightDelete(id) { push("Delete Light"); S.lights = (S.lights || []).filter(l => l.id !== id); commit(); }
 // the unit vector a light comes from (az round y from +z, el up)
@@ -23969,9 +26225,16 @@ function lightObjects(lights, box, pt) {
   for (const l of lights) {
     if (!l.on) continue;
     const col = new THREE.Color(l.color), d = lightDir(l), at = (k) => [c.x + d.x*R*k, c.y + d.y*R*k, c.z + d.z*R*k];
-    if (l.type === "dome") { out.push(new THREE.HemisphereLight(col, 0x3a3a3e, l.intensity)); continue; }
+    // (POST8 FIX-6 / C) a dome with a picture: the quick drawing lights by the picture itself (renderSetup()'s ro.env), the path tracer by its environment (ptBuild())
+    if (l.type === "dome") { if (!(domeHasMap(l) && !pt)) out.push(new THREE.HemisphereLight(col, 0x3a3a3e, l.intensity)); continue; }
     // (Round r29) a rectangle: the path tracer's own area light; the quick drawing has no area lights here (three r159's bundle lacks their tables), so it stands in as a directional light from where it stands
-    const asRect = l.type === "rect" && pt, L = asRect ? new THREE.RectAreaLight(col, l.intensity, l.w || LIGHT_ROWS.w, l.h || LIGHT_ROWS.h) : l.type === "dir" || l.type === "rect" ? new THREE.DirectionalLight(col, l.intensity) : l.type === "spot" ? new THREE.SpotLight(col, l.intensity, 0, l.spread*Math.PI/180, l.penumbra != null ? Math.min(1, l.penumbra/l.spread) : 0.35, 0) : new THREE.PointLight(col, l.intensity, 0, 0);
+    // (POST8 FIX-6 / C) an IES light: the path tracer's photometric spot (its profile, iesTexture()); the quick drawing has no profiles: a wide soft spot
+    const asRect = l.type === "rect" && pt, L = asRect ? new THREE.RectAreaLight(col, l.intensity, l.w || LIGHT_ROWS.w, l.h || LIGHT_ROWS.h) : l.type === "dir" || l.type === "rect" ? new THREE.DirectionalLight(col, l.intensity) : l.type === "spot" ? new THREE.SpotLight(col, l.intensity, 0, l.spread*Math.PI/180, l.penumbra != null ? Math.min(1, l.penumbra/l.spread) : 0.35, 0) : l.type === "ies" ? new THREE.SpotLight(col, l.intensity, 0, IES_CONE, 1, 0) : new THREE.PointLight(col, l.intensity, 0, 0);
+    if (l.type === "ies" && pt && l.ies) { const tex = iesTexture(l.ies.text); if (tex) L.iesTexture = tex; }
+    if (l.type === "ies" && L.shadow) L.shadow.focus = 0.5;      // (its shadow camera half its 176° cone: the shadow stays sharp enough to see)
+    // (POST8 FIX-6 / C, a fault since Round r29) the path tracer reads a spot's radius, which three.js's own SpotLight has not: undefined reached the
+    // shader as NaN and a Spot lit nothing in a Path Traced picture unless its Shadow Radius was set. A point source unless it is (below)
+    if (L.isSpotLight) L.radius = 0;
     L.position.set(...at(l.type === "dir" ? 1.5 : 1));
     if (asRect) { L.lookAt(c.x, c.y, c.z); L.updateMatrixWorld(true); }
     if (l.shadowR) { L.userData.shadowR = l.shadowR; L.radius = l.shadowR; }      // (Round r23 / 6) a spot or a point light where its mark is in the 3D window
@@ -23991,9 +26254,276 @@ function lightShapes(lights, box) {
   }
   return out;
 }
+/* (POST8 FIX-6 / C: the reference's Light pane, frames 138–145, windows.md W37; guesses post8/22-25)
+   **The IES light**: a light with a photometric profile read from an .ies file (IESNA LM-63), placed and aimed as a spot is (From (round),
+   From (above), facing the garment). Path Traced lights by its profile: the path tracer's photometric spot, by the angle from the light's
+   axis (its vertical angles; the library reads a profile as round its axis), the profile's peak 1, so Intensity is ours as every light's
+   (guess post8/22). Quick has no profiles: a wide soft spot (IES_CONE). The profile's text is the light's own (`ies: { name, text }`, at most
+   IES_MAX characters), so a file keeps it.
+   **The Dome's Environment Map**: a picture (an equirectangular panorama, 2 : 1; PNG, JPEG or WebP, guess post8/23; since batch 0k also a high
+   dynamic range .hdr or .exr, decoded by three.js's own loaders: hdrDecode() below)
+   kept in S.images (`env: { img }`) that lights the garment from every side. Light Angle turns it round the vertical (degrees, the way the
+   lights' From (round) goes); at 0 the picture's middle lies behind the avatar seen from the front. **Lock to Camera** turns it with the
+   camera, so the light on the garment stays as seen, a turntable too. **Finite Dome** lays the picture's lower half on the floor round
+   the avatar (projected from ENV_EYE above the floor out to ENV_GROUND), so the garment stands on the picture's ground and casts its shadow
+   there; the sky stays where it is (guess post8/24). The Image/Video pane's Background "The dome's environment map" shows the picture behind
+   the garment (offered while a dome with a picture is on; guess post8/25). Path Traced: the environment and background maps; Quick: the
+   picture's PMREM as the scene's environment and its background. The 3D window is unchanged. */
+const IES_MAX = 200000, IES_CONE = Math.PI/2*0.98, ENV_W = 1024, ENV_EYE = 1600, ENV_GROUND = 60000;
+// an .ies file's profile: { data: 360 × 180 candela values (row a vertical degree from the axis, column a horizontal degree), its peak 1; lumens }, or null
+function iesParse(text) {
+  const s = String(text || ""), at = s.search(/TILT\s*=/i);
+  if (at < 0) return null;
+  const nl = s.indexOf("\n", at), tilt = s.slice(at, nl < 0 ? s.length : nl).replace(/^TILT\s*=\s*/i, "").trim().toUpperCase();
+  const n = s.slice(nl < 0 ? s.length : nl + 1).split(/[\s,]+/).filter(Boolean).map(Number);
+  let k = 0;
+  if (tilt === "INCLUDE") { const pairs = n[1]; if (!(pairs >= 0)) return null; k = 2 + 2*pairs; }
+  const [, lumens, mult, nV, nH] = n.slice(k, k + 10);
+  k += 13;
+  if (!(nV >= 1 && nH >= 1 && nV <= 1000 && nH <= 1000) || n.length < k + nV + nH + nV*nH) return null;
+  const ver = n.slice(k, k + nV), hor = n.slice(k + nV, k + nV + nH), cd = [];
+  k += nV + nH;
+  for (let h = 0; h < nH; h++) cd.push(n.slice(k + h*nV, k + (h + 1)*nV));
+  if ([...ver, ...hor, ...cd.flat()].some(x => !Number.isFinite(x))) return null;
+  // between the given angles, as the library's own reader does; a horizontal range of a quarter or a half folded round; outside the vertical range dark
+  const seg = (a, x) => { for (let i = 0; i < a.length - 1; i++) if (x < a[i + 1] || i === a.length - 2) return i; return 0; };
+  const h0 = hor[0], h1 = hor[nH - 1], data = new Float32Array(64800);
+  let peak = 0;
+  for (let m = 0; m < 64800; m++) {
+    let u = m % 360; const v = Math.floor(m/360);
+    if (h1 - h0 !== 0 && (u < h0 || u >= h1)) { u %= h1*2; if (u > h1) u = h1*2 - u; }
+    let c = 0;
+    if (v >= ver[0] && v <= ver[nV - 1]) {
+      const f = nV > 1 ? seg(ver, v) : 0, g = nH > 1 ? seg(hor, u) : 0, f1 = Math.min(nV - 1, f + 1), g1 = Math.min(nH - 1, g + 1);
+      const tv = f1 > f ? Math.min(1, Math.max(0, (v - ver[f])/(ver[f1] - ver[f]))) : 0, th = g1 > g ? Math.min(1, Math.max(0, (u - hor[g])/(hor[g1] - hor[g]))) : 0;
+      const a = cd[g][f] + (cd[g1][f] - cd[g][f])*th, b = cd[g][f1] + (cd[g1][f1] - cd[g][f1])*th;
+      c = Math.max(0, (a + (b - a)*tv)*(Number.isFinite(mult) ? mult : 1));
+    }
+    data[m] = c; if (c > peak) peak = c;
+  }
+  if (!(peak > 0)) return null;
+  for (let m = 0; m < 64800; m++) data[m] /= peak;
+  return { data, lumens: Number.isFinite(lumens) ? lumens : 0, ver: nV, hor: nH };
+}
+// the profile as the path tracer's picture (360 × 180, half floats, red), kept per text
+const IES_TEX = new Map();
+function iesTexture(text) {
+  if (IES_TEX.has(text)) return IES_TEX.get(text);
+  const p = iesParse(text);
+  if (!p) return null;
+  const H = THREE.DataUtils.toHalfFloat, d = new Uint16Array(64800);
+  for (let m = 0; m < 64800; m++) d[m] = H(p.data[m]);
+  const tex = new THREE.DataTexture(d, 360, 180, THREE.RedFormat, THREE.HalfFloatType);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.needsUpdate = true;
+  if (IES_TEX.size > 8) { for (const t of IES_TEX.values()) t.dispose(); IES_TEX.clear(); }
+  IES_TEX.set(text, tex);
+  return tex;
+}
+// the dome (on, with a picture) that lights the render, or null
+const domeHasMap = (l) => !!(l && l.type === "dome" && l.env && (S.images || []).some(im => im.id === l.env.img));
+const domeMapLight = () => (S.lights || []).find(l => l.on && domeHasMap(l)) || null;
+// the camera's direction round the garment (degrees, as a light's From (round): 0 the front, 90 the avatar's left)
+const camAzOf = (p, c) => Math.atan2(p.x - c.x, p.z - c.z)*180/Math.PI;
+// how far the picture is turned: its Light Angle, and with Lock to Camera the camera's direction too
+const domeTurn = (l, camAz) => (l.angle || 0) + (l.lockCam ? camAz || 0 : 0);
+// the picture's linear colours, rows from the bottom, at most ENV_W × ENV_W/2 (an equirectangular picture is 2 : 1): kept per picture; null until it has loaded
+const ENV_PX = new Map(), SRGB_LIN = Array.from({ length: 256 }, (_, i) => { const c = i/255; return c <= 0.04045 ? c/12.92 : Math.pow((c + 0.055)/1.055, 2.4); });
+// (batch 0k) kept by the picture itself, not its id alone: a new document numbers its pictures from 1 again
+const envKey = (im) => im ? im.id + ":" + im.data.length + ":" + im.data.slice(-24) : "";
+const envKeep = (key, p) => { if (ENV_PX.size >= 4) ENV_PX.delete(ENV_PX.keys().next().value); ENV_PX.set(key, p); };
+function envPixels(id) {
+  const im = (S.images || []).find(x => x.id === id), key = envKey(im);
+  if (!im) return null;
+  if (ENV_PX.has(key)) return ENV_PX.get(key);
+  const kind = envKind(im);
+  if (kind) { envHdrLater(im, kind); return null; }
+  const el = imgEl(id);
+  if (!el || typeof document === "undefined") return null;
+  const w = Math.max(2, Math.min(ENV_W, el.naturalWidth)), h = Math.max(1, Math.round(w/2)), cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  const g = cv.getContext("2d"); if (!g) return null;
+  g.drawImage(el, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data, lin = new Float32Array(w*h*3);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = 4*((h - 1 - y)*w + x), o = 3*(y*w + x); lin[o] = SRGB_LIN[px[i]]; lin[o + 1] = SRGB_LIN[px[i + 1]]; lin[o + 2] = SRGB_LIN[px[i + 2]]; }
+  const out = { w, h, lin };
+  envKeep(key, out);
+  return out;
+}
+/* (POST8 batch 0k, the maintainer's brief: "three.js decodes them in JS") A HIGH DYNAMIC RANGE environment map: a Radiance .hdr (RGBE) or an
+   OpenEXR .exr, read by three.js r159's own RGBELoader and EXRLoader (vendor/three-hdr.js, loaded on first use as the path tracer is). Its
+   values are light as it was, not a picture's 0 to 1: a sun thousands of times brighter than the sky, so Path Traced casts its shadows. The
+   file's bytes are the picture in the document (data:image/hdr or data:image/exr, saved as images/<id>.hdr / .exr); its pixels, box-averaged
+   down to ENV_HDR_W × ENV_HDR_W/2 (the sun's light kept, not sampled away), rows from the bottom as envPixels() gives them, each value at most
+   ENV_HDR_TOP (the half floats the textures hold end at 65504; guess post8/28). In a browser a file over ENV_HDR_MB is the desktop app's
+   only (BROWSER_LIMIT's way, deskOnly()): its decoding needs several times its size in memory. */
+const HDR_SCRIPT = "vendor/three-hdr.js", ENV_HDR_W = 2048, ENV_HDR_TOP = 65000, ENV_HDR_MB = 64;
+const envKind = (im) => { const m = /^data:image\/(hdr|exr);/i.exec((im && im.data) || ""); return m ? m[1].toLowerCase() : null; };
+const envTooBig = (bytes) => !noLimits() && bytes > ENV_HDR_MB*1e6 && deskOnly("An environment map over " + ENV_HDR_MB + " MB (this one is " + Math.round(bytes/1e6) + " MB)");
+const envFileKind = (name) => { const m = /\.(hdr|exr)$/i.exec(String(name || "")); return m ? m[1].toLowerCase() : null; };
+function hdrLoad(done) {
+  if (typeof THREE_HDR !== "undefined") return done(null);
+  if (typeof document === "undefined") return done(new Error(HDR_SCRIPT + " is not loaded"));
+  if (hdrLoad.wait) return void hdrLoad.wait.push(done);
+  const wait = hdrLoad.wait = [done], end = (e) => { hdrLoad.wait = null; for (const f of wait) f(e); };
+  const s = document.createElement("script");
+  s.src = HDR_SCRIPT;
+  s.onload = () => end(typeof THREE_HDR !== "undefined" ? null : new Error(HDR_SCRIPT + " did not set up its loaders"));
+  s.onerror = () => end(new Error(HDR_SCRIPT + " could not be loaded"));
+  (document.head || document.body).appendChild(s);
+}
+// the file's bytes as { w, h, lin } (envPixels()'s shape; w, h its own size in sw, sh), or null when it is not such a file
+function hdrDecode(bytes, kind) {
+  if (typeof THREE_HDR === "undefined") return null;
+  let r;
+  try {
+    const L = new (kind === "exr" ? THREE_HDR.EXRLoader : THREE_HDR.RGBELoader)();
+    L.setDataType(THREE.FloatType);
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    r = L.parse(buf);
+  } catch (e) { return null; }
+  if (!r || !(r.width > 0) || !(r.height > 0) || !r.data) return null;
+  const sw = r.width, sh = r.height, d = r.data, ch = Math.round(d.length/(sw*sh));
+  if (!(ch >= 1)) return null;
+  const toF = d instanceof Uint16Array ? THREE.DataUtils.fromHalfFloat : (x) => x;
+  // the RGBE reader gives rows from the top, the EXR reader from the bottom (three.js flips the one texture and not the other)
+  const fromTop = kind !== "exr", w = Math.max(2, Math.min(ENV_HDR_W, sw)), h = Math.max(1, Math.round(w/2)), lin = new Float32Array(w*h*3);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.floor(y*sh/h), y1 = Math.max(y0 + 1, Math.floor((y + 1)*sh/h));
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.floor(x*sw/w), x1 = Math.max(x0 + 1, Math.floor((x + 1)*sw/w));
+      let a = 0, b = 0, c = 0;
+      for (let yy = y0; yy < y1; yy++) {
+        const row = fromTop ? sh - 1 - yy : yy;
+        for (let xx = x0; xx < x1; xx++) {
+          const i = ch*(row*sw + xx), v0 = toF(d[i]), v1 = ch > 2 ? toF(d[i + 1]) : v0, v2 = ch > 2 ? toF(d[i + 2]) : v0;
+          a += Number.isFinite(v0) && v0 > 0 ? v0 : 0; b += Number.isFinite(v1) && v1 > 0 ? v1 : 0; c += Number.isFinite(v2) && v2 > 0 ? v2 : 0;
+        }
+      }
+      const n = (y1 - y0)*(x1 - x0), o = 3*(y*w + x);
+      lin[o] = Math.min(ENV_HDR_TOP, a/n); lin[o + 1] = Math.min(ENV_HDR_TOP, b/n); lin[o + 2] = Math.min(ENV_HDR_TOP, c/n);
+    }
+  }
+  return { w, h, lin, sw, sh };
+}
+// a document's high dynamic range picture decoded once its loaders are here; the renders asked again then (null meanwhile, as a picture loading)
+const ENV_HDR_WAIT = new Set(), ENV_HDR_BAD = new Set(), ENV_HDR_THEN = [];
+// the dome's high dynamic range picture, not decoded yet (nor found unreadable)
+function envPending() {
+  const l = domeMapLight(), im = l && (S.images || []).find(x => x.id === l.env.img), key = envKey(im);
+  return !!(im && envKind(im) && !ENV_PX.has(key) && !ENV_HDR_BAD.has(key));
+}
+function envWhenReady(f) {
+  if (!envPending()) return void f();
+  ENV_HDR_THEN.push(f);
+  const l = domeMapLight(), im = (S.images || []).find(x => x.id === l.env.img);
+  envHdrLater(im, envKind(im));
+}
+function envHdrLater(im, kind) {
+  const key = envKey(im);
+  if (ENV_HDR_WAIT.has(key) || ENV_HDR_BAD.has(key)) return;
+  ENV_HDR_WAIT.add(key);
+  const after = () => { ENV_HDR_WAIT.delete(key); for (const f of ENV_HDR_THEN.splice(0)) { try { f(); } catch (e) { console.error(e); } } };
+  hdrLoad((err) => {
+    if (err) { ENV_HDR_BAD.add(key); noteError("Environment map: " + err.message); toast("The high dynamic range reader could not be loaded: " + err.message, 7000); return after(); }
+    const p = hdrDecode(bytesOfURL(im.data), kind);
+    if (!p) { ENV_HDR_BAD.add(key); toast("The environment map " + im.name + " could not be read", 6000); return after(); }
+    envKeep(key, p); after();
+    if (typeof garmentChanged === "function") garmentChanged();
+    if (typeof rwinPreview === "function" && typeof RWIN !== "undefined" && RWIN.open) rwinPreview(true);
+  });
+}
+/* The picture turned by deg round the vertical and times k, as half floats (RGBA). A direction's column in three.js's equirectangular
+   pictures is u = 0.75 − its From (round)/360, so a picture turned by a reads at u + a/360; a quarter more puts its middle behind the avatar. */
+function envTurned(p, deg, k) {
+  const { w, h, lin } = p, off = Math.round((((0.25 + deg/360) % 1) + 1) % 1*w) % w, H = THREE.DataUtils.toHalfFloat, one = H(1), out = new Uint16Array(w*h*4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = 3*(y*w + (x + off) % w), o = 4*(y*w + x);
+    out[o] = H(Math.min(ENV_HDR_TOP, lin[i]*k)); out[o + 1] = H(Math.min(ENV_HDR_TOP, lin[i + 1]*k)); out[o + 2] = H(Math.min(ENV_HDR_TOP, lin[i + 2]*k)); out[o + 3] = one;
+  }
+  return out;
+}
+// the dome's picture as an equirectangular texture, turned and scaled; one kept per use (slot), made again when anything of it changes
+const ENV_TEX = {};
+function envTexture(l, camAz, k, slot) {
+  const p = domeHasMap(l) ? envPixels(l.env.img) : null;
+  if (!p) return null;
+  const deg = domeTurn(l, camAz), key = envKey((S.images || []).find(x => x.id === l.env.img)) + "/" + Math.round((((deg % 360) + 360) % 360)*p.w/360) + "/" + k.toFixed(4), had = ENV_TEX[slot];
+  if (had && had.key === key) return had.tex;
+  const tex = new THREE.DataTexture(envTurned(p, deg, k), p.w, p.h, THREE.RGBAFormat, THREE.HalfFloatType);
+  tex.mapping = THREE.EquirectangularReflectionMapping; tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.needsUpdate = true;
+  if (had) { try { had.tex.dispose(); } catch (e) {} }
+  ENV_TEX[slot] = { key, tex };
+  return tex;
+}
+/* Finite Dome's ground: a disc on the floor round c, out to ENV_GROUND, each point showing the picture where a line from ENV_EYE above c
+   through it meets the picture's sphere (ground projection): rings closer near the middle, the seam at the picture's own edge (u 0 and 1). */
+function envGround(tex, c) {
+  const R = ENV_GROUND, rings = 48, segs = 128, pos = [], uv = [], nor = [], idx = [];
+  for (let i = 0; i <= rings; i++) {
+    const r = R*(i/rings)*(i/rings), v = Math.asin(-ENV_EYE/Math.hypot(r, ENV_EYE))/Math.PI + 0.5;
+    for (let j = 0; j <= segs; j++) { const t = -Math.PI + 2*Math.PI*j/segs; pos.push(c.x + r*Math.cos(t), 0, c.z + r*Math.sin(t)); uv.push(j/segs, v); nor.push(0, 1, 0); }
+  }
+  for (let i = 0; i < rings; i++) for (let j = 0; j < segs; j++) { const a = i*(segs + 1) + j, b = a + segs + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3)); geo.setIndex(idx);
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 1, metalness: 0, side: THREE.DoubleSide }));
+  m.name = "render:dome"; m.updateMatrixWorld(true);
+  return m;
+}
+// a dome's picture or an IES profile chosen from a file (one step each); kept in the document
+function lightFileChoose(kind) {
+  const id = G3.light || lightPick, l = (S.lights || []).find(x => x.id === id);
+  if (!l || typeof document === "undefined") return;
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = kind === "ies" ? ".ies,.IES" : "image/png,image/jpeg,image/webp,.hdr,.exr";
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onerror = () => toast("That file could not be read");
+    if (kind === "ies") { rd.onload = () => { lightIesSet(l.id, f.name, String(rd.result)); rwinSide(); rwinPreview(true); }; rd.readAsText(f); return; }
+    const hk = envFileKind(f.name);
+    if (hk) {
+      if (envTooBig(f.size)) return;
+      rd.onload = () => hdrLoad((err) => {
+        if (err) return void toast("The high dynamic range reader could not be loaded: " + err.message, 7000);
+        if (lightEnvHdr(l.id, f.name, String(rd.result), hk)) { rwinSide(); rwinPreview(true); }
+      });
+      rd.readAsDataURL(f); return;
+    }
+    rd.onload = () => { const data = String(rd.result), e = new Image(); e.onload = () => { lightEnvSet(l.id, f.name, data, e.naturalWidth, e.naturalHeight); rwinSide(); rwinPreview(true); }; e.onerror = () => toast("That picture could not be read"); e.src = data; };
+    rd.readAsDataURL(f);
+  };
+  inp.click();
+}
+function lightIesSet(id, name, text) {
+  const l = (S.lights || []).find(x => x.id === id); if (!l) return false;
+  if (String(text).length > IES_MAX) { toast("That IES file is too large (at most " + IES_MAX/1000 + " kB)", 6000); return false; }
+  if (!iesParse(text)) { toast("That is not an IES profile (IESNA LM-63): no TILT line or no candela table", 7000); return false; }
+  push(l.ies ? "Replace IES Profile" : "IES Profile"); l.ies = { name: String(name || "profile.ies").slice(0, 80), text: String(text) }; commit();
+  return true;
+}
+function lightEnvSet(id, name, data, w, h) {
+  const l = (S.lights || []).find(x => x.id === id); if (!l) return false;
+  if (!/^data:image[/](png|jpeg|webp|hdr|exr)/.test(String(data))) { toast("The environment map is a picture: PNG, JPEG or WebP, or a high dynamic range .hdr or .exr", 6000); return false; }
+  push(l.env ? "Replace Environment Map" : "Environment Map");
+  const im = addImage(name || "environment", data, w > 0 ? w : 100, h > 0 ? h : 100); l.env = { img: im.id }; commit();
+  if (w > 0 && h > 0 && Math.abs(w/h - 2) > 0.2) toast("An environment map is a panorama twice as wide as it is high (equirectangular): this one is " + w + " × " + h + ", so it is stretched round", 7000);
+  return true;
+}
+// (POST8 batch 0k) a .hdr or .exr file (as a data URL of any type) for the light's map: decoded first, so a file that is not one is no step
+function lightEnvHdr(id, name, url, kind) {
+  const bytes = bytesOfURL(String(url)), p = hdrDecode(bytes, kind);
+  if (!p) { toast("That is not a " + (kind === "exr" ? "OpenEXR (.exr)" : "Radiance (.hdr)") + " picture three.js can read", 7000); return false; }
+  const data = "data:image/" + kind + ";base64," + String(url).slice(String(url).indexOf(",") + 1);
+  if (!lightEnvSet(id, name, data, p.sw, p.sh)) return false;
+  const l = (S.lights || []).find(x => x.id === id);
+  if (l && l.env) envKeep(envKey((S.images || []).find(x => x.id === l.env.img)), p);
+  return true;
+}
 // (Round r29) 640 × 480 is the reference's list's first (frame 100); ours stays at Full HD by default
 const RENDER_KEY = "pdraft:render", RENDER_SIZES = [["640x480", "640 × 480", 640, 480], ["800x600", "800 × 600", 800, 600], ["1024x768", "1024 × 768", 1024, 768], ["1280x720", "1280 × 720 (HD)", 1280, 720], ["1920x1080", "1920 × 1080 (Full HD)", 1920, 1080], ["2560x1440", "2560 × 1440", 2560, 1440], ["3840x2160", "3840 × 2160 (4K)", 3840, 2160], ["custom", "Custom", 0, 0]];
-const RENDER_BG = [["window", "The 3D window's gray"], ["white", "White"], ["color", "A color"], ["transparent", "Transparent"]];
+const RENDER_BG = [["window", "The 3D window's gray"], ["white", "White"], ["color", "A color"], ["transparent", "Transparent"], ["dome", "The dome's environment map"]];      // (POST8 FIX-6 / C: the last offered while a dome with a picture is on; without one it is the window's gray)
 // (Round r23 / 6) mode: "quick" (the 3D window's own drawing, at a size of its own); fmt: the file Save writes
 // (Round r29) the Render pane's Engine: Final Render path traces unless told otherwise
 const RENDER_MODES = [["quality", "Path Traced (GPU, slow)"], ["quick", "Quick (as the 3D window)"], ["schematic", "Schematic (lines)"]];
@@ -24010,7 +26540,7 @@ const RENDER_FMTS = [["png", "PNG"], ["jpeg", "JPEG"]];
    its picture clean enough (0 none). The noise is this program's own measure, under the reference's name: the relative standard
    error of the pixels' means in the picture's middle, estimated from how much the average changes between two checks
    (ptNoise(); guess r25/10: the reference's measure is not known). Colour mapping: Reinhard (the reference's) or ACES (r23's). */
-const PT_NOISE = { def: 0.05, max: 1 }, PT_MAXMIN = { def: 20, max: 600 }, PT_TONES = [["reinhard", "Reinhard"], ["aces", "ACES Filmic"]];
+const PT_NOISE = { def: 0.05, max: 1 }, PT_MAXMIN = { def: 20, max: 600 }, PT_TONES = [["reinhard", "Reinhard"], ["hsv", "HSV Exponential"], ["aces", "ACES Filmic"]];
 const PT_NOISE_EVERY = 16, PT_NOISE_PX = 128;
 /* (Round r29b) The default picture as bright as the Quick render of the same scene. Their light is the same to within a few percent (the skirt
    0.56 against 0.55, the background 0.33 in both); it was plain Reinhard, x / (1 + x), that dimmed and flattened it, where Quick has no color
@@ -24019,10 +26549,33 @@ const PT_NOISE_EVERY = 16, PT_NOISE_PX = 128;
 const PT_WHITE = 1.5, PT_GAIN = 1.2;
 const ptToneOf = (x, burn) => { const c = x*PT_GAIN*(burn || 1); return Math.min(1, c*(1 + c/(PT_WHITE*PT_WHITE))/(1 + c)); };
 const PT_TONE_FROM = "vec3 CustomToneMapping( vec3 color ) { return color; }";
-const ptToneGLSL = () => "vec3 CustomToneMapping( vec3 color ) { color *= toneMappingExposure; return saturate( color * ( vec3( 1.0 ) + color / " + (PT_WHITE*PT_WHITE).toFixed(4) + " ) / ( vec3( 1.0 ) + color ) ); }";
+/* (POST8 FIX-6 / A, the reference's Color Mapping ▸ HSV Exponential, frame 135; guess post8/17) a pixel's value (its brightest channel, HSV's V)
+   mapped by 1 − e^(−V) with the same gain and Burn Value, its hue and saturation kept (every channel scaled alike): highlights roll off
+   without washing colours out. The quad's material has PT_HSV defined while it is chosen (ptBuild()). */
+const ptToneHsv = (rgb, burn) => { const c = rgb.map(x => x*PT_GAIN*(burn || 1)), v = Math.max(...c); return v > 0 ? c.map(x => Math.min(1, x*(1 - Math.exp(-v))/v)) : [0, 0, 0]; };
+const ptToneGLSL = () => "#ifdef PT_HSV\nvec3 CustomToneMapping( vec3 color ) { color *= toneMappingExposure; float v = max( max( color.r, color.g ), color.b ); if ( v <= 0.0 ) return vec3( 0.0 ); return saturate( color * ( ( 1.0 - exp( - v ) ) / v ) ); }\n#else\n" +
+  "vec3 CustomToneMapping( vec3 color ) { color *= toneMappingExposure; return saturate( color * ( vec3( 1.0 ) + color / " + (PT_WHITE*PT_WHITE).toFixed(4) + " ) / ( vec3( 1.0 ) + color ) ); }\n#endif";
 const RENDER_DEFAULT = { view: "now", size: "1920x1080", w: 1920, h: 1080, ss: 2, shadows: true, soft: 4, bg: "window", bgColor: "#ffffff", map: true, mode: "quality", fmt: "png" };
 // (Round r29) the document's camera lens: what the 3D window's one camera is; the 3D window's own values when none is set
 const RENDER_LENS = { fov: 40, near: 10, far: 80000 };
+/* (POST8 FIX-6 / B, the reference's Camera pane, frame 118: Lens Default / Panorama, Physical Camera (Render Only); guess post8/20) Both are the path
+   tracer's own (the reference's render is its path tracer): Panorama its equirectangular camera (CAMERA_TYPE 2: the whole surroundings round where
+   the camera stands, the view's middle in the picture's middle; a 2 : 1 picture), Physical Camera its depth of field: F-Stop, Focus Distance (0:
+   the view's middle, the garment's), Aperture Blades (0 a round aperture). The aperture is the lens's focal length (from Field of View, 35 mm film)
+   over the F-Stop, in the scene's millimetres. Neither changes the 3D window, Quick or Schematic; choosing either asks for Path Traced. */
+const PHYS_DEF = { fstop: 2.8, focus: 0, blades: 0 }, RW_LENSES = [["default", "Default"], ["panorama", "Panorama"]];
+// the path tracer's camera and depth of field for a run, onto its material (mat.physicalCamera, its defines); returns the shader's variant
+function ptCameraSet(mat, cam, o, mid) {
+  const pano = o.lens === "panorama", dof = !!o.phys && !pano, pc = mat.physicalCamera || {};
+  cam.isEquirectCamera = pano;
+  if (dof) {
+    const f = cam.getFocalLength ? cam.getFocalLength() : 50, d = mid && cam.position ? cam.position.distanceTo(mid) : 1000;
+    pc.bokehSize = 1000*f/(o.fstop || PHYS_DEF.fstop); pc.apertureBlades = o.blades || 0; pc.apertureRotation = 0; pc.anamorphicRatio = 1;
+    pc.focusDistance = o.focus > 0 ? o.focus : d;
+  } else pc.bokehSize = 0;
+  if (mat.setDefine) { mat.setDefine("CAMERA_TYPE", pano ? 2 : 0); mat.setDefine("FEATURE_DOF", dof ? 1 : 0); }
+  return (dof ? "dof" : "") + "/" + (pano ? "pano" : "persp");
+}
 function normRender(o) {
   o = o && typeof o === "object" ? o : {};
   const num = (v, d, lo, hi) => (v !== null && v !== "" && Number.isFinite(+v)) ? Math.round(Math.min(hi, Math.max(lo, +v))) : d;
@@ -24039,10 +26592,15 @@ function normRender(o) {
     burn: flo(o.burn, 1, 0.1, 4, 100), lightQ: RW_LQ.some(q => q[0] === o.lightQ) ? o.lightQ : "medium",
     w: num(o.w, 1920, 64, SNAP_MAXPX), h: num(o.h, 1080, 64, SNAP_MAXPX), ss: [1, 2, 4].includes(o.ss) ? o.ss : 2, shadows: o.shadows !== false, soft: num(o.soft, 4, 1, 12),
     bg: RENDER_BG.some(b => b[0] === o.bg) ? o.bg : "window", bgColor: /^#[0-9a-fA-F]{6}$/.test(o.bgColor) ? o.bgColor.toLowerCase() : "#ffffff", map: o.map !== false,
-    mode: RENDER_MODES.some(m => m[0] === o.mode) ? o.mode : RENDER_DEFAULT.mode, fmt: RENDER_FMTS.some(f => f[0] === o.fmt) ? o.fmt : "png",
+    mode: RENDER_MODES.some(m => m[0] === o.mode) ? o.mode : RENDER_DEFAULT.mode, fmt: [...RENDER_FMTS, RENDER_SVG].some(f => f[0] === o.fmt) ? o.fmt : "png",
     samples: num(o.samples, PT_SAMPLES.def, PT_SAMPLES.min, PT_SAMPLES.max),
     noise: o.noise !== null && o.noise !== "" && Number.isFinite(+o.noise) ? Math.round(Math.min(PT_NOISE.max, Math.max(0, +o.noise))*1000)/1000 : PT_NOISE.def,
-    maxMin: num(o.maxMin, PT_MAXMIN.def, 0, PT_MAXMIN.max), tone: o.tone === "aces" ? "aces" : "reinhard",
+    maxMin: num(o.maxMin, PT_MAXMIN.def, 0, PT_MAXMIN.max), tone: PT_TONES.some(t => t[0] === o.tone) ? o.tone : "reinhard",
+    // (POST8 FIX-6 / A) Crop (Final Render Only) and Linear Workflow, each kept only when not its default (a file without them saves back the same)
+    ...(o.crop === true ? { crop: true } : {}), ...(o.linear === false ? { linear: false } : {}),
+    // (POST8 FIX-6 / B) the Camera pane's Lens ▸ Panorama and Physical Camera (Render Only) with its rows, kept only when chosen
+    ...(o.lens === "panorama" ? { lens: "panorama" } : {}),
+    ...(o.phys === true ? { phys: true, fstop: flo(o.fstop, PHYS_DEF.fstop, 0.5, 64, 10), focus: num(o.focus, PHYS_DEF.focus, 0, 100000), blades: [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(+o.blades) ? +o.blades : PHYS_DEF.blades } : {}),
     schViews: SCH_VIEWS.some(v => v[0] === o.schViews) ? o.schViews : "frontback", schFill: SCH_FILLS.some(f => f[0] === o.schFill) ? o.schFill : "texture", schAvatar: o.schAvatar === true,
     // (Round r29) up to 10 pixels, as the maintainer found; the topstitch's line is kept in pixels and shown as a share (2 = 200 %); an eye hides a kind; Brightness 4 is the lit garment as it is
     schFillColor: /^#[0-9a-fA-F]{6}$/.test(o.schFillColor) ? o.schFillColor.toLowerCase() : "#ffffff", schBright: flo(o.schBright, 4, 0, 16, 10), schHide: (Array.isArray(o.schHide) ? o.schHide : []).filter(k => SCH_LINES.some(l => l[0] === k)),
@@ -24129,7 +26687,7 @@ function renderSize(o) {
 // the document's lens on the 3D window's one camera
 function renderLensApply() { if (typeof view3d === "undefined") return; const c = view3d.camera && view3d.camera(), o = S.render || RENDER_LENS; if (c) { c.fov = o.fov || RENDER_LENS.fov; c.near = o.near || RENDER_LENS.near; c.far = o.far || RENDER_LENS.far; c.updateProjectionMatrix(); view3d.ask(); } }
 // the background texture: a picture drawn behind the render, which then has no background of its own
-const renderCut = (o) => o.bgTex === "vignette" && o.bg !== "transparent";
+const renderCut = (o) => o.bgTex === "vignette" && o.bg !== "transparent" && !(o.bg === "dome" && domeMapLight());      // (POST8 FIX-6 / C: the dome's picture is the background itself)
 function renderPaintBack(g, w, h, o) {
   const mid = o.bg === "color" ? o.bgColor : "#ffffff", grad = g.createRadialGradient && g.createRadialGradient(w/2, h/2, Math.min(w, h)*0.2, w/2, h/2, Math.hypot(w, h)/2);
   if (!grad) { g.fillStyle = mid; g.fillRect(0, 0, w, h); return; }
@@ -24152,7 +26710,8 @@ function renderShot(o, size, spec) {
   if (!view3d.ready() || !view3d.shot) return null;
   const { w, h } = size || renderSize(o), box = S.av ? avatarBox(S.av) : garmentBox3(), named = !spec && o.view !== "now" && o.view !== "custom" ? o.view : null;
   const c = withCam(spec, () => view3d.shot(w, h, named, named ? box : null, o.bg === "transparent" || renderCut(o),
-    { ss: o.ss, shadows: o.shadows, soft: o.soft, bg: o.bg === "white" ? "#ffffff" : o.bg === "color" ? o.bgColor : null, lights: (S.lights || []).length ? lightObjects(S.lights, box) : null, shapes: lightShapes(S.lights || [], box), box, render: true, map: o.map !== false && mapOn3() }));
+    { ss: o.ss, shadows: o.shadows, soft: o.soft, bg: o.bg === "white" ? "#ffffff" : o.bg === "color" ? o.bgColor : null, lights: (S.lights || []).length ? lightObjects(S.lights, box) : null, shapes: lightShapes(S.lights || [], box), box, render: true, map: o.map !== false && mapOn3(),
+      env: domeMapLight(), envBg: o.bg === "dome" }));      // (POST8 FIX-6 / C) the dome's picture: renderSetup()
   return renderOnBack(c, w, h, o);
 }
 // (Round r23 / 6) Render… opens the Render workspace (the box of Round r19 follow-up is gone into it)
@@ -24244,7 +26803,7 @@ const RW_TOOLS = [
   [["live", "Interactive Render", "M5 4v16l14-8zM3 2h3M3 22h3"], ["stop", "Stop Render", "M6 6h12v12H6z"], ["pause", "Pause Final Render", "M7 5h3v14H7zM14 5h3v14h-3z"], ["render", "Final Render", "M3 9h18v11H3zM3 9l2-5 16-1 1 5zM8 4l1 4M13 4l1 4M10 12v5l5-2.500z"]],
   [["copy", "Copy Current Image", "M8 8h12v12H8zM4 16V4h12"], ["save", "Save Current Image", "M4 7h3l2-3h6l2 3h3v12H4zM12 10a3.500 3.500 0 1 0 0 7 3.500 3.500 0 0 0 0-7z"], ["folder", "Show in Saved Folder", "M3 6h7l2 3h9v10H3z"]],
   [["p:image", "Image/Video Properties", "M4 5h16v14H4zM4 15l4-4 4 4 3-3 5 5"], ["p:camera", "Camera Properties", "M4 8h11v9H4zM15 11l5-3v9l-5-3M18 3v3M16.500 4.500h3"], ["p:light", "Light Properties", "M12 3a6 6 0 0 0-3 11v3h6v-3a6 6 0 0 0-3-11zM9 20h6"], ["p:render", "Render Properties", "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"]]];
-const RW_LIGHTS = [["rect", "Rectangle Light", "M5 8l14-3v11l-14 3z"], ["point", "Sphere Light", "M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM5 12c3 2.500 11 2.500 14 0"], ["dir", "Directional Light", "M4 4l16 16M4 10l10 10M10 4l10 10"], ["spot", "Spot Light", "M9 3h6l5 15H4zM4 18c4 2 12 2 16 0"], ["dome", "Dome Light", "M3 16a9 9 0 0 1 18 0zM7 12v.01M12 9v.01M17 12v.01"]];
+const RW_LIGHTS = [["rect", "Rectangle Light", "M5 8l14-3v11l-14 3z"], ["point", "Sphere Light", "M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM5 12c3 2.500 11 2.500 14 0"], ["dir", "Directional Light", "M4 4l16 16M4 10l10 10M10 4l10 10"], ["spot", "Spot Light", "M9 3h6l5 15H4zM4 18c4 2 12 2 16 0"], ["ies", "IES Light", "M12 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM12 9v3M5 21c1-5 4-9 7-9s6 4 7 9M8 16h8"], ["dome", "Dome Light", "M3 16a9 9 0 0 1 18 0zM7 12v.01M12 9v.01M17 12v.01"]];
 function rwinTools() {
   const bar = rwEl("rw-tools"); if (!bar) return;
   const { live, busy, paused, shown, pane, lock } = RWIN, on = { live, stop: false, pause: paused, "p:image": pane === "image", "p:camera": pane === "camera", "p:light": pane === "light", "p:render": pane === "render" };
@@ -24272,20 +26831,36 @@ function lightPreset(k) {
 }
 function rwinLightsHTML() {
   const L = S.lights || [], cur = L.find(l => l.id === (G3.light || lightPick)) || null, kind = cur && LIGHT_TYPES.find(t => t[0] === cur.type)[1];
-  const num = (k, label, unit) => '<div class="df"><label>' + label + '</label><input type="text" inputmode="decimal" data-num="1" data-l="' + k + '" value="' + (cur[k] != null ? cur[k] : LIGHT_ROWS[k]) + '"><span class="u">' + unit + '</span></div>';
+  const num = (k, label, unit) => '<div class="df"><label>' + label + '</label><input type="text" inputmode="decimal" data-num="1" data-l="' + k + '" value="' + (cur[k] != null ? cur[k] : k in LIGHT_ROWS ? LIGHT_ROWS[k] : 0) + '"><span class="u">' + unit + '</span></div>';
   return '<div class="df"><label>Preset</label><select data-preset="1">' + rwOpt([["custom", "Custom"], ...LIGHT_PRESETS.map(p => [p[0], p[1]])], lightPresetOf()) + '</select></div>' +
     '<h3>Lights</h3>' +
-    '<div class="da">' + LIGHT_TYPES.map(([k, n]) => '<button class="btn" data-add="' + k + '" title="Add a ' + n.toLowerCase() + ' light">+ ' + n + '</button>').join("") + '</div>' + rwNb("IES Light") +
+    '<div class="da">' + LIGHT_TYPES.map(([k, n]) => '<button class="btn" data-add="' + k + '" title="Add ' + (k === "ies" ? "an IES" : "a " + n.toLowerCase()) + ' light">+ ' + n + '</button>').join("") + '</div>' +
     '<div class="lt-list">' + (L.length ? L.map(l => '<div class="obi' + (cur && l.id === cur.id ? ' on' : '') + '" data-pick="' + l.id + '"><span class="ck" data-pick="' + l.id + '">' + (l.on ? "●" : "○") + '</span><span class="nm" data-pick="' + l.id + '">' + (cur && l.id === cur.id ? "▶ " : "") + esc(l.name) + '</span><span class="sub" data-pick="' + l.id + '">' + LIGHT_TYPES.find(t => t[0] === l.type)[1] + (l.on ? '' : ', off') + ' · ' + l.intensity + '</span></div>').join("") : '<div class="hint" style="padding:4px">No lights: a render is lit as the 3D window is. Add one to light it your own way.</div>') + '</div>' +
     (cur ? '<h3>' + kind + ' Light</h3><div class="df"><label>Name</label><input type="text" data-l="name" value="' + esc(cur.name) + '"></div>' +
       '<div class="df"><label>Type</label><select data-l="type">' + rwOpt(LIGHT_TYPES, cur.type) + '</select></div>' +
       '<label class="lk"><input type="checkbox" data-l="on"' + (cur.on ? ' checked' : '') + '> Activate</label>' +
-      num("intensity", "Intensity", "") + '<div class="df"><label>Color</label><input type="color" data-l="color" value="' + cur.color + '"></div>' +
+      lightFileRows(cur) +
+      num("intensity", cur.type === "dome" ? "Light Intensity" : "Intensity", "") + (cur.type === "dome" && cur.env ? '' : '<div class="df"><label>Color</label><input type="color" data-l="color" value="' + cur.color + '"></div>') +
       (cur.type === "rect" ? num("w", "Width", "mm") + num("h", "Height", "mm") : '') + (cur.type === "point" ? num("radius", "Radius", "mm") : '') +
       (cur.type === "spot" ? num("spread", "Cone Angle", "°") + num("penumbra", "Penumbra Angle", "°") + num("shadowR", "Shadow Radius", "") : '') +
-      (cur.type === "dome" ? rwNb("Environment Map") + rwNb("Light Angle") + rwNb("Lock to Camera") + rwNb("Finite Dome") : num("az", "From (round)", "° 0 front, 90 left") + num("el", "From (above)", "°")) +
+      (cur.type === "dome" ? (cur.env ? num("angle", "Light Angle", "°") + '<label class="lk"><input type="checkbox" data-l="lockCam"' + (cur.lockCam ? ' checked' : '') + '> Lock to Camera</label>' +
+        '<label class="lk"><input type="checkbox" data-l="finite"' + (cur.finite ? ' checked' : '') + '> Finite Dome</label>' : '') : num("az", "From (round)", "° 0 front, 90 left") + num("el", "From (above)", "°")) +
       '<div class="da"><button class="btn" data-act="lt-del">Delete Light</button></div>' +
-      '<div class="hint">' + (cur.type === "dome" ? "A dome lights from the whole sky: it has no direction." : "Or click its mark in the 3D window with Select/Move: the gizmo moves it round the garment, and it keeps facing it." + (cur.type === "rect" || cur.type === "point" ? " It shows in a Quick picture where it stands in view; a path traced picture has its light, not its shape." : "")) + '</div>' : '');
+      '<div class="hint">' + (cur.type === "dome" ? (cur.env ? "The picture lights the garment from every side (an equirectangular panorama, 2 : 1). Light Angle turns it round; Lock to Camera turns it with the camera, so the light stays as seen; Finite Dome lays its ground on the floor round the avatar. Image/Video ▸ Background ▸ The dome's environment map shows it behind the garment." : "A dome lights from the whole sky: it has no direction. Choose an environment map to light by a picture instead.") :
+        "Or click its mark in the 3D window with Select/Move: the gizmo moves it round the garment, and it keeps facing it." + (cur.type === "rect" || cur.type === "point" ? " It shows in a Quick picture where it stands in view; a path traced picture has its light, not its shape." : "") +
+        (cur.type === "ies" ? " Path Traced lights by its profile; Quick lights it as a wide spot." + (cur.ies ? "" : " Until a profile is chosen it lights evenly, as a wide spot.") : "")) + '</div>' : '');
+}
+// (POST8 FIX-6 / C) an IES light's profile file and a dome's Environment Map: what is chosen, Choose… / Replace…, Remove
+function lightFileRows(l) {
+  if (l.type === "ies") return '<div class="df"><label>IES File</label><span class="u" style="flex:1;overflow:hidden;text-overflow:ellipsis" title="' + esc(l.ies ? l.ies.name : "") + '">' + (l.ies ? esc(l.ies.name) : "None") + '</span>' +
+    '<button class="btn" data-act="lt-ies" title="An .ies photometric profile (IESNA LM-63)">' + (l.ies ? "Replace…" : "Choose…") + '</button>' + (l.ies ? '<button class="btn" data-act="lt-ies-del">Remove</button>' : '') + '</div>';
+  if (l.type !== "dome") return '';
+  const im = l.env && (S.images || []).find(x => x.id === l.env.img);
+  // (batch 0k) a high dynamic range file is named, not drawn: a browser cannot draw it, and its bytes are too many to put into the pane
+  const hk = envKind(im);
+  return '<div class="df"><label>Environment Map</label>' + (im && hk ? '<span class="u" title="' + esc(im.name) + '" style="margin-right:4px">' + hk.toUpperCase() + " · " + esc(im.name.length > 22 ? im.name.slice(0, 20) + "…" : im.name) + '</span>' : im ? '<img alt="" src="' + im.data + '" title="' + esc(im.name) + '" style="width:44px;height:22px;object-fit:cover;border:1px solid var(--line, #888);margin-right:4px">' : '<span class="u">None</span>') +
+    '<button class="btn" data-act="lt-env" title="An equirectangular panorama (2 : 1): PNG, JPEG or WebP, or a high dynamic range .hdr or .exr (light as it was: a sun casts its shadows in Path Traced)">' + (im ? "Replace…" : "Choose…") + '</button>' + (im ? '<button class="btn" data-act="lt-env-del">Remove</button>' : '') + '</div>' +
+    lockLine("A .hdr or .exr over " + ENV_HDR_MB + " MB: only in the desktop app.");
 }
 /* The Image/Video pane (frames 098–117). Viewpoint: the current view, the custom views, or a named one. A turntable goes round the
    axis, shown dotted in the 3D window while it is chosen (rwinAxisShow()). */
@@ -24296,7 +26871,7 @@ function rwinImageHTML(o) {
     (tt ? '' : '<div class="df"><label>Viewpoint</label><select data-r="view">' + rwOpt([["now", "Current View"], ["custom", "Custom Views"], ...CAM_VIEWS], o.view) + '</select></div>') +
     (!tt && o.view === "custom" ? '<div class="lt-list">' + (views.length ? views.map((v, k) => '<div class="obi"><span class="nm" data-act="view-go:' + k + '" title="Look from this view">' + esc(v.name) + '</span><button class="btn" data-act="view-del:' + k + '" title="Delete this view">✕</button></div>').join("") : '<div class="hint" style="padding:4px">None yet: place the camera, then Add Current Viewport. A render makes every view here.</div>') + '</div>' +
       '<div class="da"><button class="btn" data-act="view-add">Add Current Viewport</button></div>' : '') +
-    rwNb("Colorway") + rwNb("Grading Size") +
+    cwRow("cwr") + rwNb("Grading Size") +
     (tt ? rwSel(o, "ttCount", "Image Count", [...TT_COUNTS.map(n => [n, String(n)]), ["custom", "Custom"]]) + (o.ttCount === "custom" ? rwNum(o, "ttN", "Images", "") : '') + rwNum(o, "ttAngle", "Rotation Angle", "°") +
       rwSel(o, "ttAxis", "Rotation Axis", [["auto", "Auto"], ["center", "Center"], ["custom", "Custom"]]) + (o.ttAxis === "custom" ? rwNum(o, "ttX", "X", "mm") + rwNum(o, "ttZ", "Z", "mm") : '') +
       rwSel(o, "ttDir", "Direction", [["ccw", "Counterclockwise"], ["cw", "Clockwise"]]) + rwChk(o, "ttVideo", "Save Video") + rwChk(o, "ttGif", "Save GIF") : '') +
@@ -24306,11 +26881,11 @@ function rwinImageHTML(o) {
     '<div class="df"><label>Width</label><input type="text" inputmode="decimal" data-num="1" data-r="w" value="' + w + '"><span class="u">Pixels</span></div>' +
     '<div class="df"><label>Height</label><input type="text" inputmode="decimal" data-num="1" data-r="h" value="' + h + '"><span class="u">Pixels</span></div>' + pxLimitHint() + rwChk(o, "ratio", "Maintain Ratio") +
     '<h3>Background</h3>' +
-    '<div class="df"><label>Color</label><select data-r="bg">' + rwOpt(RENDER_BG, o.bg) + '</select>' + (o.bg === "color" ? '<input type="color" data-r="bgColor" value="' + o.bgColor + '">' : '') + '</div>' +
-    rwSel(o, "bgTex", "Texture", [["", "None"], ["vignette", "Vignette"]]) + rwNb("Crop (Final Render Only)") +
+    '<div class="df"><label>Color</label><select data-r="bg">' + rwOpt(RENDER_BG.filter(b => b[0] !== "dome" || domeMapLight() || o.bg === "dome"), o.bg) + '</select>' + (o.bg === "color" ? '<input type="color" data-r="bgColor" value="' + o.bgColor + '">' : '') + '</div>' +
+    rwSel(o, "bgTex", "Texture", [["", "None"], ["vignette", "Vignette"]]) + rwChk(o, "crop", "Crop (Final Render Only)") +
     (mapOn3() && o.mode === "quick" ? '<label class="lk"><input type="checkbox" data-r="map"' + (o.map ? ' checked' : '') + '> The 3D map shown and its legend</label>' : '') +
     '<h3>Save</h3>' + rwSel(o, "nameKind", "File Name", [["project", "Project Name"], ["custom", "Custom Name"]]) +
-    (o.nameKind === "custom" ? '<div class="df"><label>Name</label><input type="text" data-r="customName" value="' + esc(o.customName) + '"></div>' : '') + rwNb("File Path") +
+    (o.nameKind === "custom" ? '<div class="df"><label>Name</label><input type="text" data-r="customName" value="' + esc(o.customName) + '"></div>' : '') + rwinPathHTML() +
     '<div class="df"><label>Image Format</label><select data-r="fmt">' + rwOpt(rwinFormats(o), o.fmt) + '</select></div>' + rwNb("Save HTML") +
     '<div class="hint">' + w + ' × ' + h + ' px' + (tt ? ", " + ttCount(o) + " images" : "") + '.</div>';
 }
@@ -24320,11 +26895,14 @@ function rwinCameraHTML(o) {
   const c = view3d.cam, cn = (k, label, unit, v) => '<div class="df"><label>' + label + '</label><input type="text" inputmode="decimal" data-num="1" data-cam="' + k + '" value="' + v + '"><span class="u">' + unit + '</span></div>';
   const p = camPos(c);
   return '<div class="df"><label>Name</label><input type="text" data-r="camName" value="' + esc(o.camName) + '"></div>' +
-    '<h3>Lens</h3><div class="df"><label>Lens</label><select data-r="lens">' + rwOpt([["default", "Default"]], "default") + '</select></div>' + rwNb("Panorama") + rwNum(o, "fov", "Field of View", "°") +
+    '<h3>Lens</h3><div class="df"><label>Lens</label><select data-r="lens">' + rwOpt(RW_LENSES, o.lens || "default") + '</select></div>' + rwNum(o, "fov", "Field of View", "°", o.lens === "panorama") +
     '<h3>View Orientation</h3>' + rwSel(o, "camType", "Type", [["spherical", "Spherical"], ["absolute", "Absolute"]]) +
     (o.camType === "absolute" ? cn("x", "Position X", "mm", Math.round(p.x)) + cn("y", "Position Y", "mm", Math.round(p.y)) + cn("z", "Position Z", "mm", Math.round(p.z))
       : cn("dist", "Distance", "mm", Math.round(c.dist)) + cn("az", "Horizontal Angle", "°", Math.round(c.az*180/Math.PI)) + cn("el", "Vertical Angle", "°", Math.round(c.el*180/Math.PI))) +
-    '<h3>Clipping Plane</h3>' + rwNum(o, "near", "Near", "mm") + rwNum(o, "far", "Far", "mm") + rwNb("Physical Camera (Render Only)") +
+    '<h3>Clipping Plane</h3>' + rwNum(o, "near", "Near", "mm") + rwNum(o, "far", "Far", "mm") +
+    rwChk(o, "phys", "Physical Camera (Render Only)") +
+    (o.phys ? rwNum(o, "fstop", "F-Stop", "f/") + rwNum(o, "focus", "Focus Distance", "mm, 0 = the garment") + rwSel(o, "blades", "Aperture Blades", [[0, "Round"], ...[3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(n => [n, String(n)])]) : '') +
+    (o.lens === "panorama" || o.phys ? '<div class="hint">' + (o.lens === "panorama" ? "Panorama: the whole surroundings round where the camera stands, for a 2 : 1 picture. " : "") + (o.phys ? "Physical Camera: what lies nearer or farther than the Focus Distance blurs, more at a smaller F-Stop. " : "") + "Path Traced only; the 3D window, Quick and Schematic keep the default lens." + (o.lens === "panorama" && o.phys ? " A panorama has no depth of field." : "") + '</div>' : '') +
     (RWIN.lock ? '<div class="hint">Camera Lock is on: the camera stays where it is.</div>' : '');
 }
 const camPos = (c) => ({ x: c.tx + c.dist*Math.cos(c.el)*Math.sin(c.az), y: c.ty + c.dist*Math.sin(c.el), z: c.tz + c.dist*Math.cos(c.el)*Math.cos(c.az) });
@@ -24357,14 +26935,19 @@ function rwinRenderHTML(o) {
       '<label class="lk"><input type="checkbox" data-r="shadows"' + (o.shadows ? ' checked' : '') + '> Soft shadows</label>' +
       rwNum(o, "soft", "Shadow softness", "1–12", !o.shadows) : '') +
     (mapOn3() && quick ? '<label class="lk"><input type="checkbox" data-r="map"' + (o.map ? ' checked' : '') + '> The 3D map shown and its legend</label>' : '') +
-    rwNb("Seam Puckering Intensity") + rwNb("Quality: Material") + rwNb("Mesh Optimization") + rwNb("HSV Exponential Color Mapping") + rwNb("Linear Workflow") + rwNb("Image Filter");
+    // (POST8 FIX-6 / A) HSV Exponential and Linear Workflow built (rwinModeHTML()); Quality: Material, Mesh Optimization and Image Filter dropped (guess
+    // post8/18: the path tracer's materials are exact at every sample, the cloth is traced as meshed, its pixel filter is its own); Seam Puckering
+    // Intensity waits for puckering drawn on the cloth's picture (UV-1)
+    rwNb("Seam Puckering Intensity");
 }
 // the formats a picture can be saved in (Round r23 / 8: no SVG, see THE SCHEMATIC RENDER)
-const rwinFormats = () => RENDER_FMTS;
+// (POST8 FIX-6 / D) SVG for a single schematic picture (Engine ▸ Schematic, Image): its lines as paths (schVector()); otherwise it saves as PNG
+const RENDER_SVG = ["svg", "SVG (lines as paths)"], rwinSvg = (o) => o.fmt === "svg" && o.mode === "schematic" && o.kind !== "turntable";
+const rwinFormats = (o) => (o && o.mode === "schematic" && o.kind !== "turntable" ? [...RENDER_FMTS, RENDER_SVG] : RENDER_FMTS);
 const RW_PANES = { image: "Image/Video", camera: "Camera", light: "Light", render: "Render" };
 // what each pane's open and save carry (our own JSON; the Light pane, the document's lights)
-const RW_PANE_KEYS = { image: ["kind", "view", "views", "ttCount", "ttN", "ttAngle", "ttAxis", "ttX", "ttZ", "ttDir", "ttVideo", "ttGif", "size", "w", "h", "orient", "ratio", "bg", "bgColor", "bgTex", "nameKind", "customName", "fmt"],
-  camera: ["camName", "fov", "near", "far", "camType"], render: ["mode", "samples", "noise", "maxMin", "tone", "burn", "lightQ", "ss", "shadows", "soft"] };
+const RW_PANE_KEYS = { image: ["kind", "view", "views", "ttCount", "ttN", "ttAngle", "ttAxis", "ttX", "ttZ", "ttDir", "ttVideo", "ttGif", "size", "w", "h", "orient", "ratio", "bg", "bgColor", "bgTex", "crop", "nameKind", "customName", "fmt"],
+  camera: ["camName", "fov", "near", "far", "camType", "lens", "phys", "fstop", "focus", "blades"], render: ["mode", "samples", "noise", "maxMin", "tone", "burn", "lightQ", "linear", "ss", "shadows", "soft"] };
 // the pane, built again from what is now; with it the toolbar
 function rwinSide() {
   const side = rwEl("rw-side");
@@ -24399,12 +26982,17 @@ function rwinClick(e) {
   if (d.add) { RWIN.pane = "light"; const l = lightAdd(d.add); lightSelect(l.id); return; }
   if (d.pick) return lightSelect(+d.pick);
   if (d.act === "lt-del") { const id = G3.light || lightPick; if (id) { lightDelete(id); lightPick = null; G3.light = null; rwinSide(); view3d.ask(); } return; }
+  // (POST8 FIX-6 / C) a profile or a picture chosen, or taken away (one step each)
+  if (d.act === "lt-ies" || d.act === "lt-env") return lightFileChoose(d.act === "lt-ies" ? "ies" : "env");
+  if (d.act === "rw-dir" || d.act === "rw-dir-clear") return rwinDirAct(d.act);      // (POST8, 2.F1) File Path
+  if (d.act === "lt-ies-del" || d.act === "lt-env-del") { const id = G3.light || lightPick, l = (S.lights || []).find(x => x.id === id); if (l) { push(d.act === "lt-ies-del" ? "Remove IES Profile" : "Remove Environment Map"); delete l[d.act === "lt-ies-del" ? "ies" : "env"]; commit(); rwinSide(); rwinPreview(true); } return; }
   if (d.act) rwinAct(d.act);
 }
 function rwinChange(e) {
   const t = e.target, d = (t && t.dataset) || {};
   if (d.preset) { if (t.value !== "custom") lightPreset(t.value); rwinSide(); view3d.ask(); rwinPreview(true); return; }
   if (d.cam) { rwinCamSet(d.cam, numOf(t.value)); rwinSide(); return; }
+  if (d.cwr) { cwSwitch(+t.value); rwinSide(); view3d.ask(); rwinPreview(true); return; }      // (Round CW-1 / D) the Colorway rendered: made current
   if (d.l) {
     const id = G3.light || lightPick;
     if (id) lightSet(id, d.l, t.type === "checkbox" ? t.checked : d.num ? numOf(t.value) : t.value);
@@ -24421,6 +27009,12 @@ function rwinSet(k, t) {
   if (k === "mode" && t.value === "quality" && !DESK) { deskOnly("Path Traced rendering"); return rwinSide(); }      // (Round r32: the browser's limits)
   if (k === "mode" && t.value === "quality" && ptSoftware() && !PT_SOFT_YES) return ptSoftAsk();
   if (k === "mode" && t.value !== "quality") PT_SOFT_YES = false;
+  // (POST8 FIX-6 / B) Panorama and Physical Camera are the path tracer's: in a browser the desktop app's, elsewhere they ask for Path Traced first
+  if ((k === "lens" && t.value === "panorama") || (k === "phys" && t.checked)) {
+    const what = k === "lens" ? "The Panorama lens" : "Physical Camera";
+    if (!DESK) { deskOnly(what); return rwinSide(); }
+    if (loadRender().mode !== "quality") { toast(what + " renders with Path Traced only: Render Properties ▸ Engine ▸ Path Traced first", 7000); return rwinSide(); }
+  }
   const o = loadRender(), was = renderSize(o);
   let v = t.type === "checkbox" ? t.checked : t.dataset && t.dataset.num ? numOf(t.value) : k === "ss" ? +t.value : t.value;
   if (k === "w" || k === "h") {
@@ -24554,6 +27148,8 @@ function rwinRender() {
   if (RWIN.live) return toast("Stop the Interactive Render first", 5000);
   if (RWIN.busy || renderRefused()) return;
   if (!view3d.ready()) return toast("The 3D window is not up: show it first (the 3D or 3D|2D button at the bottom)", 6000);
+  // (POST8 batch 0k) a high dynamic range map is decoded once its reader is here: the render begins once it is, not without its light
+  if (envPending()) { toast("Reading the environment map…", 3000); return void envWhenReady(() => { if (!RWIN.busy && !RWIN.live) rwinRender(); }); }
   const o = loadRender(), shots = rwinShots(o);
   RWIN.result = null; RWIN.seq = null; RWIN.saved = false; rwinSeqBar();
   if (shots.length > 1) return rwinSeqStart(o, shots);
@@ -24561,10 +27157,74 @@ function rwinRender() {
   if (rwinRenderMode(o, spec)) return;
   const { w, h } = renderSize(o), c = renderShot(o, null, spec);
   if (!c) return toast("The render could not be made here" + shotWhy(), 8000);
-  rwinResult(c, w, h, o);
+  rwinResult(c, w, h, o, spec);
 }
-function rwinResult(c, w, h, o, n) {
-  RWIN.result = { c, w, h, fmt: o.fmt, mode: o.mode };
+/* (POST8 FIX-6 / A, the reference's Crop (Final Render Only), frame 115; guess post8/19) A finished single picture cut down to what it shows: the
+   garment (and the avatar while it is shown) as the picture's camera sees it, CROP_MARGIN of the larger side round it, never the
+   Interactive preview, nor a series (whose pictures keep one size). Nothing is cut when the box reaches behind the camera or fills the
+   picture. */
+const CROP_MARGIN = 0.04;
+function renderCropRect(o, w, h, spec) {
+  if (typeof view3d === "undefined" || !view3d.camFor) return null;
+  const g = G3.items.size ? garmentBox3() : null, a = S.av && S.av.root && S.av.root.visible !== false ? avatarBox(S.av) : null;
+  if (!g && !a) return null;
+  const b = g && a ? { x0: Math.min(g.x0, a.x0), x1: Math.max(g.x1, a.x1), y0: Math.min(g.y0, a.y0), y1: Math.max(g.y1, a.y1), z0: Math.min(g.z0, a.z0), z1: Math.max(g.z1, a.z1) } : g || a;
+  const named = !spec && o.view !== "now" && o.view !== "custom" ? o.view : null;
+  const cam = withCam(spec, () => view3d.camFor(w, h, named, named ? (S.av ? avatarBox(S.av) : garmentBox3()) : null));
+  if (!cam) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  // (POST8 batch 0f) the floor shadow too: every corner of the box cast onto the floor along each light that throws one (cropShadowPts())
+  const pts = [];
+  for (const x of [b.x0, b.x1]) for (const y of [b.y0, b.y1]) for (const z of [b.z0, b.z1]) pts.push([x, y, z]);
+  pts.push(...cropShadowPts(b, pts));
+  for (const [x, y, z] of pts) {
+    const v = new THREE.Vector3(x, y, z), d = v.clone().applyMatrix4(cam.matrixWorldInverse);
+    if (d.z > -cam.near) return null;                     // behind the camera: no honest box on the picture
+    v.project(cam);
+    const px = (v.x + 1)/2*w, py = (1 - v.y)/2*h;
+    x0 = Math.min(x0, px); x1 = Math.max(x1, px); y0 = Math.min(y0, py); y1 = Math.max(y1, py);
+  }
+  const m = CROP_MARGIN*Math.max(w, h);
+  x0 = Math.max(0, Math.floor(x0 - m)); y0 = Math.max(0, Math.floor(y0 - m)); x1 = Math.min(w, Math.ceil(x1 + m)); y1 = Math.min(h, Math.ceil(y1 + m));
+  if (x1 - x0 < 8 || y1 - y0 < 8 || (x0 === 0 && y0 === 0 && x1 === w && y1 === h)) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+/* (POST8 batch 0f, the maintainer's brief: the shadow is never cut) where the box's corners fall on the floor along each light: the document's lights
+   that are on (but a dome, which casts none), else the 3D window's own directional lights; a light low over the floor casts at most
+   CROP_SHADOW_MAX times the box's height, and every shadow point gets CROP_SHADOW_PAD round it on the floor (soft edges) */
+const CROP_SHADOW_MAX = 4, CROP_SHADOW_PAD = 80;
+function cropShadowDirs(b) {
+  const out = [];
+  for (const l of S.lights || []) if (l.on && l.type !== "dome") out.push(lightDir(l));
+  if (!out.length && typeof view3d !== "undefined" && view3d.scene) {
+    const sc = view3d.scene(), c = { x: (b.x0 + b.x1)/2, y: (b.y0 + b.y1)/2, z: (b.z0 + b.z1)/2 };
+    for (const L of (sc && sc.children) || []) if (L.isDirectionalLight && L.visible !== false && L.intensity > 0) {
+      const t = L.target ? L.target.position : c, dx = L.position.x - t.x, dy = L.position.y - t.y, dz = L.position.z - t.z, n = Math.hypot(dx, dy, dz);
+      if (n > 1e-6) out.push({ x: dx/n, y: dy/n, z: dz/n });
+    }
+  }
+  return out.filter(d => d.y > 0.01);
+}
+function cropShadowPts(b, corners) {
+  const out = [], hmax = CROP_SHADOW_MAX*Math.max(1, b.y1 - Math.max(0, b.y0));
+  for (const d of cropShadowDirs(b)) for (const [x, y, z] of corners) {
+    if (y <= 0) continue;
+    const k = Math.min(y/d.y, hmax), sx = x - d.x*k, sz = z - d.z*k;
+    for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) out.push([sx + px*CROP_SHADOW_PAD, 0, sz + pz*CROP_SHADOW_PAD]);
+  }
+  return out;
+}
+function renderCropped(c, w, h, o, spec) {
+  const r = o.crop && !RWIN.seq ? renderCropRect(o, w, h, spec) : null;
+  if (!r || !c) return null;
+  const out = document.createElement("canvas"); out.width = r.w; out.height = r.h;
+  const g = out.getContext && out.getContext("2d"); if (g) g.drawImage(c, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  return { c: out, w: r.w, h: r.h, r };
+}
+function rwinResult(c, w, h, o, spec) {
+  const svg = c && c.svg, cut = renderCropped(c, w, h, o, spec);
+  if (cut) ({ c, w, h } = cut);
+  RWIN.result = { c, w, h, fmt: o.fmt, mode: o.mode, ...(cut ? { crop: cut.r } : {}), ...(svg ? { svg: cut ? svgCrop(svg, cut.r) : svg } : {}) };
   const f = rwinFit(w, h);
   rwinShow(c, f.w, f.h, ""); rwinTitle("Render (" + Math.round(f.k*100) + "% of " + w + " × " + h + ")");
   rwinSide();
@@ -24744,6 +27404,7 @@ function rwinModeHTML(o) {
     '<div class="df"><label title="How much a pixel\u2019s brightness is carried over: 1 as it is, more brighter">Burn Value</label><input type="text" inputmode="decimal" data-num="1" data-r="burn" value="' + o.burn.toFixed(2) + '"></div>' +
     '<div class="df"><label>Color Mapping</label><select data-r="tone">' + PT_TONES.map(([k, n]) => '<option value="' + k + '"' + (o.tone === k ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></div>' +
     '<div class="df"><label title="How many times light bounces">Quality: Light</label><select data-r="lightQ">' + rwOpt(RW_LQ.map(q => [q[0], q[1]]), o.lightQ) + '</select></div>' +
+    '<label class="lk" title="On: the picture is written for the screen (sRGB). Off: its linear values as they are, darker in the middle tones, for further work elsewhere"><input type="checkbox" data-r="linear"' + (o.linear !== false ? ' checked' : '') + '> Linear Workflow</label>' +
     (why ? '<div class="hint">Not here: ' + esc(why) + '.</div><div class="da"><button class="btn" data-act="use-quick">Use Quick</button></div>'
       : (!ptParallel() && !(PTCTX && PTCTX.ready) ? '<div class="hint">This graphics card prepares the path tracer only when Final Render is clicked (it can take a minute; Cancel stops it). Until then Interactive shows Quick.</div>' : '') +
       '<div class="hint">Light bounces between the garment, the avatar and the floor: soft shadows, the fabric\u2019s color and picture. Slow: more samples, a cleaner picture.</div>');
@@ -24783,9 +27444,11 @@ const ptBack = (o) => (o.bg === "white" ? "#ffffff" : o.bg === "color" ? o.bgCol
 function ptLights(box) {
   const doc = (S.lights || []).filter(l => l.on), sc = view3d.scene();
   if (doc.length) {
-    const L = lightObjects(doc, box, true).filter(x => !x.isHemisphereLight), dome = doc.find(l => l.type === "dome");
+    const L = lightObjects(doc, box, true).filter(x => !x.isHemisphereLight), dome = domeMapLight() || doc.find(l => l.type === "dome");
     for (const x of L) { x.updateMatrixWorld(true); if (x.target) x.target.updateMatrixWorld(true); }
-    return { lights: L, dome: dome ? { color: dome.color, k: dome.intensity*0.5 } : { color: "#ffffff", k: 0.15 } };
+    // (POST8 FIX-6 / C) the IES profiles in use, each once, in the order the path tracer numbers them
+    const ies = [...new Set(L.map(x => x.iesTexture).filter(Boolean))];
+    return { lights: L, ies, dome: dome ? { color: dome.color, k: dome.intensity*0.5, l: dome } : { color: "#ffffff", k: 0.15 } };
   }
   // the window's own: its two directional lights, its sky light as the dome
   const own = sc ? sc.children.filter(c => c.isDirectionalLight && c.visible) : [], hemi = sc ? sc.children.find(c => c.isHemisphereLight) : null;
@@ -24848,18 +27511,29 @@ function ptBuild(run) {
   // (Round r25) the colour mapping chosen (the quad's shader is made again when it changes)
   const tm = o.tone === "aces" ? THREE.ACESFilmicToneMapping : THREE.CustomToneMapping;
   if (R2.toneMapping !== tm) { R2.toneMapping = tm; if (ctx.quad && ctx.quad.material) ctx.quad.material.needsUpdate = true; }
+  // (POST8 FIX-6 / A) HSV Exponential: the custom mapping's other branch; Linear Workflow off: the picture written as its linear values, without the display's sRGB curve
+  const qm = ctx.quad && ctx.quad.material, hsv = o.tone === "hsv", cs = o.linear === false ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+  if (qm && !!(qm.defines && qm.defines.PT_HSV) !== hsv) { qm.defines = hsv ? { PT_HSV: 1 } : {}; qm.needsUpdate = true; }
+  if (R2.outputColorSpace !== cs) { R2.outputColorSpace = cs; if (qm) qm.needsUpdate = true; }
   // in tiles of at most PT_TILE pixels a side, and (ptStep()) one sample's tiles a frame: a pass over a whole large picture, or many
   // passes queued at once, keep the graphics card busy long enough for Windows to take it for hung and reset it (about 2 s)
   const see = o.bg === "transparent" || renderCut(o), named = !run.spec && o.view !== "now" && o.view !== "custom" ? o.view : null;
   pt.setSize(w, h); pt.alpha = see; pt.tiles.set(Math.ceil(w/PT_TILE), Math.ceil(h/PT_TILE));
   pt.camera = withCam(run.spec, () => view3d.camFor(w, h, named, named ? box : null));
+  // (POST8 FIX-6 / B) Panorama, Physical Camera: another shader variant is compiled again, without holding the page (ptCompile(), the preparing shown)
+  const variant = ptCameraSet(mat, pt.camera, o, new THREE.Vector3((box.x0 + box.x1)/2, (box.y0 + box.y1)/2, (box.z0 + box.z1)/2));
+  if (ctx.variant !== undefined && ctx.variant !== variant) ctx.ready = false;
+  ctx.variant = variant;
   // (Round r29) Burn Value, Quality: Light
   R2.toneMappingExposure = (o.burn || 1)*(o.tone === "aces" ? 1 : PT_GAIN); mat.bounces = (RW_LQ.find(q => q[0] === o.lightQ) || RW_LQ[1])[2];
   const objs = run.warm ? [] : ptMeshes(), lit = ptLights(box);
+  // (POST8 FIX-6 / C) the dome's picture, turned as its Light Angle and Lock to Camera say, at its own brightness (environmentIntensity scales its light)
+  const fc = new THREE.Vector3((box.x0 + box.x1)/2, 0, (box.z0 + box.z1)/2), envPic = !run.warm && lit.dome.l ? envTexture(lit.dome.l, camAzOf(pt.camera.position, fc), 1, "pt") : null;
   let floor = null;
   if (!see || run.warm) {
-    floor = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), new THREE.MeshStandardMaterial({ color: ptBack(o), roughness: 1, metalness: 0 }));
-    floor.rotation.x = -Math.PI/2; floor.updateMatrixWorld(true); objs.push(floor);
+    floor = envPic && lit.dome.l.finite ? envGround(envPic, fc) : new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), new THREE.MeshStandardMaterial({ color: ptBack(o), roughness: 1, metalness: 0 }));
+    if (!floor.name) floor.rotation.x = -Math.PI/2;
+    floor.updateMatrixWorld(true); objs.push(floor);
   }
   const { bvh, textures, materials, lights } = new P.PathTracingSceneGenerator().generate([...objs, ...lit.lights]);
   const geo = bvh.geometry;
@@ -24868,10 +27542,13 @@ function ptBuild(run) {
   mat.materialIndexAttribute.updateFrom(geo.attributes.materialIndex);
   mat.textures.setTextures(R2, 2048, 2048, textures);
   mat.materials.updateFrom(materials, textures);
-  mat.lights.updateFrom(lights);
-  const env = ptGradient(ctx, "env", lit.dome.color, ptBack(o));
+  // (POST8 FIX-6 / C) an IES light's profile: the path tracer's photometric picture, a layer a profile
+  const ies = run.warm ? [] : lit.ies || [];
+  mat.lights.updateFrom(lights, ies);
+  if (ies.length) mat.iesProfiles.updateFrom(R2, ies);
+  const env = envPic || ptGradient(ctx, "env", lit.dome.color, ptBack(o));
   mat.envMapInfo.updateFrom(env); mat.environmentIntensity = lit.dome.k;
-  mat.backgroundMap = ptGradient(ctx, "back", ptBack(o), ptBack(o)); mat.backgroundAlpha = see ? 0 : 1;
+  mat.backgroundMap = envPic && o.bg === "dome" ? envPic : ptGradient(ctx, "back", ptBack(o), ptBack(o)); mat.backgroundAlpha = see ? 0 : 1;
   Object.assign(run, { R2, pt, mat, quad: ctx.quad, floor, geo, cvs: ctx.cvs, tiles: pt.tiles.x*pt.tiles.y });
   run.shapes = run.warm ? null : ptShapes(run, box, pt.camera);
   pt.reset();
@@ -24978,7 +27655,7 @@ function ptPrepFail(run, why) {
   if (run.preview) { rwinSide(); return rwinPreview(true); }
   RWIN.busy = false;
   const o = { ...run.o, mode: "quick" }, c = renderShot(o, { w: run.w, h: run.h }, run.spec);
-  if (c) rwinResult(c, run.w, run.h, o); else rwinSide();
+  if (c) rwinResult(c, run.w, run.h, o, run.spec); else rwinSide();
 }
 /* (Round r29) The path tracer's shader, compiled without holding the page: compiling takes 20 to 45 s through Direct3D, and three.js's
    first draw would wait for it with the page not answering (open since r23). compileAsync() starts it and asks the card with
@@ -25075,10 +27752,10 @@ function ptDone(run, stopped) {
     // (Round r29) a picture of a series: kept, and the next one
     if (RWIN.seq) { if (stopped) RWIN.seq.stop = true; RWIN.seq.lastPT = { samples: Math.floor(run.samples) }; ptFree(run); return rwinSeqGot(c); }
     RWIN.busy = false; RWIN.paused = false;
-    rwinResult(c, run.w, run.h, run.o);
-    const s = Math.floor(run.samples), secs = Math.round((ptNow() - run.t0)/1000);
+    rwinResult(c, run.w, run.h, run.o, run.spec);
+    const s = Math.floor(run.samples), secs = Math.round((ptNow() - run.t0)/1000), rw = RWIN.result.w, rh = RWIN.result.h;
     const why = stopped ? ", stopped" : run.why === "noise" ? ", clean to the noise threshold" : run.why === "time" ? ", at the time limit" : "";
-    rwinTitle("Render (" + Math.round(rwinFit(run.w, run.h).k*100) + "% of " + run.w + " \u00d7 " + run.h + ", quality, " + s + (stopped || run.why !== "samples" ? " of " + run.target : "") + " samples" + why + ", " + secs + " s)");
+    rwinTitle("Render (" + Math.round(rwinFit(rw, rh).k*100) + "% of " + rw + " \u00d7 " + rh + (RWIN.result.crop ? " cropped" : "") + ", quality, " + s + (stopped || run.why !== "samples" ? " of " + run.target : "") + " samples" + why + ", " + secs + " s)");
     RWIN.lastPT = { samples: s, target: run.target, secs, w: run.w, h: run.h, stopped, why: stopped ? "stopped" : run.why || "samples" };
   }
   ptFree(run);
@@ -25100,7 +27777,7 @@ function rwinPreviewMode(o, f) {
   return true;
 }
 function rwinRenderMode(o, spec) {
-  if (o.mode === "schematic") { const { w, h } = renderSize(o), c = withCam(spec, () => schematicShot(o, w, h)); if (!c) toast("The schematic could not be made here"); else rwinResult(c, w, h, o); return true; }
+  if (o.mode === "schematic") { const { w, h } = renderSize(o), c = withCam(spec, () => schematicShot({ ...o, vec: rwinSvg(o) && !spec }, w, h)); if (!c) toast("The schematic could not be made here"); else rwinResult(c, w, h, o, spec); return true; }
   if (o.mode !== "quality") return false;
   const { w, h } = renderSize(o);
   ptStart(o, w, h, false, spec);
@@ -25119,9 +27796,145 @@ function rwinRenderMode(o, spec) {
      Topstitch    the topstitches, dashed
    each in the line colour at its own weight (pixels of the picture; 0 leaves that kind out); the lines are told apart by weight and
    dashes, not colour. Drawn at twice the size and halved, so the lines are smooth. Front and back side by side in one picture (or one
-   view). Saved as PNG or JPEG. SVG is not offered: the lines are found in the picture's pixels, so an SVG would only wrap a picture;
-   tracing them into paths with the hidden parts taken out is LATER.
+   view). Saved as PNG or JPEG, or (POST8 FIX-6 / D, 2.F3) as SVG: schVector() traces the same line masks into paths (each line kind its own
+   path at its own width; what the passes found hidden is not in them) and a flat fill (White, the fabric's color) into a filled shape per
+   pattern (marching squares on the pattern pass, holes kept); a lit fill (Texture, Color) has shading no flat shape holds, so it goes in as
+   the shaded picture under the vector lines (guess post8/26).
+   (POST8 FIX-6 / D) An internal line's Show Schematic Line (the Property Editor, beside Fold; frame-notes S01 03:15): off leaves it out of the
+   schematic; Z-Offset lifts it off the cloth along the cloth's normal (mm, toward its front; a line under a fold shows through it); Face
+   Front / Back draws it only where that face of the cloth is turned to the camera (guess post8/27). Kept only when not the default
+   (`schOff`, `schZ`, `schFace`, schLineOf()); the 3D window's own lines are unchanged.
    ================================================================ */
+const SCH_FACES = [["both", "Both"], ["front", "Front"], ["back", "Back"]], SCH_Z = 50;
+function schLineOf(sh) {
+  return { show: !(sh && sh.schOff), z: sh && Number.isFinite(sh.schZ) ? Math.max(-SCH_Z, Math.min(SCH_Z, sh.schZ)) : 0, face: sh && (sh.schFace === "front" || sh.schFace === "back") ? sh.schFace : "both" };
+}
+function setSchLine(sh, k, v) {
+  if (!sh) return;
+  push(k === "show" ? "Show Schematic Line" : k === "z" ? "Schematic Line Z-Offset" : "Schematic Line Face");
+  if (k === "show") { if (v) delete sh.schOff; else sh.schOff = true; }
+  else if (k === "z") { const z = Number.isFinite(v) ? Math.max(-SCH_Z, Math.min(SCH_Z, v)) : 0; if (z) sh.schZ = z; else delete sh.schZ; }
+  else if (v === "front" || v === "back") sh.schFace = v; else delete sh.schFace;
+  commit();
+}
+/* A line on the cloth as the schematic draws it: its points (each moved z along the cloth's normal there), cut into the runs where the face it
+   is drawn on is turned to the camera at eye (Both: one run). front: 1, or -1 for a pattern whose faces are swapped (Flip Normal). */
+function schLineRuns(it, l, so, eye, front) {
+  const X = it.X, P = [], ok = [];
+  for (const a of l.an) {
+    let x = 0, y = 0, z = 0;
+    for (let j = 0; j < 3; j++) { const v = 3*a.i[j]; x += a.w[j]*X[v]; y += a.w[j]*X[v+1]; z += a.w[j]*X[v+2]; }
+    let nx = 0, ny = 0, nz = 0;
+    if (so.z || so.face !== "both") {
+      const p0 = 3*a.i[0], p1 = 3*a.i[1], p2 = 3*a.i[2], ux = X[p1] - X[p0], uy = X[p1+1] - X[p0+1], uz = X[p1+2] - X[p0+2], vx = X[p2] - X[p0], vy = X[p2+1] - X[p0+1], vz = X[p2+2] - X[p0+2];
+      nx = uy*vz - uz*vy; ny = uz*vx - ux*vz; nz = ux*vy - uy*vx;
+      const n = Math.hypot(nx, ny, nz) || 1; nx *= front/n; ny *= front/n; nz *= front/n;
+    }
+    P.push(new THREE.Vector3(x + nx*so.z, y + ny*so.z, z + nz*so.z));
+    ok.push(so.face === "both" || ((nx*(eye.x - x) + ny*(eye.y - y) + nz*(eye.z - z) > 0) === (so.face === "front")));
+  }
+  if (l.closed) { P.push(P[0].clone()); ok.push(ok[0]); }
+  const runs = []; let run = [];
+  for (let k = 0; k < P.length; k++) { if (ok[k]) run.push(P[k]); else { if (run.length > 1) runs.push(run); run = []; } }
+  if (run.length > 1) runs.push(run);
+  return runs;
+}
+/* ---- (POST8 FIX-6 / D) the schematic as vectors ---- */
+// a polyline simplified to within tol (Ramer–Douglas–Peucker, kept iterative)
+function rdp(pts, tol) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Uint8Array(pts.length), st = [[0, pts.length - 1]];
+  keep[0] = keep[pts.length - 1] = 1;
+  while (st.length) {
+    const [a, b] = st.pop(), A = pts[a], B = pts[b], dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy);
+    let far = -1, fd = tol;
+    for (let k = a + 1; k < b; k++) { const P = pts[k], d = L ? Math.abs(dy*(P[0] - A[0]) - dx*(P[1] - A[1]))/L : Math.hypot(P[0] - A[0], P[1] - A[1]); if (d > fd) { fd = d; far = k; } }
+    if (far > 0) { keep[far] = 1; st.push([a, far], [far, b]); }
+  }
+  return pts.filter((_, k) => keep[k]);
+}
+// a line mask's pixels as chains of pixel centres (8 neighbours, the four straight ones first): from each end, then whatever is left (loops)
+function maskChains(m, W, H) {
+  const seen = new Uint8Array(W*H), out = [], D = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+  const nb = (p) => { const x = p % W, y = (p - x)/W, r = []; for (const [dx, dy] of D) { const X = x + dx, Y = y + dy; if (X >= 0 && X < W && Y >= 0 && Y < H && m[Y*W + X]) r.push(Y*W + X); } return r; };
+  const walk = (p) => { const c = [p]; seen[p] = 1; for (;;) { const n = nb(c[c.length - 1]).find(q => !seen[q]); if (n === undefined) return c; seen[n] = 1; c.push(n); } };
+  for (const ends of [true, false]) for (let p = 0; p < W*H; p++) {
+    if (!m[p] || seen[p] || (ends && nb(p).length !== 1)) continue;
+    let c = walk(p);
+    if (!ends) { const back = nb(p).find(q => !seen[q]); if (back !== undefined) c = [...walk(back).reverse(), ...c]; }
+    if (c.length > 2 && nb(c[c.length - 1]).includes(c[0])) c.push(c[0]);
+    out.push(c.map(q => [q % W + 0.5, Math.floor(q/W) + 0.5]));
+  }
+  return out;
+}
+/* The outline loops of the pixels where inside(p) is true, within the box x0..x1, y0..y1 (marching squares on the pixel centres: each loop
+   a list of points, holes included, so a shape filled even-odd is exactly those pixels' region). Each cell's segments run with the inside
+   on their right, so they join end to start. */
+const MS_SEG = [[], [["L", "B"]], [["B", "R"]], [["L", "R"]], [["R", "T"]], [["R", "T"], ["L", "B"]], [["B", "T"]], [["L", "T"]], [["T", "L"]], [["T", "B"]], [["T", "L"], ["B", "R"]], [["T", "R"]], [["R", "L"]], [["R", "B"]], [["B", "L"]], []];
+function maskLoops(inside, x0, y0, x1, y1) {
+  const at = (x, y) => (x >= x0 && x <= x1 && y >= y0 && y <= y1 && inside(x, y)) ? 1 : 0, next = new Map();
+  const pt = (x, y, e) => (e === "T" ? [2*x + 1, 2*y] : e === "R" ? [2*x + 2, 2*y + 1] : e === "B" ? [2*x + 1, 2*y + 2] : [2*x, 2*y + 1]);
+  const key = (q) => q[0]*1048576 + q[1] + 1048576*4;
+  for (let y = y0 - 1; y <= y1; y++) for (let x = x0 - 1; x <= x1; x++) {
+    const c = at(x, y)*8 + at(x + 1, y)*4 + at(x + 1, y + 1)*2 + at(x, y + 1);
+    for (const [a, b] of MS_SEG[c]) { const A = pt(x, y, a), B = pt(x, y, b); next.set(key(A), [A, B]); }
+  }
+  const loops = [];
+  for (const [k0, s0] of next) {
+    if (!next.has(k0)) continue;
+    const loop = []; let k = k0, s = s0;
+    while (s) { next.delete(k); loop.push([s[0][0]/2 + 0.5, s[0][1]/2 + 0.5]); k = key(s[1]); s = next.get(k); }
+    if (loop.length > 2) loops.push(loop);
+  }
+  return loops;
+}
+// one view's vectors: { lines: { kind: [polylines] }, fills: [{ color, loops }], pic } in the view's own pixels (w × h)
+function schVector(o, masks, Id, F, W, H, K, w, h, items, lit) {
+  const S1 = 1/K, sc = (c) => c.map(([x, y]) => [x*S1, y*S1]), out = { lines: {}, fills: [], pic: null };
+  for (const kind of ["sil", "seam", "int", "stitch"]) out.lines[kind] = maskChains(masks[kind], W, H).map(c => rdp(sc(c), 0.35));
+  if (lit) {
+    // the shaded fill under the lines (the lines are not painted into it yet)
+    const big = document.createElement("canvas"); big.width = W; big.height = H; const gb = big.getContext && big.getContext("2d");
+    const sm = document.createElement("canvas"); sm.width = w; sm.height = h; const gs = sm.getContext && sm.getContext("2d");
+    if (gb && gs) { gb.putImageData(F, 0, 0); gs.imageSmoothingQuality = "high"; gs.drawImage(big, 0, 0, w, h); try { out.pic = sm.toDataURL("image/png"); } catch (e) {} }
+    return out;
+  }
+  // each pattern's pixels by its colour in the pattern pass (exact: the pass is drawn without antialiasing), the avatar's flat grey
+  const lab = new Int16Array(W*H), byCol = new Map(), box = new Map();
+  items.forEach((it, k) => { const q = schId(k + 1); byCol.set((q[0] << 16) | (q[1] << 8) | q[2], k + 1); });
+  byCol.set((SCH_AV[0] << 16) | (SCH_AV[1] << 8) | SCH_AV[2], -1);
+  for (let p = 0; p < W*H; p++) {
+    const L = byCol.get((Id[4*p] << 16) | (Id[4*p+1] << 8) | Id[4*p+2]);
+    if (!L) continue;
+    lab[p] = L; const x = p % W, y = (p - x)/W, b = box.get(L);
+    if (b) { if (x < b[0]) b[0] = x; if (x > b[2]) b[2] = x; if (y < b[1]) b[1] = y; if (y > b[3]) b[3] = y; } else box.set(L, [x, y, x, y]);
+  }
+  const fillOf = (L) => { if (L < 0) return "#dedede"; if (o.schFill !== "fabric") return "#ffffff"; const m = [].concat(items[L - 1].obj.material)[0]; return m && m.color ? "#" + m.color.getHexString() : "#ffffff"; };
+  for (const [L, b] of [...box].sort((a, c) => a[0] - c[0])) {
+    const loops = maskLoops((x, y) => lab[y*W + x] === L, b[0], b[1], b[2], b[3]).map(lp => { const s = rdp(sc([...lp, lp[0]]), 0.35); s.pop(); return s; }).filter(lp => lp.length > 2);
+    if (loops.length) out.fills.push({ color: fillOf(L), loops });
+  }
+  return out;
+}
+// the whole picture as SVG text: the background, then each view (its fill, then its lines in the line colour at their weights)
+function schSvgText(o, w, h, vw, views) {
+  const f = (v) => +v.toFixed(2), d = (c, close) => c.map((q, k) => (k ? "L" : "M") + f(q[0]) + " " + f(q[1])).join("") + (close ? "Z" : "");
+  const bg = o.bg === "transparent" ? null : o.bg === "color" ? o.bgColor : "#ffffff";
+  let s = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + " " + h + '">\n' +
+    '<title>' + esc(renderBase(o)) + ' (schematic)</title>\n' + (bg ? '<rect width="' + w + '" height="' + h + '" fill="' + bg + '"/>\n' : '');
+  (views || []).forEach((v, k) => {
+    const V = v && v.vec; if (!V) return;
+    s += '<g transform="translate(' + k*vw + ' 0)">\n';
+    if (V.pic) s += '<image x="0" y="0" width="' + v.w + '" height="' + v.h + '" xlink:href="' + V.pic + '"/>\n';
+    for (const fl of V.fills) s += '<path fill="' + fl.color + '" fill-rule="evenodd" d="' + fl.loops.map(lp => d(lp, true)).join("") + '"/>\n';
+    for (const [key, kind] of [["schSil", "sil"], ["schSeam", "seam"], ["schInt", "int"], ["schStitch", "stitch"]]) {
+      if (!(o[key] > 0) || (o.schHide || []).includes(key) || !V.lines[kind].length) continue;
+      s += '<path class="' + kind + '" fill="none" stroke="' + o.schColor + '" stroke-width="' + f(o[key]) + '" stroke-linecap="round" stroke-linejoin="round" d="' + V.lines[kind].map(c => d(c, false)).join("") + '"/>\n';
+    }
+    s += '</g>\n';
+  });
+  return s + '</svg>\n';
+}
 function schHTML(o) {
   const num = (k, label) => '<div class="df"><label>' + label + '</label><input type="text" inputmode="decimal" data-num="1" data-r="' + k + '" value="' + o[k] + '"><span class="u">px</span></div>';
   return '<div class="df"><label>Views</label><select data-r="schViews">' + rwOpt(SCH_VIEWS, o.schViews) + '</select></div>' +
@@ -25147,6 +27960,7 @@ function schematicShot(o, w, h) {
   const g = out.getContext && out.getContext("2d"), vw = Math.floor(w/views.length);
   RWIN.schLast = [];
   views.forEach((v, k) => { const c = schView(o, vw, h, v, box); if (c && g) g.drawImage(c, k*vw, 0); });
+  if (o.vec) out.svg = schSvgText(o, w, h, vw, RWIN.schLast);      // (POST8 FIX-6 / D) the same picture as an SVG, kept with it for Save
   return out;
 }
 // a pattern's colour in the pattern pass: far apart for each (the background black, the avatar a grey)
@@ -25184,15 +27998,26 @@ function schView(o, w, h, view, box) {
       : kind === "depth" ? depthMat(THREE.FrontSide) : new THREE.MeshBasicMaterial({ colorWrite: false, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 4 })));
     if (kind !== "lines") return;
     // the internal lines in red, the topstitches dashed in blue, as they lie on the cloth now
+    // (POST8 FIX-6 / D) an internal line as its Show Schematic Line says: left out, lifted off the cloth by its Z-Offset, or drawn only where its
+    // Face is turned to the camera; a line with Fold Rendering ("crease") is an internal line too (it was left out)
     const grp = new THREE.Group(); grp.name = "render:schematic";
-    for (const it of items) for (const l of it.lines || []) {
-      if ((l.kind !== "internals" && l.kind !== "stitch") || !l.an || l.an.length < 2) continue;
-      const pts = l.an.map((a) => { let x = 0, y = 0, z = 0; for (let j = 0; j < 3; j++) { const v = 3*a.i[j]; x += a.w[j]*it.X[v]; y += a.w[j]*it.X[v+1]; z += a.w[j]*it.X[v+2]; } return new THREE.Vector3(x, y, z); });
-      if (l.closed) pts.push(pts[0].clone());
+    for (const it of items) { const pc = byId(it.pid); for (const l of it.lines || []) {
+      const inl = l.kind === "internals" || l.kind === "crease";
+      if ((!inl && l.kind !== "stitch") || !l.an || l.an.length < 2) continue;
+      const so = schLineOf(inl && pc ? (pc.internals || []).find(s => s.id === l.id) : null);
+      if (!so.show) continue;
+      for (const pts of schLineRuns(it, l, so, cam.position, pc && pc.flip3 ? -1 : 1)) {
+        const geo = keep(new THREE.BufferGeometry().setFromPoints(pts));
+        const line = new THREE.Line(geo, keep(l.kind === "stitch" ? new THREE.LineDashedMaterial({ color: 0x0000ff, dashSize: 4, gapSize: 3, toneMapped: false }) : new THREE.LineBasicMaterial({ color: 0xff0000, toneMapped: false })));
+        if (l.kind === "stitch") line.computeLineDistances();
+        line.frustumCulled = false; grp.add(line);
+      }
+    } }
+    // (POST8 P8.1) each sewn seam's two sides in green, from the cloth points sewn together (simSeams()'s pairs, as Show Seamlines draws them):
+    // the seam line no longer comes from where the pattern pass changes colour, which zig-zagged where two mirrored panels cross beside it
+    for (const pts of schSeamRuns(items)) {
       const geo = keep(new THREE.BufferGeometry().setFromPoints(pts));
-      const line = new THREE.Line(geo, keep(l.kind === "stitch" ? new THREE.LineDashedMaterial({ color: 0x0000ff, dashSize: 4, gapSize: 3, toneMapped: false }) : new THREE.LineBasicMaterial({ color: 0xff0000, toneMapped: false })));
-      if (l.kind === "stitch") line.computeLineDistances();
-      line.frustumCulled = false; grp.add(line);
+      const line = new THREE.Line(geo, keep(new THREE.LineBasicMaterial({ color: 0x00ff00, toneMapped: false }))); line.frustumCulled = false; grp.add(line);
     }
     scene.add(grp); undo.push(() => scene.remove(grp));
   };
@@ -25208,8 +28033,10 @@ function schView(o, w, h, view, box) {
   const out = document.createElement("canvas"); out.width = w; out.height = h;
   const go = out.getContext && out.getContext("2d");
   if (!F || !I || !D || !L || !go) { if (go && fill) go.drawImage(fill, 0, 0, w, h); return out; }
-  const masks = schLines(I.data, D.data, L.data, W, H, (far - near) > 0 ? 25/(far - near)*65535 : 1e9, (far - near) > 0 ? SCH_FRONT/(far - near)*65535 : 1e9);
+  const masks = schLines(I.data, D.data, L.data, W, H, (far - near) > 0 ? 25/(far - near)*65535 : 1e9, (far - near) > 0 ? SCH_FRONT/(far - near)*65535 : 1e9, schSewnPairs(items), SCH_SEAM_NEAR*K);
   RWIN.schLast.push({ w, h, counts: Object.fromEntries(Object.entries(masks).map(([k, m]) => [k, m.reduce((s, v) => s + v, 0)])) });
+  // (POST8 FIX-6 / D) for an SVG: the lines and the fill as vectors, from the same passes (before the lines are painted into the fill)
+  if (o.vec) RWIN.schLast[RWIN.schLast.length - 1].vec = schVector(o, masks, I.data, F, W, H, K, w, h, items, lit);
   const col = new THREE.Color(o.schColor), cr = Math.round(col.r*255), cg = Math.round(col.g*255), cb = Math.round(col.b*255), Fd = F.data;
   for (const [k, kind] of [["schSil", "sil"], ["schSeam", "seam"], ["schInt", "int"], ["schStitch", "stitch"]]) {
     const r = o[k]*K/2;
@@ -25232,8 +28059,61 @@ function schView(o, w, h, view, box) {
    222 gray as the rest of it). The passes read here are drawn with no antialiasing (ro.raw): a blended pixel is no pattern's color and no true
    depth, and between a hand and the cloth it read as a seam. */
 const SCH_FRONT = 8;
-function schLines(I, D, L, W, H, jump, front) {
+/* (POST8 P8.1, roadmap row P8.1: the back view's specks and spurs) The seam lines of the schematic.
+   schSeamRuns(items): every shown seam's two sides as 3D polylines on the cloth, from one sewn cloth point to the next on the same pattern (a
+   deactivated, hidden, glued seam or a zipper has none: a zipper shows as its tapes). schSewnPairs(items): the pattern pass's colour of each
+   item and which two items are sewn together, for schLines(). There, where the pattern colour changes between two patterns sewn together
+   within SCH_SEAM_NEAR (picture pixels, times the supersampling) of a drawn seam line, no line is made from the colour change: the seam's
+   own line stands for it. Elsewhere (two patterns only lying on each other, or sewn but far from the seam, as a collar's outer edge over
+   the body) the colour change still draws, as before. */
+const SCH_SEAM_NEAR = 4, SCH_ON_SIL = 1, SCH_STUB = 6;
+function schSeamRuns(items) {
+  const order = SIM.on && SIM.order ? SIM.order : S.pieces.filter(p => p.on && G3.items.has(p.id)).map(p => p.id), shown = new Set(items.map(it => it.pid));
+  if (!order.length) return [];
+  let ss = [];
+  try { ss = simSeams(order) || []; } catch (e) { return []; }
+  const doc = new Map(S.seams.map(sm => [sm.id, sm])), out = [], q = [0, 0, 0];
+  for (const sm of ss) {
+    const d = doc.get(sm.id);
+    if (sm.off || sm.skip || sm.glue || sm.zip || !sm.pairs || sm.pairs.length < 2 || (d && (d.hide || d.off))) continue;
+    for (const side of [0, 1]) {
+      let run = [];
+      const flush = () => { if (run.length > 1) out.push(run); run = []; };
+      for (const pr of sm.pairs) {
+        const a = pr[side];
+        if (!a || !shown.has(order[a.p])) { flush(); continue; }
+        if (run.length && run.p !== a.p) flush();
+        anchorPos(a, order, q); run.push(new THREE.Vector3(q[0], q[1], q[2])); run.p = a.p;
+      }
+      flush();
+    }
+  }
+  return out;
+}
+function schSewnPairs(items) {
+  const at = new Map(), key = (c) => c[0]*65536 + c[1]*256 + c[2], ix = new Map();
+  items.forEach((it, k) => { at.set(key(schId(k + 1)), k); ix.set(it.pid, k); });
+  const pairs = new Set();
+  for (const sm of S.seams) {
+    if (sm.off || sm.hide) continue;
+    for (const a of sm.a || []) for (const b of sm.b || []) { const i = ix.get(a.piece), j = ix.get(b.piece); if (i !== undefined && j !== undefined && i !== j) pairs.add(Math.min(i, j) + "|" + Math.max(i, j)); }
+  }
+  return { at, pairs };
+}
+function schLines(I, D, L, W, H, jump, front, sewn, near) {
   const N = W*H, sil = new Uint8Array(N), seam = new Uint8Array(N), int = new Uint8Array(N), stitch = new Uint8Array(N);
+  // (POST8 P8.1) the seam lines drawn from their sewn points (green in the lines pass), and around them the band where a colour change
+  // between two sewn patterns makes no line
+  const seamL = new Uint8Array(N), band = new Uint8Array(N), r = Math.max(0, Math.round(near || 0));
+  for (let p = 0; p < N; p++) if (L[4*p+1] > 128 && L[4*p] < 100 && L[4*p+2] < 100) seamL[p] = 1;
+  if (sewn && sewn.pairs.size && r > 0) {
+    // a square band of r round each seam pixel, in two passes (rows, then columns)
+    const row = new Uint8Array(N);
+    for (let y = 0; y < H; y++) { let last = -1e9; for (let x = 0; x < W; x++) { if (seamL[y*W + x]) last = x; if (x - last <= r) row[y*W + x] = 1; } last = 1e9; for (let x = W - 1; x >= 0; x--) { if (seamL[y*W + x]) last = x; if (last - x <= r) row[y*W + x] = 1; } }
+    for (let x = 0; x < W; x++) { let last = -1e9; for (let y = 0; y < H; y++) { if (row[y*W + x]) last = y; if (y - last <= r) band[y*W + x] = 1; } last = 1e9; for (let y = H - 1; y >= 0; y--) { if (row[y*W + x]) last = y; if (last - y <= r) band[y*W + x] = 1; } }
+  }
+  const idOf = (p) => (sewn ? sewn.at.get(I[4*p]*65536 + I[4*p+1]*256 + I[4*p+2]) : undefined);
+  const sewnHere = (p, q) => { if (!sewn || !band[p]) return false; const i = idOf(p), j = idOf(q); return i !== undefined && j !== undefined && sewn.pairs.has(Math.min(i, j) + "|" + Math.max(i, j)); };
   // (Round r29) the avatar's edge, antialiased into the black, is grey too: not cloth, or the avatar gets a silhouette
   const bg = (p) => I[4*p] + I[4*p+1] + I[4*p+2] < 30, av = (p) => { const r = I[4*p], g = I[4*p+1], b = I[4*p+2]; return Math.abs(r - g) < 6 && Math.abs(g - b) < 6 && r <= SCH_AV[0] + 6; };
   const cloth = (p) => !bg(p) && !av(p), same = (p, q) => Math.abs(I[4*p] - I[4*q]) + Math.abs(I[4*p+1] - I[4*q+1]) + Math.abs(I[4*p+2] - I[4*q+2]) < 30;
@@ -25242,7 +28122,11 @@ function schLines(I, D, L, W, H, jump, front) {
   const edge = (p, q) => {
     const cp = cloth(p), cq = cloth(q);
     if (!cp && !cq) return;
-    if (!same(p, q)) { if (cp && cq) seam[p] = 1; else if (!avInFront(cp ? p : q, cp ? q : p)) sil[cp ? p : q] = 1; return; }
+    if (!same(p, q)) {
+      if (cp && cq) { if (!sewnHere(p, q)) seam[p] = 1; else if (Math.abs(depth(p) - depth(q)) > jump) sil[depth(p) < depth(q) ? p : q] = 1; }      // (P8.1: by a seam line, only a fold's edge)
+      else if (!avInFront(cp ? p : q, cp ? q : p)) sil[cp ? p : q] = 1;
+      return;
+    }
     if (cp && Math.abs(depth(p) - depth(q)) > jump) sil[depth(p) < depth(q) ? p : q] = 1;
   };
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -25251,6 +28135,20 @@ function schLines(I, D, L, W, H, jump, front) {
     if (y + 1 < H) edge(p, p + W);
     if (L[4*p] > 128 && L[4*p+1] < 100 && L[4*p+2] < 100) int[p] = 1;
     else if (L[4*p+2] > 128 && L[4*p] < 100 && L[4*p+1] < 100) stitch[p] = 1;
+  }
+  // (POST8 batch 0n) a seam line where it runs along the outline (a side seam seen edge-on) is left to the outline: its pixels within
+  // SCH_ON_SIL picture pixels of an outline pixel go, and so does a piece of it left shorter than SCH_STUB picture pixels that lies within
+  // twice that reach of the outline (a stub half hidden there; in an SVG a short path on the outline's path). k: the supersampling
+  const k = Math.max(1, (near || SCH_SEAM_NEAR)/SCH_SEAM_NEAR), sr = Math.round(SCH_ON_SIL*k), far2 = Math.round(2*SCH_ON_SIL*k), stub = SCH_STUB*k*k;
+  const nearSil = (p, r) => { const x = p % W, y = (p - x)/W; for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < W && Y < H && sil[Y*W + X]) return true; } return false; };
+  for (let p = 0; p < N; p++) if (seamL[p] && nearSil(p, sr)) seamL[p] = 0;
+  const seen = new Uint8Array(N);
+  for (let p = 0; p < N; p++) {
+    if (!seamL[p] || seen[p]) continue;
+    const comp = [p], st = [p]; seen[p] = 1;
+    while (st.length) { const q = st.pop(), x = q % W, y = (q - x)/W; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const X = x + dx, Y = y + dy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y*W + X; if (seamL[j] && !seen[j]) { seen[j] = 1; st.push(j); comp.push(j); } } }
+    if (comp.length < stub && comp.some(q => nearSil(q, far2))) continue;
+    for (const q of comp) seam[q] = 1;
   }
   return { sil, seam, int, stitch };
 }
@@ -25329,7 +28227,8 @@ function schem3Frame() {
   if (view3d.shooting()) return;
   const host = document.getElementById("stage3d"), w = (host && host.clientWidth) || 0, h = (host && host.clientHeight) || 0;
   if (!w || !h) return;
-  const c = view3d.cam, sig = JSON.stringify([c.az, c.el, c.dist, c.tx, c.ty, c.tz, G3.moved || 0, G3.items ? G3.items.size : 0, w, h, schem3Opts(2), S.ui.show3d]);
+  const c = view3d.cam, sig = JSON.stringify([c.az, c.el, c.dist, c.tx, c.ty, c.tz, G3.moved || 0, G3.items ? G3.items.size : 0, w, h, schem3Opts(2), S.ui.show3d,
+    S.pieces.map(p => (p.internals || []).filter(s => s.schOff || s.schZ || s.schFace).map(s => [s.id, s.schOff, s.schZ, s.schFace]))]);      // (POST8 FIX-6 / D: a line's Show Schematic Line)
   if (sig === G3.schSig) return;
   G3.schSig = sig; cv.style.display = "block";
   const put = (k, pw, ph) => { const src = schematicShot(schem3Opts(k), pw, ph); if (!src) return; if (cv.width !== w) cv.width = w; if (cv.height !== h) cv.height = h; const g = cv.getContext && cv.getContext("2d"); if (g) { g.imageSmoothingEnabled = true; g.drawImage(src, 0, 0, w, h); } };
@@ -25386,17 +28285,49 @@ function renderURL(c0, fmt, w, h) {
 }
 const rwinSaved = (msg) => (f) => { RWIN.saved = true; rwinTools(); toast("Render saved as " + f + msg, 7000); };
 // Save Current Image: the picture in the format chosen; a series all its pictures as one .zip
+/* (POST8, roadmap 2.F1: the reference's Image/Video ▸ File Path, where a render is saved by itself) The desktop app's only: a folder chosen once,
+   kept by the shell (desktop.renderFolder: a path never goes into a document or the page, which sees the folder's name), and Save writes each
+   render there without asking ("-2" … beside one of the same name); Ask Each Time goes back to the dialog. A browser saves to its downloads:
+   no row there. RWIN.dir: undefined until asked, null for none, { name }. */
+const rwDesk = () => !!(DESK && DESK.renderFolder);
+function rwinPathHTML() {
+  if (!rwDesk()) return "";
+  if (RWIN.dir === undefined) { RWIN.dir = null; DESK.renderFolder.get().then((d) => { RWIN.dir = d || null; if (RWIN.open) rwinSide(); }).catch(() => {}); }
+  const d = RWIN.dir;
+  return '<div class="df"><label>File Path</label><span class="u" title="' + (d ? "Save writes each render into this folder without asking" : "Save asks where, each time") + '">' + (d ? esc(d.name.length > 24 ? d.name.slice(0, 22) + "…" : d.name) : "Ask each time") + '</span>' +
+    '<button class="btn" data-act="rw-dir">' + (d ? "Change…" : "Choose…") + '</button>' + (d ? '<button class="btn" data-act="rw-dir-clear">Ask Each Time</button>' : '') + '</div>';
+}
+function rwinDirAct(act) {
+  if (!rwDesk()) return;
+  (act === "rw-dir" ? DESK.renderFolder.choose() : DESK.renderFolder.clear()).then((d) => { RWIN.dir = d || null; rwinSide(); }).catch((e) => toast("Couldn't set the folder: " + deskErr(e), 6000));
+}
+// a render's file: into the File Path's folder when one is set (desktop), else as every export (asked where, or a download)
+function rwinDl(n, data, mime, then) {
+  if (!rwDesk() || !RWIN.dir) return dl(n, data, mime, then);
+  DESK.renderFolder.save(n, data).then((f) => { if (!f) { RWIN.dir = null; rwinSide(); return dl(n, data, mime, then); } if (typeof then === "function") then(f.name, f.path); })
+    .catch((e) => toast("Couldn't save: " + deskErr(e), 6000));
+}
 function rwinSave() {
   if (RWIN.busy) return toast("The render is still running: Save when it is done, or Stop it");
   const q = RWIN.seq, o = loadRender(), base = renderBase(o);
   if (q && q.files.length > 1) return rwinSaveSeq(q, base);
   const r = rwinCurrent();
   if (!r) return toast("Nothing to save yet");
-  let url = ""; try { url = renderURL(r.c, o.fmt, r.w, r.h); } catch (e) { return toast("The render could not be saved"); }
-  dlURL(base + "." + (o.fmt === "jpeg" ? "jpg" : "png"), url, rwinSaved(", " + r.w + " \u00d7 " + r.h + " px"));
+  // (POST8 FIX-6 / D) the schematic's SVG, made with the Final Render (Interactive makes none)
+  if (rwinSvg(o)) {
+    const res = RWIN.result;
+    if (!res || !res.svg) return toast("SVG: make a Final Render with Engine \u25b8 Schematic first (Interactive makes no SVG)", 6000);
+    return rwinDl(base + ".svg", res.svg, "image/svg+xml", rwinSaved(", " + res.w + " \u00d7 " + res.h + " px, lines as paths"));
+  }
+  let url = ""; try { url = renderURL(r.c, o.fmt === "svg" ? "png" : o.fmt, r.w, r.h); } catch (e) { return toast("The render could not be saved"); }
+  const n = base + "." + (o.fmt === "jpeg" ? "jpg" : "png");
+  if (rwDesk() && RWIN.dir) return rwinDl(n, bytesOfURL(url), "", rwinSaved(", " + r.w + " \u00d7 " + r.h + " px"));
+  dlURL(n, url, rwinSaved(", " + r.w + " \u00d7 " + r.h + " px"));
 }
+// an SVG cut to the rectangle r of its picture (Crop): the same drawing, its size and view box the rectangle's
+const svgCrop = (svg, r) => svg.replace(/^<svg ([^>]*?)width="[^"]*" height="[^"]*" viewBox="[^"]*"/, '<svg $1width="' + r.w + '" height="' + r.h + '" viewBox="' + r.x + " " + r.y + " " + r.w + " " + r.h + '"');
 function rwinSaveSeq(q, base) {
-  const files = q.files.filter(f => f.name), go = (more) => zipPack([...files, ...more], (bytes) => dl(base + "-images.zip", bytes, "application/zip", rwinSaved(", " + files.length + " images, " + q.w + " \u00d7 " + q.h + " px" + more.map(m => ", " + m.name.replace(/^.*[.]/, "")).join(""))));
+  const files = q.files.filter(f => f.name), go = (more) => zipPack([...files, ...more], (bytes) => rwinDl(base + "-images.zip", bytes, "application/zip", rwinSaved(", " + files.length + " images, " + q.w + " \u00d7 " + q.h + " px" + more.map(m => ", " + m.name.replace(/^.*[.]/, "")).join(""))));
   const more = q.gif ? [{ name: base + ".gif", data: gifDone(q.gif), raw: true }] : [];
   if (!(q.o.kind === "turntable" && q.o.ttVideo)) return go(more);
   rwinProgress({ samples: 0, target: 1 }, "Making the video\u2026");
@@ -25509,7 +28440,15 @@ function snap3Plan(o) {
   return { w, h, views: views.map((v, k) => ({ view: v, x: (k % cols)*w, y: Math.floor(k/cols)*h })), W: cols*w, H: rows*h, separate: o.mode === "multi" && !!o.separate };
 }
 // (Round r29) a picture of one view: with Schematic Render on, the schematic (the maintainer: that is how it is saved, 17:34)
+// (Round CW-1 / D, spec 4.7, 2.F2) the Render workspace's Custom Views offered among Snapshot's views: "custom:<k>" (the view's place in the list)
+const snapCustomViews = () => (loadRender().views || []).map((v, k) => ["custom:" + k, esc(v.name || ("View " + (k + 1))) + " (custom)"]);
 function snap3Shot(w, h, view, box, o, small) {
+  const cm = typeof view === "string" && /^custom:(\d+)$/.exec(view);
+  if (cm) {
+    const cv = (loadRender().views || [])[+cm[1]];
+    if (!cv) view = null;
+    else { const keep = { ...view3d.cam }; Object.assign(view3d.cam, camOf(cv)); try { return snap3Shot(w, h, null, box, o, small); } finally { Object.assign(view3d.cam, keep); view3d.ask(); } }
+  }
   if (S.ui.schem3) return schematicShot({ ...schem3Opts(2), schViews: view || "now", bg: o.transparent ? "transparent" : "white" }, w, h);
   return view3d.shot(w, h, view, view ? box : null, o.transparent, mapOn3() && !small ? { map: o.map !== false } : undefined);      // (small: the box's preview, the map without its legend)
 }
@@ -25524,19 +28463,42 @@ function snap3Preview(o) {
   for (const v of plan.views) { const c = snap3Shot(w, h, v.view, box, o, true); if (c) g.drawImage(c, Math.round(v.x*k), Math.round(v.y*k)); }
   g.strokeStyle = "#1a1a1a"; g.lineWidth = 1; for (const v of plan.views) g.strokeRect(Math.round(v.x*k) + 0.5, Math.round(v.y*k) + 0.5, w - 1, h - 1);
 }
+/* (Round CW-1 / D, spec 4.1, W-Snap) Colorway [Current \u25be] (Current, All, each by name; only with two or more colorways): a picture per
+   colorway, each with that colorway's looks (cwEachLooks()), named with it (cw1/9: each saved as its own file); Save HTML File: our own
+   page beside them, the pictures side by side with their colorways' names, nothing fetched, no script (cw1/10). SNAP_CW: the session's
+   choice ("cur", "all" or a colorway's id: ids are a document's own, so it is not kept per machine); o.html is (pdraft:snapshot). */
+var SNAP_CW = "cur";
+const fileSlug = (s) => String(s || "").trim().replace(/[\\/:*?\x22<>|]+/g, "_").replace(/\s+/g, "-").slice(0, 60);
 function snap3Save(o) {
   if (!view3d.ready() || !view3d.shot) return toast("The 3D window is not up: show it first (the 2D / 3D buttons at the bottom)", 6000);
-  const plan = snap3Plan(o), box = S.av ? avatarBox(S.av) : garmentBox3(), shots = [];
-  for (const v of plan.views) { const c = snap3Shot(plan.w, plan.h, v.view, box, o); if (!c) return toast("The 3D picture could not be made here" + shotWhy(), 8000); shots.push(c); }
-  const urlOf = (c) => { try { return c.toDataURL("image/png"); } catch (e) { return ""; } };
-  if (plan.separate) { shots.forEach((c, k) => dlURL("snapshot-3d-" + (k + 1) + "-" + plan.views[k].view + ".png", urlOf(c), () => {})); return toast(shots.length + " pictures saved, " + plan.w + " \u00d7 " + plan.h + " px each"); }
-  let out = shots[0];
-  if (shots.length > 1) {
-    out = document.createElement("canvas"); out.width = plan.W; out.height = plan.H;
-    const g = out.getContext("2d");
-    shots.forEach((c, k) => g.drawImage(c, plan.views[k].x, plan.views[k].y));
-  }
-  dlURL("snapshot-3d.png", urlOf(out), (fl) => toast("3D snapshot saved as " + fl + ", " + plan.W + " \u00d7 " + plan.H + " px" + (o.transparent ? ", transparent background" : ""), 7000));
+  const plan = snap3Plan(o), box = S.av ? avatarBox(S.av) : garmentBox3(), urlOf = (c) => { try { return c.toDataURL("image/png"); } catch (e) { return ""; } };
+  // the pictures of the document as its looks are now: [{ name, url }] (one, or one per view with Save Separate Images), or null
+  const make = (tag) => {
+    const shots = [];
+    for (const v of plan.views) { const c = snap3Shot(plan.w, plan.h, v.view, box, o); if (!c) return null; shots.push(c); }
+    const pre = "snapshot-3d" + (tag ? "-" + fileSlug(tag) : "");
+    if (plan.separate) return shots.map((c, k) => ({ name: pre + "-" + (k + 1) + "-" + fileSlug(plan.views[k].view) + ".png", url: urlOf(c), label: tag, w: plan.w, h: plan.h }));
+    let out = shots[0];
+    if (shots.length > 1) { out = document.createElement("canvas"); out.width = plan.W; out.height = plan.H; const g = out.getContext("2d"); shots.forEach((c, k) => g.drawImage(c, plan.views[k].x, plan.views[k].y)); }
+    return [{ name: pre + ".png", url: urlOf(out), label: tag, w: plan.W, h: plan.H }];
+  };
+  const ids = !cwOn() || SNAP_CW === "cur" || !(SNAP_CW === "all" || cwById(+SNAP_CW)) ? null : SNAP_CW === "all" ? S.colorways.list.map(c => c.id) : [+SNAP_CW];
+  let pics = [], failed = false;
+  if (!ids) { const p = make(cwOn() ? cwCur().name : ""); if (p) pics = p; else failed = true; }
+  else cwEachLooks(ids, (c) => { const p = make(c.name); if (p) pics.push(...p); else failed = true; });
+  if (failed || !pics.length) return toast("The 3D picture could not be made here" + shotWhy(), 8000);
+  // a single picture of the current colorway keeps its old name
+  if (!ids && pics.length === 1) pics[0].name = "snapshot-3d.png";
+  pics.forEach((p, k) => dlURL(p.name, p.url, (fl) => { if (k === pics.length - 1 && !o.html) toast(pics.length === 1 ? "3D snapshot saved as " + fl + ", " + p.w + " \u00d7 " + p.h + " px" + (o.transparent ? ", transparent background" : "") : pics.length + " pictures saved, " + p.w + " \u00d7 " + p.h + " px each", 7000); }));
+  if (o.html) dl("snapshot-3d.html", snapHtml(pics), "text/html", (fl) => toast((pics.length === 1 ? "The picture" : pics.length + " pictures") + " and " + fl + " saved", 7000));
+  return pics;
+}
+// (Round CW-1 / D, cw1/10) Save HTML File's page: the pictures side by side, each with its colorway's name; our own markup, no script
+function snapHtml(pics) {
+  const f = typeof filePath === "string" && filePath ? filePath.replace(/^.*[\\/]/, "").replace(/\.pdraft$/i, "") : "", title = (f ? f + " \u2013 " : "") + "3D Snapshot";
+  return '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>' + esc(title) + '</title>' +
+    '<style>body{margin:16px;font:14px Segoe UI,Arial,sans-serif;background:#fff;color:#1c1c1e}h1{font-size:16px;font-weight:600}main{display:flex;flex-wrap:wrap;gap:16px}figure{margin:0}img{max-width:100%;height:auto;border:1px solid #d0d0d4}figcaption{margin-top:4px}</style><\/head>' +
+    '<body><h1>' + esc(title) + '</h1><main>' + pics.map(p => '<figure><img alt="' + esc(p.label || p.name) + '" width="' + p.w + '" height="' + p.h + '" src="' + p.url + '"><figcaption>' + esc(p.label || "") + '</figcaption></figure>').join("") + '</main><\/body><\/html>\n';
 }
 // where the garment is in 3D, for the views of a snapshot taken without an avatar
 function garmentBox3() {
@@ -25555,7 +28517,7 @@ function snap3Dialog(at) {
   dlg.innerHTML = '<div class="dt">Snapshot</div><div class="db">' +
     '<div class="tabs"><button class="tb' + (multi ? '' : ' on') + '" data-m="single" aria-pressed="' + !multi + '">' + (multi ? '' : '\u2713 ') + 'Single</button><button class="tb' + (multi ? ' on' : '') + '" data-m="multi" aria-pressed="' + multi + '">' + (multi ? '\u2713 ' : '') + 'Multiview</button></div>' +
     '<h3>Preview</h3><div class="s3-pv"><canvas id="s3-prev"></canvas></div>' +
-    (multi ? '<div class="views">' + o.views.slice(0, n).map((v, k) => '<label class="df"><span>' + (k + 1) + '</span><select data-v="' + k + '">' + opt(CAM_VIEWS, v) + '</select></label>').join("") + '</div>' : '') +
+    (multi ? '<div class="views">' + o.views.slice(0, n).map((v, k) => '<label class="df"><span>' + (k + 1) + '</span><select data-v="' + k + '">' + opt([...CAM_VIEWS, ...snapCustomViews()], v) + '</select></label>').join("") + '</div>' : '') +
     '<div class="cols"><div><h3>' + (multi ? 'Single Image Size' : 'Image Size') + '</h3>' +
     '<div class="df"><label>Preset</label><select data-s="preset">' + opt(SNAP3_PRESETS.map(r => [r[0], r[1]]), o.preset) + '</select></div>' +
     '<div class="df"><label>Orientation</label><select data-s="orient"' + (custom ? ' disabled' : '') + '>' + opt([["portrait", "Portrait"], ["landscape", "Landscape"]], o.orient) + '</select></div>' +
@@ -25565,9 +28527,10 @@ function snap3Dialog(at) {
     num("ppi", "Resolution", "ppi") + pxLimitHint() + '</div><div>' +
     (multi ? '<h3>Layout</h3><div class="df"><label>View Count</label><select data-s="count">' + opt([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(k => [String(k), String(k)]), String(n)) + '</select></div>' +
       '<div class="df"><label>Layout</label><select data-s="layout">' + opt([["horizontal", "Horizontal"], ["vertical", "Vertical"], ["box", "Box"]], o.layout) + '</select></div>' : '') +
-    (S.ui && S.ui.unbuilt ? '<h3>Colorway</h3><div class="df"><label>Colorway</label><select disabled><option>Current (not built yet)</option></select></div>' : '') +
+    // (Round CW-1 / D) Colorway: only with two or more colorways; Save HTML File: always
+    (cwOn() ? '<h3>Colorway</h3><div class="df"><label>Colorway</label><select data-cw="1">' + opt([["cur", "Current (" + esc(cwCur().name) + ")"], ["all", "All Colorways"], ...S.colorways.list.map(c => [String(c.id), esc(c.name)])], String(SNAP_CW)) + '</select></div>' : '') +
     '<h3>Options</h3>' + chk("transparent", "Transparent Background") + (multi ? chk("separate", "Save Separate Images") : '') + (mapOn3() ? chk("map", "The 3D Map and Its Legend") : '') +
-    (S.ui && S.ui.unbuilt ? '<label class="lk"><input type="checkbox" disabled> Save HTML File (not built yet)</label>' : '') +
+    chk("html", "Save HTML File (the pictures on a page with their colorways’ names)") +
     '<div class="sum" id="s3-sum"></div></div></div>' +
     '<div class="da"><button class="btn" id="s3-reset">Reset</button><button class="btn" id="s3-go">Save</button><button class="btn" id="dlg-x">Cancel</button></div></div>';
   dlg.style.display = "block";
@@ -25580,6 +28543,7 @@ function snap3Dialog(at) {
   dlg.onchange = (e) => {
     const t = e.target, d = t.dataset || {};
     if (!dlg.querySelector("#s3-sum")) return;
+    if (d.cw) { SNAP_CW = t.value; sum(); return; }
     if (d.s) o[d.s] = d.num ? numOf(t.value) : d.s === "count" ? +t.value : t.value;
     else if (d.x) o[d.x] = t.checked;
     else if (d.v !== undefined) o.views[+d.v] = t.value;
@@ -25677,6 +28641,7 @@ function toolRow(name, id) {
   if (t.off && !t.via) return nbRow(name, k, { ic: toolIcon(id) });
   // (Round FIX-4b / A, beta.8 gate G3) the reference's block-drafting tool is File ▸ New Block… here: its 2D menu row opens it, as its note said to
   if (id === "pattern_drafter") return { n: name, k, ic: toolIcon(id), f: () => act("blk") };
+  if (id === "edit_uv") return { n: name, k, ic: toolIcon(id), on: !!(UVED && UVED.open), f: () => uvEditor(!(UVED.open && UVED.front)) };      // (Round UV-1 / B) the UV Editor
   // (gate G4) a tool that is another command here (Fullness (Point) / (Line): the right-click's More ▸) is a row only with the switch on:
   // with it off the row only said where to look
   if (t.off && t.via && !S.ui.unbuilt) return null;
@@ -25723,7 +28688,7 @@ function menu3D() {
     subRow("Ripping", () => [toolRow("Edit Rip", "edit_rip"), toolRow("Seamline Rip", "seamline_rip")]),
     subRow("Styleline", () => [toolRow("Edit Styleline", "edit_style_line"), toolRow("Scale Styleline", "scale_style_line"), nbRow("Move Styleline"), toolRow("Draw Styleline", "add_style_line")]),
     subRow("3D pen", () => [toolRow("Edit 3D Pen (Garment)", "edit_pen_garment"), toolRow("3D Pen (Garment)", "pen_garment"), toolRow("3D Base Pen", "base_pen"), toolRow("Edit 3D Pen (Avatar)", "edit_pen_avatar"),
-      toolRow("3D Pen (Avatar)", "pen_avatar"), nbRow("3D Pencil (Avatar)"), toolRow("Flatten", "flatten")]),
+      toolRow("3D Pen (Avatar)", "pen_avatar"), toolRow("3D Pencil (Avatar)", "pencil_avatar") /* (run 14c, 1.T45) */, toolRow("Flatten", "flatten")]),
     toolRow("Press", "press"),
     subRow("Fold", () => [toolRow("Fold Arrangement", "fold_arrangement"), toolRow("Fold 3D Garment", "fold_garment")]), { sep: 1 },
     subRow("Arrangement", () => [toolRow("Reset 2D Arrangement (All)", "reset_2d_arrangement"), toolRow("Reset 3D Arrangement (All)", "reset_3d_arrangement"), toolRow("Re-drape 3D Arrangement", "redrape"), toolRow("Auto 3D Arrangement", "auto_arrangement")]), { sep: 1 },
@@ -25751,7 +28716,7 @@ function menu2D() {
     subRow("Sewing", () => [toolRow("Edit Sewing", "edit_sewing"), toolRow("Segment Sewing", "segment_sewing"), toolRow("Free Sewing", "free_sewing"), toolRow("M:N Segment Sewing", "mn_segment_sewing"),
       toolRow("M:N Free Sewing", "mn_free_sewing"), toolRow("Auto Sewing", "auto_sewing"), toolRow("Check Sewing Length", "check_sewing"), { n: "Activate Sewing (All)", off: !S.seams.some(sm => sm.off), f: activateAllSewing }]), { sep: 1 },
     subRow("Tack", () => [toolRow("Edit Tack", "edit_tack"), toolRow("Tack", "tack"), toolRow("Tack on Avatar", "tack_avatar")]), { sep: 1 },
-    toolRow("Lacing", "lacing"), nbRow("Edit Lacing"),
+    toolRow("Lacing", "lacing"), toolRow("Edit Lacing", "edit_lacing"),      // (POST8 FIX-4b: built)
     // ours, beside the recording's rows
     { sep: 1 }, { n: "Avatar Outline", menu: avOutRows },      // (Round FIX-2 / B, the maintainer's brief)
     { n: "Zoom to Fit", k: keyOf("zoomSel"), f: focusZoom }];
@@ -25759,8 +28724,8 @@ function menu2D() {
 function menuMaterials() {
   return [toolRow("UV Editor", "edit_uv"),
     subRow("Graphics", () => [toolRow("Graphic (2D Pattern)", "graphic"), toolRow("Graphic (3D Pattern)", "graphic_3d"), toolRow("Transform Graphic", "transform_graphic")]),
-    subRow("Button", () => [toolRow("Select/Move Button", "select_button"), toolRow("Button", "button"), toolRow("Buttonhole", "buttonhole"), toolRow("Fasten Button", "fasten_button"), { sep: 1 }, nbRow("Register Button"), nbRow("Register Buttonhole")]),
-    subRow("Zipper", () => [toolRow("Edit Zipper", "edit_zipper"), toolRow("Zipper", "zipper"), nbRow("Register OBJ")]),
+    subRow("Button", () => [toolRow("Select/Move Button", "select_button"), toolRow("Button", "button"), toolRow("Buttonhole", "buttonhole"), toolRow("Fasten Button", "fasten_button"), { sep: 1 }, { n: "Register Button…", f: () => registerTrim("button") }, { n: "Register Buttonhole…", f: () => registerTrim("buttonhole") }]),      // (Round LIB-1 / E)
+    subRow("Zipper", () => [toolRow("Edit Zipper", "edit_zipper"), toolRow("Zipper", "zipper"), { n: "Register OBJ…", f: () => registerTrim("zipper") }]),
     subRow("Piping", () => [toolRow("Edit Piping", "edit_piping"), toolRow("Piping", "piping")]),
     subRow("Binding", () => [toolRow("Select Binding", "select_binding"), toolRow("Binding", "binding")]),
     subRow("Topstitch", () => [toolRow("Edit Topstitch", "edit_topstitch"), toolRow("Segment Topstitch", "segment_topstitch"), toolRow("Free Topstitch", "free_topstitch"), toolRow("Seamline Topstitch", "seamline_topstitch")]),
@@ -25902,12 +28867,18 @@ function bomView(close) {
   if (!el) { el = document.createElement("div"); el.id = "bom"; if (stage && stage.appendChild) stage.appendChild(el); }
   const b = bomData(), len = (mm) => fmt(mm) + " " + S.unit;
   const table = (head, rows) => '<table class="bom-t"><thead><tr>' + head.map(h => '<th>' + h + '</th>').join("") + '</tr></thead><tbody>' + rows.join("") + '</tbody></table>';
+  // (Round CW-1 / D, spec 4.4, W54) Colorway: each fabric's color in the colorway chosen (Current, one by name, or All: a column each);
+  // only with two or more colorways. BOM_CW: the session's choice
+  const cws = !cwOn() ? [] : BOM_CW === "all" ? S.colorways.list : [cwById(+BOM_CW) || cwCur()];
+  const fabIt = (f) => libOf().fabric.find(x => x.id === f.id) || libOf().fabric.find(x => x.name === f.name);
+  const colCell = (f, c) => { const it = fabIt(f), r = it ? cwRowsOf(c, "fabric", it) : null; return '<td>' + (r ? '<span class="bom-sw" style="background:' + r.color + '"></span> ' + r.color : '') + '</td>'; };
   el.innerHTML = '<div class="rv-tab"><span>BOM Editor</span><button id="bom-x" title="Close: back to the 2D Pattern Window">\u00d7</button></div>' +
-    '<div class="rv-top"><button class="btn" id="bom-up" title="Count again from the document">Update</button><span class="rv-note">Counted from the document: fabric by area, trims by count and length. Seam lengths come later.</span></div>' +
+    '<div class="rv-top"><button class="btn" id="bom-up" title="Count again from the document">Update</button>' + (cwOn() ? '<label>Colorway <select id="bom-cw">' + [["cur", "Current (" + esc(cwCur().name) + ")"], ["all", "All Colorways"], ...S.colorways.list.map(c => [String(c.id), esc(c.name)])].map(([v, n]) => '<option value="' + v + '"' + (String(BOM_CW) === v ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></label>' : '') +
+    '<span class="rv-note">Counted from the document: fabric by area, trims by count and length. Seam lengths come later.</span></div>' +
     '<div class="bom-body"><h3>Fabrics</h3>' +
-    (b.fabrics.length ? table(["Fabric", "Pattern", "Quantity", "Area"], b.fabrics.flatMap(f => [
-      ...f.patterns.map((p, k) => '<tr><td>' + (k ? '' : esc(f.name)) + '</td><td>' + esc(p.name) + '</td><td>' + p.quantity + '</td><td>' + areaText(p.area) + '</td></tr>'),
-      '<tr class="sum"><td colspan="3">' + esc(f.name) + ', in all</td><td>' + areaText(f.area) + '</td></tr>'])) : '<div class="hint">No patterns.</div>') +
+    (b.fabrics.length ? table(["Fabric", ...cws.map(c => "Color" + (cws.length > 1 || BOM_CW !== "cur" ? " (" + esc(c.name) + ")" : "")), "Pattern", "Quantity", "Area"], b.fabrics.flatMap(f => [
+      ...f.patterns.map((p, k) => '<tr><td>' + (k ? '' : esc(f.name)) + '</td>' + cws.map(c => (k ? '<td></td>' : colCell(f, c))).join("") + '<td>' + esc(p.name) + '</td><td>' + p.quantity + '</td><td>' + areaText(p.area) + '</td></tr>'),
+      '<tr class="sum"><td colspan="' + (3 + cws.length) + '">' + esc(f.name) + ', in all</td><td>' + areaText(f.area) + '</td></tr>'])) : '<div class="hint">No patterns.</div>') +
     '<h3>Trims</h3>' + table(["Trim", "Name", "Kind", "Length / count"], [
       ...b.zippers.map(z => '<tr><td>Zipper</td><td>' + esc(z.name) + '</td><td>' + esc(z.type) + '</td><td>' + len(z.length) + '</td></tr>'),
       ...b.stitches.map(t => '<tr><td>Topstitch</td><td>' + esc(t.name) + '</td><td>' + esc(t.preset) + '</td><td>' + len(t.length) + '</td></tr>'),
@@ -25917,7 +28888,811 @@ function bomView(close) {
   const $ = (id) => el.querySelector ? el.querySelector("#" + id) : null;
   if ($("bom-up")) $("bom-up").onclick = () => bomView();
   if ($("bom-x")) $("bom-x").onclick = () => bomView(true);
+  if ($("bom-cw")) $("bom-cw").onchange = (e) => { BOM_CW = e.target.value; bomView(); };
   return b;
+}
+var BOM_CW = "cur";
+/* ---- (Round UV-1 / B, the round's spec; roadmap 3.E3) THE UV EDITOR ----
+   A pattern's UV place: where its flat shape lies in the UV square, U across and V up, 0 to 1 one UV tile (M-UV). It changes nothing the
+   program shows (uv1/1); it is what the OBJ export's texture coordinates (vt, 0-1 since UV-1: uv1/4), the UV Snapshot and Bake Textures carry.
+   A pattern's `uv: { x, y, a, s }` (⚑, kept only once set; no file version change): its outline's box middle at U = x, V = y, turned a degrees
+   anticlockwise, s tile units a millimeter. Without one, the default: the 2D arrangement, the whole garment's box fitted into the tile with
+   one scale and centred, y turned up (uv1/2). Edited in the UV Editor (Materials/UV ▸ UV Editor, Window ▸ UV Editor), a stage tab as the
+   Colorway Editor is: Move UV (a click selects, Shift adds, a box on empty space takes those wholly inside; a drag moves them, one step; its
+   Distance and arrows, and the arrow keys with the pointer over it), Rotate 90° either way and Scale… (uv1/7), Arrange with UV (0-1), Reset UV
+   to 2D Arrangement, Offset, Select ▸ All with Same Property / All Sewn, UV Display (all patterns or the selected), UV Snapshot. UVED:
+   session state (its view, the drag). */
+function normUV(o) {
+  if (!o || typeof o !== "object") return null;
+  const x = +o.x, y = +o.y, a = +o.a, s = +o.s;
+  if (![x, y, a, s].every(Number.isFinite) || !(s > 0) || s > 1 || Math.abs(x) > 100 || Math.abs(y) > 100) return null;
+  const r = (v, k) => Math.round(v*k)/k;
+  return { x: r(x, 1e6), y: r(y, 1e6), a: r(((a % 360) + 540) % 360 - 180, 1e4), s: r(s, 1e9) };
+}
+// the default fit of the whole garment into the tile: { s0, ox, oy, B }
+function uvFit() {
+  const B = S.pieces.length ? bboxOf(S.pieces) : { x0: 0, y0: 0, x1: 1, y1: 1 }, w = Math.max(1, B.x1 - B.x0), h = Math.max(1, B.y1 - B.y0), s0 = 0.96/Math.max(w, h);
+  return { s0, ox: (1 - w*s0)/2, oy: (1 - h*s0)/2, B };
+}
+const uvMid = (p) => { const b = bboxOf([p]); return V((b.x0 + b.x1)/2, (b.y0 + b.y1)/2); };
+// a pattern's UV place, its own or the default: { x, y, a, s, c (its box middle in mm) }
+function uvPlace(p, fit) {
+  const c = uvMid(p);
+  if (p.uv) return { ...p.uv, c };
+  const f = fit || uvFit();
+  return { x: f.ox + (c.x - f.B.x0)*f.s0, y: f.oy + (f.B.y1 - c.y)*f.s0, a: 0, s: f.s0, c };
+}
+// a 2D point of the pattern (mm, y down) at its UV place: [u, v]
+function uvOf(pl, P) {
+  const r = pl.a*Math.PI/180, dx = P.x - pl.c.x, dy = pl.c.y - P.y;
+  return [pl.x + pl.s*(Math.cos(r)*dx - Math.sin(r)*dy), pl.y + pl.s*(Math.sin(r)*dx + Math.cos(r)*dy)];
+}
+const uvLoop = (p, pl) => flatten(p, 20).map(P => uvOf(pl, P));
+const uvSet = (p, pl) => { const n = normUV(pl); if (n) p.uv = n; else delete p.uv; };
+// the patterns the editor shows (UV Display): all, or the selected
+const UV_SHOW = [["all", "Show All Objects"], ["sel", "Show Selected Objects"]];
+const uvShown = () => (UVED.show === "sel" ? S.pieces.filter(p => S.sel.includes(p.id)) : S.pieces);
+const uvTargets = () => S.pieces.filter(p => S.sel.includes(p.id));
+// Move UV: the selected moved by du, dv tile units (one step)
+function uvMove(du, dv, step) {
+  const ps = uvTargets();
+  if (!ps.length) return toast("Select a pattern in the UV Editor first"), false;
+  const fit = uvFit();
+  push(step || "Move UV");
+  for (const p of ps) { const pl = uvPlace(p, fit); uvSet(p, { ...pl, x: pl.x + du, y: pl.y + dv }); }
+  commit(); uvDraw();
+  return true;
+}
+// Rotate (degrees anticlockwise) and Scale (a factor) about the selection's middle in UV, one step each (uv1/7)
+function uvTurnScale(deg, k, step) {
+  const ps = uvTargets();
+  if (!ps.length) return toast("Select a pattern in the UV Editor first"), false;
+  const fit = uvFit(), pls = ps.map(p => uvPlace(p, fit)), cx = pls.reduce((a, q) => a + q.x, 0)/pls.length, cy = pls.reduce((a, q) => a + q.y, 0)/pls.length;
+  const r = deg*Math.PI/180, co = Math.cos(r), si = Math.sin(r);
+  push(step);
+  ps.forEach((p, i) => { const q = pls[i], dx = (q.x - cx)*k, dy = (q.y - cy)*k; uvSet(p, { x: cx + co*dx - si*dy, y: cy + si*dx + co*dy, a: q.a + deg, s: q.s*k }); });
+  commit(); uvDraw();
+  return true;
+}
+function uvScaleAsk() {
+  if (!uvTargets().length) return toast("Select a pattern in the UV Editor first");
+  numDialog("Scale UV", [{ k: "pct", label: "Scale", val: 100, unit: "%", step: 1 }], { x: window.innerWidth/2 - 140, y: 140 }, (v) => { const k = numOf(String(v.pct))/100; if (k > 0 && k <= 100) uvTurnScale(0, k, "Scale UV"); });
+}
+// the UV box of patterns at their places: { u0, v0, u1, v1 }
+function uvBox(ps, fit) {
+  let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+  for (const p of ps) for (const [u, v] of uvLoop(p, uvPlace(p, fit))) { if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v; }
+  return Number.isFinite(u0) ? { u0, v0, u1, v1 } : null;
+}
+// Arrange with UV (0-1): every pattern's UV, as they lie, fitted into the tile with one scale and centred (one step)
+function uvArrange() {
+  if (!S.pieces.length) return false;
+  const fit = uvFit(), b = uvBox(S.pieces, fit);
+  if (!b) return false;
+  const k = 0.96/Math.max(1e-9, b.u1 - b.u0, b.v1 - b.v0), ou = (1 - (b.u1 - b.u0)*k)/2, ov = (1 - (b.v1 - b.v0)*k)/2;
+  push("Arrange with UV (0-1)");
+  for (const p of S.pieces) { const q = uvPlace(p, fit); uvSet(p, { x: ou + (q.x - b.u0)*k, y: ov + (q.y - b.v0)*k, a: q.a, s: q.s*k }); }
+  commit(); uvDraw();
+  return true;
+}
+function uvReset() {
+  if (!S.pieces.some(p => p.uv)) return toast("Every pattern is at its 2D arrangement already"), false;
+  push("Reset UV to 2D Arrangement");
+  for (const p of S.pieces) delete p.uv;
+  commit(); uvDraw();
+  return true;
+}
+// Offset: the selected moved by a distance typed: Length (Absolute) in the display unit on the pattern, UV Coordinate (Relative) in tile units
+function uvOffsetAsk(kind) {
+  if (!uvTargets().length) return toast("Select a pattern in the UV Editor first");
+  const abs = kind === "abs";
+  numDialog(abs ? "Offset: Length (Absolute)" : "Offset: UV Coordinate (Relative)", [{ k: "u", label: "U", val: 0, unit: abs ? S.unit : "", step: abs ? 1 : 0.01 }, { k: "v", label: "V", val: 0, unit: abs ? S.unit : "", step: abs ? 1 : 0.01 }],
+    { x: window.innerWidth/2 - 140, y: 140 }, (o) => {
+      const u = numOf(String(o.u)), v = numOf(String(o.v));
+      if (!abs) return uvMove(u, v, "Offset UV");
+      const ps = uvTargets(), fit = uvFit();
+      push("Offset UV");
+      for (const p of ps) { const q = uvPlace(p, fit), k = q.s*UNIT_MM[S.unit]; uvSet(p, { ...q, x: q.x + u*k, y: q.y + v*k }); }
+      commit(); uvDraw();
+    }, { hint: abs ? "Each selected pattern moves by this length measured on the pattern, at its own UV scale." : "1 is one UV tile." });
+}
+// Select ▸ All with Same Property: the patterns of the same Particle Distance, Layer and Fabric as the one right-clicked (M-UV)
+function uvSameProp(id) {
+  const q = byId(id);
+  if (!q) return 0;
+  const key = (p) => [particleOf(p), p.layer || 0, (fabricOf(p) || {}).id].join("|"), k = key(q);
+  S.sel = S.pieces.filter(p => key(p) === k).map(p => p.id); ui(); drawSoon(); uvDraw();
+  return S.sel.length;
+}
+/* the editor */
+var UVED = { open: false, front: false, show: "all", dist: 0.01, view: null, drag: null, over: false, hover: null };
+function uvEditor(open) {
+  hideMenu(); closeFlyouts();
+  if (open === false) { UVED.open = false; UVED.front = false; stageFront(RWIN.open ? "rw" : CWED.open ? "cw" : S.aved ? "ed" : "2d"); return; }
+  UVED.open = true;
+  if (S.ui.layout === "3d") setLayout("both");
+  stageFront("uv");
+}
+const UV_TOOLS = [["left", "←", "Move the selected UVs left by the Distance"], ["up", "↑", "up"], ["down", "↓", "down"], ["right", "→", "right"]];
+function uvedRender() {
+  const stage = document.getElementById("stage");
+  let el = document.getElementById("uved");
+  if (!UVED.open) { if (el && el.remove) el.remove(); return; }
+  if (!el) { el = document.createElement("div"); el.id = "uved"; if (stage && stage.appendChild) stage.appendChild(el); }
+  el.style.display = UVED.front ? "flex" : "none";
+  if (!UVED.front) return;
+  el.innerHTML = '<div class="rv-tab"><span>UV Editor</span><button id="uv-x" title="Close the UV Editor">×</button></div>' +
+    '<div class="rv-top"><button class="btn on" id="uv-move" aria-pressed="true" title="Move UV: click a pattern (Shift adds), drag it, or a box on empty space">Move UV</button>' +
+    '<label>Distance <input type="text" inputmode="decimal" data-num="1" id="uv-dist" value="' + UVED.dist + '" style="width:54px"></label>' +
+    UV_TOOLS.map(([k, t, tip]) => '<button class="btn" data-uvmv="' + k + '" title="' + (k === "left" ? tip : "Move the selected UVs " + tip + " by the Distance") + '">' + t + '</button>').join("") +
+    '<button class="btn" data-uvturn="90" title="Rotate the selected UVs 90° counterclockwise">↺ 90°</button><button class="btn" data-uvturn="-90" title="Rotate the selected UVs 90° clockwise">↻ 90°</button><button class="btn" id="uv-scale" title="Scale the selected UVs about their middle">Scale…</button>' +
+    '<button class="btn" id="uv-pack" title="Auto UV Packing: the selected patterns (none: all) packed into the tile, as large as fits">Auto UV Packing…</button>' +
+    '<span class="rv-note"></span>' +
+    '<button class="btn" id="uv-bake" title="Bake Textures: each pattern’s color and texture laid into its UV place, one picture">Bake Textures…</button>' +
+    '<button class="btn" id="uv-snap" title="UV Snapshot: the outlines (and the cloth’s mesh) at their UV places as a PNG">UV Snapshot…</button>' +
+    '<label>UV Display <select id="uv-show">' + UV_SHOW.map(([k, n]) => '<option value="' + k + '"' + (UVED.show === k ? ' selected' : '') + '>' + n + '</option>').join("") + '</select></label></div>' +
+    '<div class="uv-wrap"><canvas id="uv-cv"></canvas></div>' +
+    '<div class="uv-foot">Right-click the background: Arrange with UV (0-1), Offset, Reset UV to 2D Arrangement. The UV places are what an OBJ export’s texture coordinates and the UV Snapshot carry; the 2D and 3D windows do not change.</div>';
+  const $ = (s) => (el.querySelector ? el.querySelector(s) : null), all = (s) => (el.querySelectorAll ? el.querySelectorAll(s) : []);
+  if ($("#uv-x")) $("#uv-x").onclick = () => uvEditor(false);
+  if ($("#uv-dist")) $("#uv-dist").onchange = (e) => { const v = numOf(e.target.value); if (v > 0 && v <= 10) UVED.dist = v; e.target.value = UVED.dist; };
+  for (const b of all("[data-uvmv]")) b.onclick = () => uvNudge(b.dataset.uvmv);
+  for (const b of all("[data-uvturn]")) b.onclick = () => uvTurnScale(+b.dataset.uvturn, 1, "Rotate UV");
+  if ($("#uv-scale")) $("#uv-scale").onclick = uvScaleAsk;
+  if ($("#uv-snap")) $("#uv-snap").onclick = uvSnapshotAsk;
+  if ($("#uv-pack")) $("#uv-pack").onclick = uvPackAsk;
+  if ($("#uv-bake")) $("#uv-bake").onclick = uvBakeAsk;
+  if ($("#uv-show")) $("#uv-show").onchange = (e) => { UVED.show = e.target.value; uvDraw(); };
+  const cv = $("#uv-cv");
+  if (cv) {
+    cv.onpointerdown = uvDown; cv.onpointermove = uvMoveEv; cv.onpointerup = uvUp; cv.onpointercancel = () => { UVED.drag = null; };
+    cv.onpointerenter = () => { UVED.over = true; }; cv.onpointerleave = () => { UVED.over = false; UVED.hover = null; uvDraw(); };
+    cv.onwheel = (e) => { if (e.preventDefault) e.preventDefault(); uvZoom(e); };
+    cv.oncontextmenu = (e) => { e.preventDefault(); uvMenu(e); };
+  }
+  uvDraw();
+}
+function uvNudge(dir) { const d = UVED.dist; return uvMove(dir === "left" ? -d : dir === "right" ? d : 0, dir === "up" ? d : dir === "down" ? -d : 0, "Move UV"); }
+// the view: px per tile unit (s) and where U = V = 0 is (ox, oy; V up)
+function uvView(cv) {
+  const w = cv.clientWidth || cv.width || 600, h = cv.clientHeight || cv.height || 400;
+  // the first time the tile fills about four fifths of the editor, its middle in the middle; afterwards the view stays as panned and zoomed
+  if (!UVED.view) { const s = Math.min(w, h)*0.82; UVED.view = { s, ox: (w - s)/2, oy: (h + s)/2 }; }
+  UVED.view.w = w; UVED.view.h = h;
+  return UVED.view;
+}
+const uvToS = (V0, u, v) => [V0.ox + u*V0.s, V0.oy - v*V0.s], uvFromS = (V0, x, y) => [(x - V0.ox)/V0.s, (V0.oy - y)/V0.s];
+function uvCanvas() { const el = document.getElementById("uved"); return el && el.querySelector ? el.querySelector("#uv-cv") : null; }
+function uvDraw() {
+  if (!UVED.open || !UVED.front) return;
+  const cv = uvCanvas();
+  if (!cv || !cv.getContext) return;
+  const r = cv.getBoundingClientRect ? cv.getBoundingClientRect() : { width: 600, height: 400 }, dpr = window.devicePixelRatio || 1;
+  const w = Math.max(50, Math.round(r.width || 600)), h = Math.max(50, Math.round(r.height || 400));
+  if (cv.width !== w*dpr) cv.width = w*dpr; if (cv.height !== h*dpr) cv.height = h*dpr;
+  const g = cv.getContext("2d"), V0 = uvView({ clientWidth: w, clientHeight: h });
+  if (!g || !g.setTransform) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = "#2b2b2e"; g.fillRect(0, 0, w, h);
+  // the tiles round the 0-1 tile faint, the 0-1 tile white with its tenths
+  for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) { const [x, y] = uvToS(V0, i, j + 1); g.fillStyle = i === 0 && j === 0 ? "#f4f4f6" : "#38383c"; g.fillRect(x, y, V0.s, V0.s); }
+  g.strokeStyle = "#d4d4d8"; g.lineWidth = 1; g.beginPath();
+  for (let k = 1; k < 10; k++) { const [x0, y0] = uvToS(V0, k/10, 0), [x1, y1] = uvToS(V0, k/10, 1); g.moveTo(x0, y0); g.lineTo(x1, y1); const [a0, b0] = uvToS(V0, 0, k/10), [a1, b1] = uvToS(V0, 1, k/10); g.moveTo(a0, b0); g.lineTo(a1, b1); }
+  g.stroke();
+  { const [x, y] = uvToS(V0, 0, 1); g.strokeStyle = "#1c1c1e"; g.lineWidth = 1.5; g.strokeRect(x, y, V0.s, V0.s); }
+  g.fillStyle = "#cfcfd4"; g.font = "11px Segoe UI, Arial, sans-serif"; { const [x, y] = uvToS(V0, 0, 0); g.fillText("0", x - 10, y + 12); const [x1] = uvToS(V0, 1, 0); g.fillText("U 1", x1 - 8, y + 12); const [, y1] = uvToS(V0, 0, 1); g.fillText("V 1", x - 24, y1 + 4); }
+  const fit = uvFit();
+  for (const p of uvShown()) {
+    const pl = uvPlace(p, fit), L = uvLoop(p, pl), sel = S.sel.includes(p.id), hov = UVED.hover === p.id;
+    if (L.length < 3) continue;
+    g.beginPath(); L.forEach(([u, v], k) => { const [x, y] = uvToS(V0, u, v); if (k) g.lineTo(x, y); else g.moveTo(x, y); }); g.closePath();
+    g.globalAlpha = 0.55; g.fillStyle = pieceFill(p, "front"); g.fill(); g.globalAlpha = 1;
+    g.strokeStyle = sel ? "#ff7a1a" : "#1c1c1e"; g.lineWidth = sel ? 2.6 : hov ? 1.6 : 1; g.setLineDash(hov && !sel ? [4, 3] : []); g.stroke(); g.setLineDash([]);
+    const [mx, my] = uvToS(V0, pl.x, pl.y); g.fillStyle = "#1c1c1e"; g.font = (sel ? "bold " : "") + "11px Segoe UI, Arial, sans-serif"; g.fillText(p.name || "Pattern", mx - 20, my);
+  }
+  if (UVED.drag && UVED.drag.box) { const d = UVED.drag; g.strokeStyle = "#ff7a1a"; g.setLineDash([4, 3]); g.strokeRect(Math.min(d.x0, d.x), Math.min(d.y0, d.y), Math.abs(d.x - d.x0), Math.abs(d.y - d.y0)); g.setLineDash([]); }
+}
+// the pattern under a screen point (inside its UV outline), the top one first
+function uvHit(x, y) {
+  const cv = uvCanvas(), V0 = UVED.view;
+  if (!cv || !V0) return null;
+  const [u, v] = uvFromS(V0, x, y), fit = uvFit(), list = uvShown();
+  for (let k = list.length - 1; k >= 0; k--) { const L = uvLoop(list[k], uvPlace(list[k], fit)); if (L.length >= 3 && vcubeInPoly(u, v, L)) return list[k]; }
+  return null;
+}
+const uvXY = (e) => { const cv = uvCanvas(), r = cv && cv.getBoundingClientRect ? cv.getBoundingClientRect() : { left: 0, top: 0 }; return [e.clientX - r.left, e.clientY - r.top]; };
+function uvDown(e) {
+  const [x, y] = uvXY(e), V0 = UVED.view;
+  if (!V0) return;
+  if (e.button === 1) { UVED.drag = { pan: true, x, y }; return; }
+  if (e.button !== 0) return;
+  const p = uvHit(x, y);
+  if (p) {
+    if (e.shiftKey) S.sel = S.sel.includes(p.id) ? S.sel.filter(i => i !== p.id) : [...S.sel, p.id];
+    else if (!S.sel.includes(p.id)) S.sel = [p.id];
+    UVED.drag = { move: true, x0: x, y0: y, x, y, pushed: false, fit: uvFit(), was: uvTargets().map(q => [q, uvPlace(q)]) };
+  } else UVED.drag = { box: true, x0: x, y0: y, x, y, add: e.shiftKey };
+  if (e.target && e.target.setPointerCapture && e.pointerId !== undefined) try { e.target.setPointerCapture(e.pointerId); } catch (er) {}
+  ui(); drawSoon(); uvDraw();
+}
+function uvMoveEv(e) {
+  const [x, y] = uvXY(e), d = UVED.drag, V0 = UVED.view;
+  if (!d) { const h = uvHit(x, y), id = h ? h.id : null; if (id !== UVED.hover) { UVED.hover = id; uvDraw(); } return; }
+  if (d.pan) { V0.ox += x - d.x; V0.oy += y - d.y; d.x = x; d.y = y; uvDraw(); return; }
+  d.x = x; d.y = y;
+  if (d.move) {
+    if (!d.pushed) { if (Math.hypot(x - d.x0, y - d.y0) < 3) return; push("Move UV"); d.pushed = true; }
+    const du = (x - d.x0)/V0.s, dv = -(y - d.y0)/V0.s;
+    for (const [q, pl] of d.was) uvSet(q, { ...pl, x: pl.x + du, y: pl.y + dv });
+  }
+  uvDraw();
+}
+function uvUp() {
+  const d = UVED.drag, V0 = UVED.view;
+  UVED.drag = null;
+  if (!d) return;
+  if (d.move && d.pushed) { commit(); uvDraw(); return; }
+  if (d.box && V0) {
+    const [ua, va] = uvFromS(V0, Math.min(d.x0, d.x), Math.max(d.y0, d.y)), [ub, vb] = uvFromS(V0, Math.max(d.x0, d.x), Math.min(d.y0, d.y)), fit = uvFit();
+    const inside = Math.abs(d.x - d.x0) > 3 ? uvShown().filter(p => uvLoop(p, uvPlace(p, fit)).every(([u, v]) => u >= ua && u <= ub && v >= va && v <= vb)).map(p => p.id) : [];
+    S.sel = d.add ? [...new Set([...S.sel, ...inside])] : inside;
+    ui(); drawSoon();
+  }
+  uvDraw();
+}
+function uvZoom(e) {
+  const V0 = UVED.view; if (!V0) return;
+  const [x, y] = uvXY(e), k = wheelOut(e) > 0 ? 1/1.2 : 1.2;      // (forward zooms in, unless the wheel is reversed in Settings)
+  V0.ox = x - (x - V0.ox)*k; V0.oy = y - (y - V0.oy)*k; V0.s *= k;
+  uvDraw();
+}
+function uvMenu(e) {
+  const [x, y] = uvXY(e), p = uvHit(x, y);
+  if (p) {
+    if (!S.sel.includes(p.id)) { S.sel = [p.id]; ui(); uvDraw(); }
+    return listMenu([{ hd: p.name || "Pattern" }, { n: "Select", menu: () => [{ n: "All with Same Property", f: () => uvSameProp(p.id) }] }, { n: "Select All Sewn", k: keyOf("selectSewn"), f: () => { selectAllWith("sewn", [p.id]); uvDraw(); } }], e.clientX, e.clientY);
+  }
+  listMenu([{ n: "Arrange with UV (0-1)", f: uvArrange }, { n: "Offset", menu: () => [{ n: "Length (Absolute)…", f: () => uvOffsetAsk("abs") }, { n: "UV Coordinate (Relative)…", f: () => uvOffsetAsk("rel") }] }, { sep: 1 }, { n: "Reset UV to 2D Arrangement", f: uvReset }], e.clientX, e.clientY);
+}
+/* ---- (Round UV-1 / C) AUTO UV PACKING (M-UV): Padding (a share of the tile between UVs and at its edges, 0.001-0.999), Fidelity (1-5: how
+   closely the largest scale that fits is searched for), Fix Scale Ratio (on: one scale for all, their sizes keep their ratio; off: each pattern
+   scaled to the same longest side first, guess uv1/24), Advanced Placement (each pattern may lie turned a quarter, whichever packs lower,
+   and rows are filled tallest first), UV Area 0-1 or Selected Tile (U, V of its lower left corner). The selected patterns (none: all), each
+   by its box at a quarter turn of its 2D place, packed in rows (uvPackPlan(), pure); one step. */
+function uvPackPlan(items, o) {
+  const pad = Math.max(0.001, Math.min(0.999, +o.padding || 0.01)), adv = !!o.adv, iters = 8 + 6*Math.max(1, Math.min(5, Math.round(+o.fidelity || 3)));
+  // items: [{ id, w, h, k }] (mm, k the pattern's own scale factor); a try at scale s: rows across the tile, each item's box w x h (or turned)
+  const tryAt = (s) => {
+    const boxes = items.map(it => { const w = it.w*it.k*s, h = it.h*it.k*s, turn = adv && h > w; return { id: it.id, turn, w: turn ? h : w, h: turn ? w : h }; });
+    if (adv) boxes.sort((a, b) => b.h - a.h);
+    let x = pad, y = pad, row = 0;
+    const out = [];
+    for (const b of boxes) {
+      if (b.w + 2*pad > 1 || b.h + 2*pad > 1) return null;
+      if (x + b.w + pad > 1) { x = pad; y += row + pad; row = 0; }
+      if (y + b.h + pad > 1) return null;
+      out.push({ id: b.id, turn: b.turn, cx: x + b.w/2, cy: y + b.h/2 });
+      x += b.w + pad; row = Math.max(row, b.h);
+    }
+    return out;
+  };
+  let lo = 0, hi = 1/Math.max(1e-9, ...items.map(it => Math.max(it.w, it.h)*it.k)), best = null;
+  for (let i = 0; i < iters; i++) { const m = (lo + hi)/2, r = tryAt(m); if (r) { lo = m; best = { s: m, at: r }; } else hi = m; }
+  return best;
+}
+function uvPackAsk() {
+  numDialog("Auto UV Packing", [{ k: "padding", label: "Padding", val: 0.01, step: 0.001 }, { k: "fidelity", label: "Fidelity", val: 3, step: 1, spin: true, min: 1, max: 5 },
+    { k: "fix", label: "Fix Scale Ratio", options: [["on", "On"], ["off", "Off"]], val: "on" }, { k: "adv", label: "Advanced Placement", options: [["off", "Off"], ["on", "On"]], val: "off" },
+    { k: "area", label: "UV Area", options: [["01", "0-1 (Default)"], ["tile", "Selected Tile"]], val: "01" }, { k: "tu", label: "Tile U", val: 0, step: 1 }, { k: "tv", label: "Tile V", val: 0, step: 1 }],
+    { x: window.innerWidth/2 - 160, y: 100 }, (o) => uvPack({ padding: numOf(String(o.padding)), fidelity: numOf(String(o.fidelity)), fix: o.fix !== "off", adv: o.adv === "on", tu: o.area === "tile" ? Math.round(numOf(String(o.tu)) || 0) : 0, tv: o.area === "tile" ? Math.round(numOf(String(o.tv)) || 0) : 0 }),
+    { hint: "Packs the selected patterns (none selected: all) into the tile in rows, as large as fits. Padding is a share of the tile. Selected Tile: the tile whose lower left corner is at U, V." });
+}
+function uvPack(o) {
+  const ps = uvTargets().length ? uvTargets() : S.pieces.slice();
+  if (!ps.length) return null;
+  const dims = ps.map(p => { const b = bboxOf([p]); return { id: p.id, w: Math.max(1e-6, b.x1 - b.x0), h: Math.max(1e-6, b.y1 - b.y0) }; }), big = Math.max(...dims.map(d => Math.max(d.w, d.h)));
+  const plan = uvPackPlan(dims.map(d => ({ ...d, k: o.fix === false ? big/Math.max(d.w, d.h) : 1 })), o);
+  if (!plan) return toast("The patterns do not fit with that padding"), null;
+  push("Auto UV Packing");
+  for (const a of plan.at) { const p = byId(a.id), d = dims.find(x => x.id === a.id), k = o.fix === false ? big/Math.max(d.w, d.h) : 1; uvSet(p, { x: (o.tu || 0) + a.cx, y: (o.tv || 0) + a.cy, a: a.turn ? 90 : 0, s: plan.s*k }); }
+  commit(); uvDraw();
+  return plan;
+}
+/* (Round UV-1 / C) BAKE TEXTURES (M-UV): Size (px, square), Format PNG / JPEG (no PDF, uv1/9), UV Area 0-1 / All Tiles, Fill Texture Seams (px:
+   each pattern's colour carried that far past its outline, so a texture's edge does not show a seam), Infinite Seams (every pattern's colour
+   carried out until it meets another's), Texture Type Base Color (the one map here, uv1/10). Each pattern's face as the 2D window paints it,
+   its fabric's colour and texture along its grainline, laid into its UV place by one affine map (uvAffine()). */
+function uvAffine(pl, n, u0, v0, tiles) {
+  const k = n/tiles, r = pl.a*Math.PI/180, a = k*pl.s*Math.cos(r), c = k*pl.s*Math.sin(r), b = -c, d = a;
+  return [a, b, c, d, k*(pl.x - u0) - a*pl.c.x - c*pl.c.y, n - k*(pl.y - v0) - b*pl.c.x - d*pl.c.y];
+}
+function uvBakeAsk() {
+  numDialog("Bake Textures", [{ k: "size", label: "Size", val: 2048, unit: "px", step: 1 }, { k: "fmt", label: "Format", options: [["png", "PNG"], ["jpeg", "JPEG"]], val: "png" },
+    { k: "area", label: "UV Area", options: [["01", "0-1 (Default)"], ["all", "All Tiles"]], val: "01" }, { k: "seam", label: "Fill Texture Seams", val: 4, unit: "px", step: 1 },
+    { k: "inf", label: "Infinite Seams", options: [["off", "Off"], ["on", "On"]], val: "off" }, { k: "type", label: "Texture Type", options: [["base", "Base Color"]], val: "base" }],
+    { x: window.innerWidth/2 - 160, y: 100 }, (o) => {
+      const fmt = o.fmt === "jpeg" ? "jpeg" : "png", cv = uvBake(Math.max(64, Math.min(pxMax(), Math.round(numOf(String(o.size)) || 2048))), o.area, Math.max(0, numOf(String(o.seam)) || 0), o.inf === "on");
+      if (cv && cv.toBlob) cv.toBlob((b) => b && b.arrayBuffer().then((ab) => dl("baked-base-color." + (fmt === "jpeg" ? "jpg" : "png"), new Uint8Array(ab), "image/" + fmt, (f) => toast("Saved " + f))), "image/" + fmt, 0.92);
+    }, { hint: "Each pattern's color and texture laid into its place in the UV square, as one picture for another program." });
+}
+function uvBake(n, area, seamPx, infinite) {
+  const fit = uvFit(), ps = S.pieces, b = area === "all" ? uvBox(ps, fit) : null;
+  const u0 = b ? Math.floor(b.u0) : 0, v0 = b ? Math.floor(b.v0) : 0, tiles = b ? Math.max(1, Math.ceil(b.u1) - u0, Math.ceil(b.v1) - v0) : 1;
+  const cv = document.createElement("canvas"); cv.width = cv.height = n;
+  const g = cv.getContext && cv.getContext("2d");
+  if (!g) return null;
+  g.fillStyle = "#808080"; g.fillRect(0, 0, n, n);
+  const path = (p) => { g.beginPath(); flatten(p, 26).forEach((q, k) => (k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y))); g.closePath(); };
+  // the seams first, under every pattern: each one's colour carried out past its outline (Infinite: far)
+  for (const p of ps) {
+    const pl = uvPlace(p, fit), m = uvAffine(pl, n, u0, v0, tiles), px = infinite ? n : seamPx;
+    if (!(px > 0)) continue;
+    g.setTransform(...m); path(p); g.strokeStyle = g.fillStyle = pieceFill(p, "front"); g.lineJoin = "round"; g.lineWidth = 2*px/(n/tiles*pl.s); g.stroke();
+  }
+  for (const p of ps) {
+    const pl = uvPlace(p, fit), m = uvAffine(pl, n, u0, v0, tiles);
+    g.setTransform(...m); path(p); g.fillStyle = pieceFill(p, "front"); g.fill();
+    if (typeof drawFabTex === "function") drawFabTex(g, p, () => path(p), (w) => w, 1);
+  }
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  return cv;
+}
+/* ---- (Round UV-1 / D) PATTERN MATCHING and the MATERIALS ROWS (Edit ▸ Context Menu ▸ Materials, the spec §3, §5) ----
+   setMatch(): the patterns' Pattern Matching, one step; Lock in Place keeps the texture's place as it lies now (matchAt). The Materials rows
+   act on the selected patterns, one step each (guesses uv1/19-22); a grainline set to an angle turns about its middle, its length kept, and
+   stays inside its pattern (grainFit()). */
+function setMatch(ps, v) {
+  ps = (ps || []).filter(Boolean);
+  if (!ps.length) return false;
+  push("Pattern Matching");
+  for (const p of ps) {
+    if (v === "lock") { const was = p.match; delete p.match; const q = texPlace(p), g = grainOf(p); p.match = "lock"; if (was === "texture") p.matchAt = { x: 0, y: 0, ang: 0 }; else p.matchAt = q ? { x: q.o.x, y: q.o.y, ang: q.ang } : { x: (g.a.x + g.b.x)/2, y: (g.a.y + g.b.y)/2, ang: Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x) - Math.PI/2 }; }
+    else if (v === "texture") { p.match = "texture"; delete p.matchAt; }
+    else { delete p.match; delete p.matchAt; }
+  }
+  commit();
+  return true;
+}
+const matSel = () => { const ps = selPieces(); if (!ps.length) toast("Select a pattern first"); return ps; };
+function matResetBasic() {
+  const ps = matSel(), f0 = libOf().fabric[0];
+  if (!ps.length || !f0) return false;
+  push("Reset to Basic Fabric"); for (const p of ps) p.fabric = f0.id; commit();
+  return true;
+}
+function matDeleteTexture() {
+  const ps = matSel(), fs = [...new Set(ps.map(p => fabricOf(p)).filter(f => f && f.tex))];
+  if (!ps.length) return false;
+  if (!fs.length) return toast("The selected patterns' fabric has no texture"), false;
+  push("Delete Texture"); for (const f of fs) delete f.tex; commit();
+  return true;
+}
+function matFlipTexture(axis) {
+  const ps = matSel();
+  if (!ps.length) return false;
+  push(axis === "h" ? "Flip Texture Horizontally" : "Flip Texture Vertically");
+  for (const p of ps) { const f = { ...(p.texFlip || {}) }; if (f[axis]) delete f[axis]; else f[axis] = true; if (f.h || f.v) p.texFlip = f; else delete p.texFlip; }
+  commit();
+  return true;
+}
+// a grainline along a direction (dx, dy in 2D, y down), turned about its middle, its length kept
+function grainAlong(p, dx, dy) {
+  const g = grainOf(p), m = V((g.a.x + g.b.x)/2, (g.a.y + g.b.y)/2), L = Math.hypot(g.b.x - g.a.x, g.b.y - g.a.y)/2, k = Math.hypot(dx, dy) || 1;
+  p.grain = grainFit(p, { a: V(m.x - dx/k*L, m.y - dy/k*L), b: V(m.x + dx/k*L, m.y + dy/k*L) });
+}
+function matGrain(kind) {
+  const ps = matSel();
+  if (!ps.length) return false;
+  let dir = kind === "x" ? [1, 0] : [0, 1];
+  if (kind === "par") { const L = typeof selLines === "function" ? selLines() : []; const l = L[0]; if (!l) return toast("Align Grain Parallel to Selected: select a line of the pattern first (Edit Pattern)"), false; const a = segPt(l.sh, l.i, 0), b = segPt(l.sh, l.i, 1); dir = [b.x - a.x, b.y - a.y]; }
+  if (kind === "match") { const last = byId(S.sel[S.sel.length - 1]); if (!last || ps.length < 2) return toast("Match Up Grain: select the patterns, the one to match last"), false; const g = grainOf(last); dir = [g.b.x - g.a.x, g.b.y - g.a.y]; }
+  push({ x: "Align Grain X-Axis", y: kind === "reset" ? "Reset Fabric Angle" : "Align Grain Y-Axis", reset: "Reset Fabric Angle", par: "Align Grain Parallel to Selected", match: "Match Up Grain" }[kind]);
+  for (const p of ps) if (!(kind === "match" && p.id === S.sel[S.sel.length - 1])) grainAlong(p, dir[0], dir[1]);
+  commit();
+  return true;
+}
+// Duplicate to Symmetric Pattern: the texture's flips (mirrored: Horizontal turned over, guess uv1/26) and Pattern Matching to its symmetric copy
+function matToSymmetric() {
+  const ps = matSel(), pairs = ps.map(p => [p, typeof symPartner === "function" ? symPartner(p) : null]).filter(x => x[1]);
+  if (!ps.length) return false;
+  if (!pairs.length) return toast("The selected patterns have no symmetric copy"), false;
+  push("Duplicate to Symmetric Pattern");
+  for (const [p, q] of pairs) {
+    const f = { ...(p.texFlip || {}) }; if (f.h) delete f.h; else f.h = true;
+    if (f.h || f.v) q.texFlip = f; else delete q.texFlip;
+    if (p.match === "texture") q.match = "texture"; else { delete q.match; delete q.matchAt; }
+    if (p.matchLock) q.matchLock = true; else delete q.matchLock;
+  }
+  commit();
+  return true;
+}
+/* UV Snapshot (M-UV): Size (px, square), Edge Color, Anti-alias Lines, UV Area 0-1 / All Tiles (the tiles the UVs cover); each pattern's outline,
+   and inside it its cloth's mesh when the 3D window has made it (uv1/8), at their UV places. A PNG. */
+function uvSnapshotAsk() {
+  numDialog("UV Snapshot", [{ k: "size", label: "Size", val: 2048, unit: "px", step: 1 }, { k: "area", label: "UV Area", options: [["01", "0-1 (Default)"], ["all", "All Tiles"]], val: "01" },
+    { k: "aa", label: "Anti-alias Lines", options: [["on", "On"], ["off", "Off"]], val: "on" }, { k: "color", label: "Edge Color", options: [["#000000", "Black"], ["#ffffff", "White"], ["#d0021b", "Red"], ["#0072b2", "Blue"]], val: "#000000" }],
+    { x: window.innerWidth/2 - 150, y: 120 }, (o) => { const cv = uvSnapshot(Math.max(64, Math.min(pxMax(), Math.round(numOf(String(o.size)) || 2048))), o.area, o.aa !== "off", o.color); if (cv && cv.toBlob) cv.toBlob((b) => b && b.arrayBuffer().then((ab) => dl("uv-snapshot.png", new Uint8Array(ab), "image/png", (f) => toast("Saved " + f)))); });
+}
+function uvSnapshot(n, area, aa, color) {
+  const fit = uvFit(), ps = S.pieces, b = area === "all" ? uvBox(ps, fit) : null;
+  const u0 = b ? Math.floor(b.u0) : 0, v0 = b ? Math.floor(b.v0) : 0, tiles = b ? Math.max(1, Math.ceil(b.u1) - u0, Math.ceil(b.v1) - v0) : 1;
+  const cv = document.createElement("canvas"); cv.width = cv.height = n;
+  const g = cv.getContext && cv.getContext("2d");
+  if (!g) return null;
+  g.imageSmoothingEnabled = aa;
+  const at = ([u, v]) => { const x = (u - u0)/tiles*n, y = n - (v - v0)/tiles*n; return aa ? [x, y] : [Math.round(x) + 0.5, Math.round(y) + 0.5]; };
+  g.strokeStyle = color || "#000000"; g.lineWidth = Math.max(1, n/1024);
+  for (const p of ps) {
+    const pl = uvPlace(p, fit), L = uvLoop(p, pl);
+    if (L.length < 3) continue;
+    g.beginPath(); L.forEach((q, k) => { const [x, y] = at(q); if (k) g.lineTo(x, y); else g.moveTo(x, y); }); g.closePath(); g.stroke();
+    const it = typeof G3 !== "undefined" && G3.items ? G3.items.get(p.id) : null, m = it && it.mesh;
+    if (m && m.xy && m.tri) {
+      g.save(); g.globalAlpha = 0.5; g.lineWidth = Math.max(0.5, n/2048); g.beginPath();
+      for (let k = 0; k < m.tri.length; k += 3) for (let e = 0; e < 3; e++) { const a = m.tri[k + e], c = m.tri[k + (e + 1) % 3]; if (a > c) continue; const [x0, y0] = at(uvOf(pl, { x: m.xy[2*a], y: m.xy[2*a+1] })), [x1, y1] = at(uvOf(pl, { x: m.xy[2*c], y: m.xy[2*c+1] })); g.moveTo(x0, y0); g.lineTo(x1, y1); }
+      g.stroke(); g.restore();
+    }
+  }
+  return cv;
+}
+/* ---- (Round CW-1 / B, the round's spec; roadmap 1.T22) COLORWAYS ----
+   A colorway is one set of looks for the same garment: the same patterns, sewing and physics, each library item's MATERIAL its own per
+   colorway (the maintainer's answer to the overnight report's Q5: looks only for 1.0, one simulation for all). S.colorways (document data,
+   in undo and the file, kept only when there are two or more, ⚑ colorways; no file version change):
+     { cur: id, list: [{ id, name, mat: { "<kind>:<item id>": { rows } } }], own: ["<kind>:<item id>", …] }
+   THE DOCUMENT'S LIBRARY IS ALWAYS THE CURRENT COLORWAY (cw1/1, cw1/2): every reader of a colour (2D fills, the cloth, trims, render,
+   print, BOM) reads S.lib as ever, and an older beta, which drops the field, shows the colorway that was current when saved. `own` names
+   the items whose material is per colorway; every other colorway keeps those items' rows in its `mat` (the current one's `mat` is empty:
+   its rows are the library's). An item not in `own` is linked: the same in every colorway, so a change to it shows in all (spec 3.4).
+   Switching (cwSwap()) puts the outgoing colorway's rows into its `mat` and the incoming one's onto the items: one undo step. Add copies
+   the current colorway and makes every item of the library its own (the reference's Add (Default): Materials); an item added later is
+   linked until a colorway is added again (guess cw1/12). CW_ROWS: the material rows per kind (cw1/3; a zipper's and a graphic's are not:
+   cw1/4, cw1/13). */
+// (var: loadDoc(), commit() and usedImages() may read them before this line has run)
+var CW_ROWS = { fabric: ["mapping", "type", "color", "back", "faces", "tex", "opacity", "roughness", "reflection", "metalness"], button: ["type", "color", "opacity", "roughness", "reflection", "metalness"],
+  buttonhole: ["type", "color", "opacity", "roughness", "reflection", "metalness"], topstitch: ["color"] };
+var CW_KINDS = Object.keys(CW_ROWS), CW_LABEL ={ fabric: "FABRIC", button: "BUTTON", buttonhole: "BUTTONHOLE", topstitch: "TOPSTITCH" };
+function cwOn() { return !!(S.colorways && Array.isArray(S.colorways.list) && S.colorways.list.length >= 2); }
+var cwKey = (kind, it) => kind + ":" + it.id, cwKeyOk =(k) => typeof k === "string" && /^[a-z]+:\d+$/.test(k) && !!CW_ROWS[k.split(":")[0]];
+function cwItem(key) { const [kind, id] = String(key).split(":"); return CW_ROWS[kind] ? (libOf()[kind] || []).find(x => x.id === +id) || null : null; }
+// an item's material rows (copies), and rows laid onto an item (a row an item may lack, a texture or faces, goes when the rows have none)
+function matRows(kind, it) { const o = {}; for (const k of CW_ROWS[kind]) if (it && it[k] !== undefined) o[k] = clone(it[k]); return o; }
+function matPut(kind, it, rows) {
+  for (const k of CW_ROWS[kind]) { if (rows && rows[k] !== undefined) it[k] = clone(rows[k]); else if (!(k in LIB[kind].def)) delete it[k]; }
+  const n = normLibItem(kind, it, it.id);
+  for (const k of CW_ROWS[kind]) { if (n[k] !== undefined) it[k] = n[k]; else delete it[k]; }
+}
+var cwNormRows = (kind, rows) => matRows(kind, normLibItem(kind, rows && typeof rows === "object" ? rows : {}, 0));
+function normColorways(o) {
+  if (!o || typeof o !== "object" || !Array.isArray(o.list)) return null;
+  const seen = new Set(), list = [];
+  for (const c of o.list) {
+    if (!c || !Number.isInteger(c.id) || c.id < 1 || seen.has(c.id)) continue;
+    seen.add(c.id);
+    const mat = {};
+    if (c.mat && typeof c.mat === "object") for (const key of Object.keys(c.mat).sort()) if (cwKeyOk(key) && c.mat[key] && typeof c.mat[key] === "object") mat[key] = cwNormRows(key.split(":")[0], c.mat[key]);
+    list.push({ id: c.id, name: typeof c.name === "string" && c.name.trim() ? c.name.trim().slice(0, 60) : "Colorway " + c.id, mat });
+  }
+  if (list.length < 2) return null;
+  const cur = list.some(c => c.id === o.cur) ? o.cur : list[0].id;
+  list.find(c => c.id === cur).mat = {};
+  return { cur, list, own: Array.isArray(o.own) ? [...new Set(o.own.filter(cwKeyOk))].sort() : [] };
+}
+// in commit(): an item that went leaves `own` and every colorway; a colorway that lacks an own item's rows takes the current ones
+function validColorways(cw) {
+  if (!cw || !Array.isArray(cw.list) || cw.list.length < 2) return null;
+  const own = cw.own.filter(k => cwItem(k));
+  if (own.length !== cw.own.length) cw.own = own;
+  const set = new Set(own);
+  for (const c of cw.list) {
+    if (c.id === cw.cur) { if (Object.keys(c.mat).length) c.mat = {}; continue; }
+    for (const k of Object.keys(c.mat)) if (!set.has(k)) delete c.mat[k];
+    for (const k of own) if (!c.mat[k]) c.mat[k] = matRows(k.split(":")[0], cwItem(k));
+  }
+  return cw;
+}
+var cwCur = () => (cwOn() ? S.colorways.list.find(c => c.id === S.colorways.cur) : null);
+var cwById = (id) => (cwOn() ? S.colorways.list.find(c => c.id === id) : null) || null;
+// a colorway's rows of an item: the library's for the current colorway or a linked item, else its own
+function cwRowsOf(c, kind, it) {
+  const cw = S.colorways, key = cwKey(kind, it);
+  return !cw || !c || c.id === cw.cur || !cw.own.includes(key) ? matRows(kind, it) : (c.mat[key] || matRows(kind, it));
+}
+// the colorway `to` made current: no step (the callers take one)
+function cwSwap(to) {
+  const cw = S.colorways, from = cwCur(), next = cwById(to);
+  if (!cw || !from || !next || next === from) return false;
+  for (const key of cw.own) {
+    const it = cwItem(key), kind = key.split(":")[0];
+    if (!it) continue;
+    from.mat[key] = matRows(kind, it);
+    matPut(kind, it, next.mat[key] || from.mat[key]);
+  }
+  next.mat = {}; cw.cur = next.id; CW_LAST = null;
+  return true;
+}
+// (cw1/7) Colorway A, B … Z, then Colorway 27 …: the first free name
+function cwNewName(cw) {
+  const have = new Set(cw.list.map(c => c.name));
+  for (let i = 0; i < 26; i++) { const n = "Colorway " + String.fromCharCode(65 + i); if (!have.has(n)) return n; }
+  for (let i = 27; ; i++) if (!have.has("Colorway " + i)) return "Colorway " + i;
+}
+// (spec 3.1) + : a copy of the current colorway, made current; every item of the library its own from now on. One step. Returns its id
+function cwAdd() {
+  push("Add Colorway");
+  if (!S.colorways) S.colorways = { cur: 1, list: [{ id: 1, name: "Colorway A", mat: {} }], own: [] };
+  const cw = S.colorways, L = libOf(), own = new Set(cw.own);
+  for (const kind of CW_KINDS) for (const it of L[kind] || []) own.add(cwKey(kind, it));
+  cw.own = [...own].sort();
+  const cur = cwCur() || cw.list.find(c => c.id === cw.cur);
+  for (const c of cw.list) for (const key of cw.own) if (c !== cur && !c.mat[key]) c.mat[key] = matRows(key.split(":")[0], cwItem(key));
+  for (const key of cw.own) cur.mat[key] = matRows(key.split(":")[0], cwItem(key));
+  const id = Math.max(...cw.list.map(c => c.id)) + 1;
+  cw.list.push({ id, name: cwNewName(cw), mat: {} }); cw.cur = id;
+  commit();
+  cwedRender();
+  return id;
+}
+// (spec 2.5, cw1/6) the current colorway: one undo step "Switch Colorway"
+function cwSwitch(id) {
+  if (!cwOn() || id === S.colorways.cur || !cwById(id)) return false;
+  push("Switch Colorway");
+  cwSwap(id);
+  commit(); cwedRender();
+  return true;
+}
+function cwRename(id, name) {
+  const c = cwById(id), n = String(name || "").trim().slice(0, 60);
+  if (!c || !n || n === c.name) return false;
+  push("Rename Colorway"); c.name = n; commit(); cwedRender();
+  return true;
+}
+// (spec 2.7) Delete: never the last; the current one gives way to its neighbour first; one colorway left, the field goes
+function cwDelete(id) {
+  const cw = S.colorways, c = cwById(id);
+  if (!c) return false;
+  push("Delete Colorway");
+  if (cw.cur === id) { const i = cw.list.indexOf(c); cwSwap((cw.list[i + 1] || cw.list[i - 1]).id); }
+  cw.list = cw.list.filter(x => x !== c);
+  if (cw.list.length < 2) S.colorways = null;
+  commit(); cwedRender();
+  return true;
+}
+// the items a colorway shows in its rows: those the garment uses (a pattern's fabric, a placed button's type, a topstitch's preset)
+function cwUsed() {
+  const L = libOf(), fab = new Set(S.pieces.map(p => (fabricOf(p) || {}).id)), btn = new Set((S.buttons || []).filter(b => b.kind !== "hole").map(b => b.lib)), hole = new Set((S.buttons || []).filter(b => b.kind === "hole").map(b => b.lib));
+  const ts = new Set((S.stitches || []).map(s => s.preset));
+  return { fabric: L.fabric.filter(f => fab.has(f.id)), button: L.button.filter(b => btn.has(b.id)), buttonhole: L.buttonhole.filter(b => hole.has(b.id)), topstitch: L.topstitch.filter(t => ts.has(t.name)) };
+}
+// a colorway's colours, each once (the COLOR row): the fabrics' fronts and backs, the trims', the threads'
+function cwColors(c, used) {
+  const out = [];
+  for (const kind of CW_KINDS) for (const it of used[kind]) { const r = cwRowsOf(c, kind, it); for (const v of [r.color, kind === "fabric" ? r.back : null]) if (v && !out.includes(v)) out.push(v); }
+  return out;
+}
+/* (spec 2.1-2.7) THE COLORWAY EDITOR (Production ▸ Colorway, O): in the 2D window's place with a tab at the foot, as the Avatar Editor
+   and Render are. One column per colorway: its name (the current one framed, its name bold and marked "current": not colour alone), a
+   picture of the 3D view made by Update, then COLOR, FABRIC, BUTTON, BUTTONHOLE, TOPSTITCH, a swatch per item the garment uses. A click on
+   a column makes it current; a double-click on its name renames it; a right-click: Rename…, Delete. A swatch clicked makes its colorway
+   current and selects the item in the Object Browser, so the Property Editor edits it in that colorway (guess cw1/14). CWED: session. */
+var CWED = { open: false, front: false, pics: new Map() };
+function colorwayEditor(open) {
+  hideMenu(); closeFlyouts();
+  if (open === false) { CWED.open = false; CWED.front = false; stageFront(RWIN.open ? "rw" : S.aved ? "ed" : "2d"); return; }
+  CWED.open = true;
+  if (S.ui.layout === "3d") setLayout("both");
+  stageFront("cw");
+}
+function cwedRender() {
+  const stage = document.getElementById("stage");
+  let el = document.getElementById("cwed");
+  if (!CWED.open) { if (el && el.remove) el.remove(); return; }
+  if (!el) { el = document.createElement("div"); el.id = "cwed"; if (stage && stage.appendChild) stage.appendChild(el); }
+  el.style.display = CWED.front ? "flex" : "none";
+  if (!CWED.front) return;
+  const cw = S.colorways, list = cwOn() ? cw.list : [{ id: 0, name: "Colorway A", mat: {} }], cur = cwOn() ? cw.cur : 0, used = cwUsed();
+  for (const id of [...CWED.pics.keys()]) if (!list.some(c => c.id === id)) CWED.pics.delete(id);
+  const sw = (c, kind, it) => { const r = cwRowsOf(c.id ? c : null, kind, it), lk = cwOn() && !cw.own.includes(cwKey(kind, it)); return '<button type="button" class="cw-sw' + (lk ? ' lk' : '') + '" data-cw="' + c.id + '" data-k="' + kind + ':' + it.id + '" title="' + esc(it.name) + (kind === "fabric" ? " (front, back)" : "") + (lk ? ": one look in every colorway (right-click: Unlink All Colorways)" : cwOn() ? ": this colorway’s own" : "") + '"><span style="background:' + r.color + '"></span>' + (kind === "fabric" ? '<span style="background:' + r.back + '"></span>' : '') + (lk ? '<i aria-hidden="true">∞</i>' : '') + '</button>'; };
+  const head = '<th></th>' + list.map(c => '<th class="cw-h' + (c.id === cur ? ' cur' : '') + '" data-cw="' + c.id + '"' + (c.id === cur ? ' aria-current="true"' : '') + '><span class="cw-n">' + esc(c.name) + '</span>' + (c.id === cur ? '<span class="cw-cur">current</span>' : '') + '</th>').join("");
+  const pics = '<tr><th></th>' + list.map(c => '<td class="cw-p' + (c.id === cur ? ' cur' : '') + '" data-cw="' + c.id + '">' + (CWED.pics.has(c.id) ? '<img alt="' + esc(c.name) + '" src="' + CWED.pics.get(c.id) + '">' : '') + '</td>').join("") + '</tr>';
+  const rows = [['COLOR', (c) => cwColors(c.id ? c : null, used).slice(0, 16).map(v => '<span class="cw-dot" title="' + v + '" style="background:' + v + '"></span>').join("")],
+    ...CW_KINDS.filter(k => used[k].length).map(k => [CW_LABEL[k], (c) => used[k].map(it => sw(c, k, it)).join("")])];
+  // (Round CW-1 / C) View Mode: the names and pictures only; the pictures' size (CWED.size, 100 to 300 px wide); an item linked in every
+  // colorway shows its swatch with a chain mark (·, as words in its title), not colour alone
+  const view = CWED.view === "view", pw = CWED.size || 150;
+  el.innerHTML = '<div class="rv-tab"><span>Colorway Editor</span><button id="cw-x" title="Close the Colorway Editor">×</button></div>' +
+    '<div class="rv-top"><button class="btn" id="cw-up" title="Draw each colorway’s picture again from the 3D window as it is">Update</button><button class="btn" id="cw-save" title="Every colorway’s picture side by side with its name, as one PNG">Save Image</button>' +
+    '<span class="rv-note">' + (cwOn() ? "A click on a column makes it current. Colors, textures and finishes are each colorway’s own; the patterns, sewing and simulation are shared." : "One colorway: the garment as it is. + adds a copy to change its colors.") + '</span>' +
+    '<button class="btn" id="cw-add" title="Add a colorway: a copy of the current one">+ Add</button><button class="btn" id="cw-addc" title="Add as Custom Settings: choose which items are the new colorway’s own (Materials) and which stay one look for all (Link)">+ with Settings…</button></div>' +
+    '<div class="cw-body" style="--cwpw:' + pw + 'px"><table class="cw-t' + (view ? ' view' : '') + '"><thead><tr>' + head + '</tr></thead><tbody>' + pics +
+    (view ? '' : rows.map(([lab, f]) => '<tr><th class="cw-l">' + lab + '</th>' + list.map(c => '<td class="' + (c.id === cur ? 'cur' : '') + '" data-cw="' + c.id + '">' + f(c) + '</td>').join("") + '</tr>').join("")) +
+    '</tbody></table>' + (used.fabric.length ? '' : '<div class="hint">No patterns yet: a colorway shows the fabrics, buttons and topstitches the garment uses.</div>') + '</div>' +
+    '<div class="cw-foot"><label>Size <input type="range" id="cw-size" min="100" max="300" step="10" value="' + pw + '"></label><span class="cw-modes" role="group" aria-label="View Mode"><button type="button" data-cwmode="edit"' + (view ? '' : ' class="on" aria-pressed="true"') + '>Edit</button><button type="button" data-cwmode="view"' + (view ? ' class="on" aria-pressed="true"' : '') + '>View</button></span></div>';
+  const $ = (s) => (el.querySelector ? el.querySelector(s) : null), all = (s) => (el.querySelectorAll ? el.querySelectorAll(s) : []);
+  if ($("#cw-x")) $("#cw-x").onclick = () => colorwayEditor(false);
+  if ($("#cw-add")) $("#cw-add").onclick = () => cwAdd();
+  if ($("#cw-addc")) $("#cw-addc").onclick = () => cwCustomAdd();
+  if ($("#cw-up")) $("#cw-up").onclick = () => cwPictures();
+  if ($("#cw-save")) $("#cw-save").onclick = () => cwSaveImage();
+  if ($("#cw-size")) $("#cw-size").oninput = (e) => { CWED.size = +e.target.value; const b = $(".cw-body"); if (b && b.style && b.style.setProperty) b.style.setProperty("--cwpw", CWED.size + "px"); };
+  for (const b of all("[data-cwmode]")) b.onclick = () => { CWED.view = b.dataset.cwmode; cwedRender(); };
+  for (const h of all("[data-cw]")) {
+    const id = +h.dataset.cw;
+    if (h.classList && h.classList.contains("cw-sw")) h.onclick = (e) => { if (e && e.stopPropagation) e.stopPropagation(); cwSwatch(id, h.dataset.k); };
+    else h.onclick = () => { if (id) cwSwitch(id); };
+    if (h.classList && h.classList.contains("cw-sw")) h.oncontextmenu = (e) => { e.preventDefault(); if (e.stopPropagation) e.stopPropagation(); cwSwatchMenu(id, h.dataset.k, e.clientX, e.clientY); };
+    else h.oncontextmenu = (e) => { e.preventDefault(); if (id) cwMenu(id, e.clientX, e.clientY); };
+    if (h.classList && h.classList.contains("cw-h")) h.ondblclick = () => { if (id) cwRenameAsk(id); };
+  }
+}
+function cwRenameAsk(id) { const c = cwById(id); if (c) askText("Rename Colorway", c.name, (v) => cwRename(id, v)); }
+function cwMenu(id, x, y) {
+  const c = cwById(id);
+  if (!c) return;
+  listMenu([{ hd: c.name }, { n: "Make Current", off: S.colorways.cur === id, f: () => cwSwitch(id) }, { n: "Rename…", f: () => cwRenameAsk(id) }, { sep: 1 }, { n: "Delete", f: () => cwDelete(id) }], x, y);
+}
+// a swatch: its colorway made current, the item selected in its tab of the Object Browser (its Property Editor)
+function cwSwatch(id, key) {
+  const [kind, iid] = String(key).split(":");
+  if (id && cwOn() && id !== S.colorways.cur) cwSwitch(id);
+  const o = obState(); o.tab = kind; o.sel = +iid;
+  if (typeof renderOB === "function") renderOB();
+  ui();
+}
+/* Update: each colorway's picture from the 3D window as it is (its camera), the looks laid on for the picture and put back exactly (each
+   item's object and key order kept, no step, nothing marked unsaved). Only with the 3D window up; a 150 × 225 picture each. */
+// (k: the pictures k times 150 × 225; raw: the canvases handed back, [{ id, cv }], for Save Image)
+function cwPictures(k, raw) {
+  if (typeof view3d === "undefined" || !view3d.ready || !view3d.ready()) return toast("The pictures are drawn from the 3D window: show it first (3D | 2D)", 5000), raw ? [] : 0;
+  const sc = Math.max(1, Math.min(4, Math.round(k) || 1)), out = [];
+  let n = 0;
+  cwEachLooks(null, (c) => {
+    const cv = view3d.shot(150*sc, 225*sc, null, null, false);
+    if (cv && cv.toDataURL) { if (raw) out.push({ id: c.id, cv }); else CWED.pics.set(c.id, cv.toDataURL("image/png")); n++; }
+  });
+  if (raw) return out;
+  cwedRender();
+  return n;
+}
+/* (Round CW-1 / D) each colorway's looks laid on in turn for a picture (ids: the colorways, null all; without colorways the document once,
+   as { id: 0 }), fn(c) drawing it; then everything put back exactly: each item's own object and its keys' order, S.colorways as it was,
+   no step, nothing marked unsaved. The cloth's and the buttons' looks follow each time (garmentSync(), showButtons3()). */
+function cwEachLooks(ids, fn) {
+  const list = cwOn() ? S.colorways.list.filter(c => !ids || ids.includes(c.id)) : [{ id: 0, name: "Colorway A" }];
+  const keep = cwOn() ? S.colorways.own.map(k => [cwItem(k), JSON.stringify(cwItem(k))]).filter(x => x[0]) : [], was = cwOn() ? JSON.stringify(S.colorways) : null;
+  const back = () => { for (const [it, t] of keep) { const o = JSON.parse(t); for (const k of Object.keys(it)) delete it[k]; Object.assign(it, o); } };
+  const looks3 = () => { if (typeof view3d !== "undefined" && view3d.ready && view3d.ready()) { garmentSync(); if (typeof showButtons3 === "function") showButtons3(); } };
+  try {
+    for (const c of list) {
+      if (c.id && c.id !== S.colorways.cur) for (const [it] of keep) { const kind = cwKeyKind(it); if (kind) matPut(kind, it, c.mat[cwKey(kind, it)] || matRows(kind, it)); }
+      looks3();
+      fn(c);
+      back();
+    }
+  } finally { back(); if (was) S.colorways = JSON.parse(was); looks3(); }
+  return list.length;
+}
+/* (Round CW-1 / D, spec 4.2-4.5) the Colorway row of the Render workspace's Image/Video pane, Print Layout's Nesting and File ▸ Information:
+   each lists the colorways and the chosen one becomes current (one step "Switch Colorway"), since each of them shows what the document
+   shows (guess cw1/16: Render's "All", a series of colorways, is left out: a path-traced render takes seconds, and the looks would have to
+   stay laid on through it). Only with two or more colorways. attr: the select's data attribute its pane listens to. */
+function cwRow(attr, label, cls) {
+  if (!cwOn()) return "";
+  return '<div class="' + (cls || "df") + '"><label>' + (label || "Colorway") + '</label><select data-' + attr + '="1" title="The colorway shown (made current)">' + S.colorways.list.map(c => '<option value="' + c.id + '"' + (c.id === S.colorways.cur ? ' selected' : '') + '>' + esc(c.name) + (c.id === S.colorways.cur ? " (current)" : "") + '</option>').join("") + '</select></div>';
+}
+// the kind of an own item, by finding it in the library
+function cwKeyKind(it) { for (const k of CW_KINDS) if ((libOf()[k] || []).includes(it)) return k; return null; }
+/* ---- (Round CW-1 / C) ----
+   A MATERIAL CHANGED with two or more colorways (spec 3.3, 3.4; W-US): wherever it was changed (the Property Editor, a texture, a library
+   drop), commit() sees an own item's rows differ from the last commit's (cwEdits(); undo, redo, opening and switching start afresh: CW_LAST
+   null). Settings ▸ User Settings ▸ Other ▸ Colorway (S.prefs.cwAssign): "ask" (the default: the change is the current colorway's and a held
+   message offers Apply to All Colorways, its own step), "current", "all" (the changed rows go to every colorway in the same step). Guess
+   cw1/15: the reference's box asks once with Remember my choice; here the offer stays out of the way. A linked item changes everywhere anyway. */
+var CW_LAST = null;
+function cwEdits() {
+  if (!cwOn()) { CW_LAST = null; return; }
+  const now = {};
+  for (const key of S.colorways.own) { const it = cwItem(key); if (it) now[key] = JSON.stringify(matRows(key.split(":")[0], it)); }
+  const was = CW_LAST;
+  CW_LAST = now;
+  if (!was) return;
+  const changed = Object.keys(now).filter(k => was[k] !== undefined && was[k] !== now[k]);
+  if (!changed.length) return;
+  const mode = (S.prefs && S.prefs.cwAssign) || "ask";
+  if (mode === "all") { for (const k of changed) cwRowsToAll(k, JSON.parse(was[k])); CW_LAST = null; return; }
+  if (mode === "ask" && typeof holdToast === "function") holdToast("Changed in " + cwCur().name + " only.", { label: "Apply to All Colorways", f: () => cwApplyAll(changed) });
+}
+// the rows of an item that changed since `old` go to every other colorway (no step: inside the change's own)
+function cwRowsToAll(key, old) {
+  const it = cwItem(key), kind = key.split(":")[0];
+  if (!it) return;
+  const now = matRows(kind, it);
+  for (const c of S.colorways.list) {
+    if (c.id === S.colorways.cur) continue;
+    const r = { ...(c.mat[key] || now) };
+    for (const k of CW_ROWS[kind]) if (JSON.stringify(now[k]) !== JSON.stringify(old[k])) { if (now[k] === undefined) delete r[k]; else r[k] = clone(now[k]); }
+    c.mat[key] = r;
+  }
+}
+// Apply to All Colorways (the held message's button): the items' rows as they are now in every colorway, one step
+function cwApplyAll(keys) {
+  if (!cwOn()) return;
+  push("Apply to All Colorways");
+  for (const key of keys) { const it = cwItem(key); if (!it) continue; for (const c of S.colorways.list) if (c.id !== S.colorways.cur) c.mat[key] = matRows(key.split(":")[0], it); }
+  CW_LAST = null; commit(); cwedRender();
+}
+// (spec 2.7) Unlink All Colorways: the item each colorway's own (a copy of its rows now in each); Link All Colorways: one look for all, as now
+function cwUnlink(key) {
+  const cw = S.colorways;
+  if (!cwOn() || !cwItem(key) || cw.own.includes(key)) return false;
+  push("Unlink All Colorways");
+  cw.own = [...cw.own, key].sort();
+  for (const c of cw.list) if (c.id !== cw.cur) c.mat[key] = matRows(key.split(":")[0], cwItem(key));
+  CW_LAST = null; commit(); cwedRender();
+  return true;
+}
+function cwLink(key) {
+  const cw = S.colorways;
+  if (!cwOn() || !cw.own.includes(key)) return false;
+  push("Link All Colorways");
+  cw.own = cw.own.filter(k => k !== key);
+  for (const c of cw.list) delete c.mat[key];
+  CW_LAST = null; commit(); cwedRender();
+  return true;
+}
+// (spec 2.7) Select All with Same Color: the patterns whose fabric has, in that colorway, the colour the item has there
+function cwSameColor(cid, key) {
+  const c = cwById(cid) || cwCur(), it = cwItem(key), kind = key.split(":")[0];
+  if (!it) return 0;
+  const col = cwRowsOf(c, kind, it).color, L = libOf();
+  const fabs = new Set(L.fabric.filter(f => cwRowsOf(c, "fabric", f).color === col).map(f => f.id));
+  S.sel = S.pieces.filter(p => fabs.has((fabricOf(p) || {}).id)).map(p => p.id);
+  ui(); drawSoon();
+  toast(S.sel.length ? S.sel.length + (S.sel.length === 1 ? " pattern" : " patterns") + " of " + col + " in " + (c ? c.name : "this colorway") : "No pattern has that color in " + (c ? c.name : "this colorway"));
+  return S.sel.length;
+}
+function cwSwatchMenu(cid, key, x, y) {
+  const it = cwItem(key), own = cwOn() && S.colorways.own.includes(key);
+  if (!it) return;
+  listMenu([{ hd: it.name }, own ? { n: "Link All Colorways", f: () => cwLink(key) } : { n: "Unlink All Colorways", off: !cwOn(), note: cwOn() ? undefined : "add a colorway first", f: () => cwUnlink(key) },
+    { n: "Select All with Same Color", f: () => cwSameColor(cid, key) }], x, y);
+}
+/* (spec 3.2) Add as Custom Settings: the library's items, each Materials (its own rows, a copy of the current colorway's) or Link (one look
+   for every colorway); All Properties left out (the maintainer's Q5: looks only for 1.0). One step, the new colorway current. */
+function cwCustomAdd() {
+  const L = libOf(), items = CW_KINDS.flatMap(kind => (L[kind] || []).map(it => ({ kind, it, key: cwKey(kind, it) })));
+  if (!items.length) return;
+  const own = new Set(cwOn() ? S.colorways.own : items.map(x => x.key));
+  numDialog("Add as Custom Settings", items.map((x, i) => ({ k: "i" + i, label: CW_LABEL[x.kind] + ": " + esc(x.it.name), options: [["m", "Materials"], ["l", "Link"]], val: own.has(x.key) ? "m" : "l" })),
+    { x: window.innerWidth/2 - 170, y: 100 }, (v) => cwAddCustom(items.filter((x, i) => v["i" + i] === "m").map(x => x.key)),
+    { hint: "Materials: the item's color, texture and finish are the new colorway's own (a copy of the current ones). Link: one look for every colorway. The patterns, sewing and simulation are the same in all." });
+}
+function cwAddCustom(ownKeys) {
+  const id = cwAdd(), cw = S.colorways, keep = new Set(ownKeys);
+  // cwAdd made every item its own: the ones chosen Link are one look again (the step cwAdd took holds both)
+  cw.own = cw.own.filter(k => keep.has(k));
+  for (const c of cw.list) for (const k of Object.keys(c.mat)) if (!keep.has(k)) delete c.mat[k];
+  CW_LAST = null; commit(); cwedRender();
+  return id;
+}
+/* (spec 2.4) the editor's foot: View Mode (pictures only) and the pictures' size; (spec 2.2) Save Image: the colorways side by side with
+   their names as one PNG, at 1× to 4× (each picture drawn afresh at that size from the 3D window). */
+function cwSaveImage() {
+  if (typeof view3d === "undefined" || !view3d.ready || !view3d.ready()) return toast("The pictures are drawn from the 3D window: show it first (3D | 2D)", 5000);
+  numDialog("Save Image", [{ k: "k", label: "Size", options: [[1, "1× (150 × 225 a colorway)"], [2, "2×"], [3, "3×"], [4, "4×"]], val: 2 }], { x: window.innerWidth/2 - 150, y: 140 },
+    (v) => { const cv = cwSheet(+v.k || 1); if (cv) cv.toBlob((b) => b && b.arrayBuffer().then((ab) => dl("colorways.png", new Uint8Array(ab), "image/png", (f) => toast("Saved " + f)))); });
+}
+// the sheet: every colorway's picture at k times, its name under it (null without the 3D window)
+function cwSheet(k) {
+  const W = 150*k, H = 225*k, pad = 12*k, nameH = 22*k, list = cwOn() ? S.colorways.list : [{ id: 0, name: "Colorway A" }];
+  const shots = cwPictures(k, true);
+  if (!shots || !shots.length) return null;
+  const cv = document.createElement("canvas"); cv.width = pad + list.length*(W + pad); cv.height = pad*2 + H + nameH;
+  const g = cv.getContext("2d");
+  g.fillStyle = "#ffffff"; g.fillRect(0, 0, cv.width, cv.height);
+  list.forEach((c, i) => { const s = shots.find(x => x.id === c.id); const x = pad + i*(W + pad); if (s && s.cv) g.drawImage(s.cv, x, pad, W, H);
+    g.fillStyle = "#1c1c1e"; g.font = (c.id === (cwOn() ? S.colorways.cur : 0) ? "bold " : "") + Math.round(12*k) + "px Segoe UI, Arial, sans-serif"; g.fillText(c.name, x, pad + H + 16*k); });
+  return cv;
 }
 /* ---- Settings ▸ Display (Round D / D7) ----
    Every list of the recording's Display menu (W31), with its rows, ticks and keys. A row ours has switches the same thing as
@@ -25939,11 +29714,11 @@ function menuDisplay() {
       { n: "Custom View", menu: customViewRows }, { sep: 1 }, { n: "1:1 View", f: view1to1 }, { n: "Focus Zoom", k: keyOf("zoomSel"), f: focusZoom }, { n: "Zoom Extents All", f: fitAll }]),
     subRow("3D Garment", () => [show3Row("garment", "Show Garment"), show3Opt("arch3", "Show Archived Pattern"), show3Row("pins3", "Show Pins"), show3Opt("names3", "Show Pattern Name"), show3Row("sewing3", "Show Seamlines"),
       show3Row("internal3", "Show Internal Lines"), show3Row("baseline3", "Show Baselines"), show3Row("gfx3", "Show Graphics"), nbRow("Show 3D Pen (Garment)"), show3Row("threads3", "Show Threads"), show3Row("gmeas3", "Show Garment Measurements"),
-      nbRow("Show 2D Measurements"), nbRow("Show Garment Fitting Suit"), { hd: "Ours" }, show3Row("unsewn", "Show Unsewn Edges")]),
-    subRow("3D Trims", () => [show3Row("buttons", "Show Button"), show3Row("piping", "Show All Pipings"), nbRow("Show Bond/Skive"), nbRow("Show Puckering"), nbRow("Show All Trims"), nbRow("Show All Trim Status Color"),
+      show3Opt("meas3", "Show 2D Measurements") /* (POST8 FIX-7 / B: a measurement on one pattern drawn on its cloth; off at first) */, nbRow("Show Garment Fitting Suit"), { hd: "Ours" }, show3Row("unsewn", "Show Unsewn Edges")]),
+    subRow("3D Trims", () => [show3Row("buttons", "Show Button"), show3Row("piping", "Show All Pipings"), show3Row("bond", "Show Bond/Skive"), show3Row("pucker3", "Show Puckering") /* (POST8 FIX-7 / B) */, nbRow("Show All Trims"), nbRow("Show All Trim Status Color"),
       { hd: "Ours" }, show3Row("zippers", "Show Zippers"), show3Row("topstitch3", "Show Topstitch")]),
     subRow("2D Pattern", () => [viewRow("baseline", "Show Baseline"), viewRow("sa", "Show Seam Allowance"), viewRow("grading", "Show Grading"), nbRow("Show 3D Pen"), viewRow("reference", "Show Reference Line"),
-      viewRow("symmetric", "Show Symmetric/Instance Lines"), viewRow("links", "Show Link Lines"), nbRow("Show Simulation Shrinkage"), viewRow("pins", "Show Pins"), { n: "Zoom Extents All", f: fitAll },
+      viewRow("symmetric", "Show Symmetric/Instance Lines"), viewRow("links", "Show Link Lines"), viewRow("shrink3", "Show Simulation Shrinkage") /* (POST8 FIX-7 / B) */, viewRow("pins", "Show Pins"), { n: "Zoom Extents All", f: fitAll },
       { hd: "Ours" }, viewRow("lockAll", "Lock All Pattern Outlines"), { n: "Avatar Outline", menu: avOutRows }]),
     subRow("2D Information", () => [["name", "Show Pattern Name"], ["annotations", "Show Annotations"], ["length", "Show Line Length"], ["angle", "Show Angle"], ["grainline", "Show Grainline"],
       ["measurements", "Show 2D Measurements"], ["ruler", "Show Ruler"], ["guides", "Show Guideline"]].map(([k, n]) => viewRow(k, n))),
@@ -25952,17 +29727,17 @@ function menuDisplay() {
       { n: "Show Sewing (All)", off: !S.seams.some(x => x.hide), note: S.seams.some(x => x.hide) ? "" : "none hidden", f: showAllSewing }, { sep: 1 }, viewRow("topstitch", "Show Topstitches"), viewRow("puckering", "Show Puckerings")]),
     subRow("Avatar", () => noHd(avatarItems()).map(x => ({ ...x, keep: undefined }))),
     subRow("Environment", () => [show3Row("ground3", "Show Ground Grid"), { n: "Show 2D Grid", on: S.prefs.gridShow !== false, f: () => setPrefs({ gridShow: S.prefs.gridShow === false }) }, show3Opt("shadow3", "Show 3D Shadow"), nbRow("Show Grid"), show3Opt("lights3", "Show Light (3D)"), show3Opt("lightsR", "Show Light (Render)"), nbRow("Show Wind Controller"),
-      nbRow("Show Camera"), show3Opt("fps3", "Show Frame Rate"), show3Opt("size3", "Show 3D Garment Window Size"), { n: "Show Auto Save Time", on: !!S.ui.autoTime, f: () => { S.ui.autoTime = !S.ui.autoTime; saveUI(); saveState(S.dirty ? "ok" : "clean"); } }, viewRow("ruler", "Show Ruler"), viewRow("guides", "Show Guideline")]),
+      show3Opt("cam3", "Show Camera") /* (POST8 FIX-7 / B: the custom views' cameras) */, show3Opt("fps3", "Show Frame Rate"), show3Opt("size3", "Show 3D Garment Window Size"), { n: "Show Auto Save Time", on: !!S.ui.autoTime, f: () => { S.ui.autoTime = !S.ui.autoTime; saveUI(); saveState(S.dirty ? "ok" : "clean"); } }, viewRow("ruler", "Show Ruler"), viewRow("guides", "Show Guideline")]),
     subRow("Avatar Rendering Style", () => [{ n: "Textured Surface", on: !["grey", "translucent"].includes((S.avSet || {}).display), f: () => setAvatar({ display: "textured" }) }, { n: "Monochrome Surface", on: (S.avSet || {}).display === "grey", f: () => setAvatar({ display: "grey" }) }, { n: "Translucent Surface", on: (S.avSet || {}).display === "translucent", f: () => setAvatar({ display: "translucent" }) }]),
     subRow("3D Garment Rendering Style", () => render3Items().filter(x => x && !x.hd && !/Wireframe/.test(x.n)).map(x => ({ ...x, keep: undefined }))),
     subRow("2D Pattern Rendering Style", () => noHd(selectorItems("render")).map(x => ({ ...x, keep: undefined }))),
     subRow("Fit Maps", () => [{ n: "Stress Map", k: keyOf("stress3"), on: !!S.ui.stress3, f: () => setMap3("stress3", !S.ui.stress3) }, { n: "Strain Map", k: keyOf("strain3"), on: !!S.ui.strain3, f: () => setStrainMap(!S.ui.strain3) }, { n: "Fit Map", k: keyOf("fit3"), on: !!S.ui.fit3, f: () => setFitMap(!S.ui.fit3) }, { n: "Pressure Map", on: !!S.ui.press3, f: () => setMap3("press3", !S.ui.press3) }]),
-    { n: "Isolate Selection", k: keyOf("isolate3"), on: !!G3.isolate, f: isolate3 }, { sep: 1 }, { n: "Format 3D Background\u2026", f: () => bg3Dialog() }, nbRow("Add Background Image"), { sep: 1 },
-    subRow("Customize Tools", () => [nbRow("Group Tools"), nbRow("Rearrange Tools"), nbRow("Reset to Default")]), { sep: 1 },
+    { n: "Isolate Selection", k: keyOf("isolate3"), on: !!G3.isolate, f: isolate3 }, { sep: 1 }, { n: "Format 3D Background\u2026", f: () => bg3Dialog() }, { n: "Add Background Image\u2026", note: G3.bgImg ? G3.bgImg.name : "", f: bg3ImageAdd } /* (POST8 FIX-7 / B) */, { sep: 1 },
+    subRow("Customize Tools", () => customizeToolRows("2D")), { sep: 1 },      // (POST8 FIX-7 / A, roadmap 1.T30)
     subRow("Window", () => [
       { n: "3D Window", on: S.ui.layout !== "2d", f: () => setLayout(S.ui.layout === "2d" ? "both" : S.ui.layout === "both" ? "2d" : "both") },
       { n: "2D Pattern Window", on: S.ui.layout !== "3d", f: () => setLayout(S.ui.layout === "3d" ? "both" : S.ui.layout === "both" ? "3d" : "both") },
-      nbRow("UV Editor"), { n: "Render", f: () => renderDialog() } /* (Round r20 / 11: the Render box of Round r19) */, nbRow("Grading Review (3D)"), nbRow("Colorway Editor"),
+      { n: "UV Editor", on: !!UVED.open, f: () => uvEditor(!UVED.open) } /* (Round UV-1 / B) */, { n: "Render", f: () => renderDialog() } /* (Round r20 / 11: the Render box of Round r19) */, nbRow("Grading Review (3D)"), { n: "Colorway Editor", on: !!CWED.open, f: () => colorwayEditor(!CWED.open) },
       { n: "BOM Editor", on: !!panes()[1], f: () => panes()[1] ? bomView(true) : bomView() }, nbRow("Pattern Drafter"),
       { n: "Library", k: keyOf("library"), f: () => libraryDialog() }, nbRow("Modular Library"),
       { n: "Object Browser", on: !S.ui.obFold, f: () => setPanels({ obFold: !S.ui.obFold }) },      /* (Round FIX-4b / A, beta.8 gate G5: shown or folded, as its ▾ does) */
@@ -25990,12 +29765,12 @@ function menuPreferences() {
     { n: "Keep Cloth at Branch Points", on: !!S.prefs.keepBranchCloth, f: () => { setPrefs({ keepBranchCloth: !S.prefs.keepBranchCloth }); toast(S.prefs.keepBranchCloth ? "Save keeps the cloth of every branch point of the history (larger files); Save States always keep theirs" : "Save keeps the cloth of the history's Save States only; a branch point asks for a Re-drape when you go to it"); } },
     { n: "Open Files with Their Display Settings", on: !!S.prefs.openDisplay, f: () => { setPrefs({ openDisplay: !S.prefs.openDisplay }); toast(S.prefs.openDisplay ? "A file opened from now on shows itself as it was saved (but Show Sewing)" : "Files open with this computer's display settings"); } }, { sep: 1 },
     subRow("Camera Properties", cameraPropRows),
-    { n: "Simulation Properties\u2026", f: () => simSettingsDialog() }, { sep: 1 },
-    nbRow("Fit Properties")];
+    // (POST8 FIX-6 / B, guess post8/21) Fit Properties dropped: what its box holds was never seen; the fit map's levels are its legend's
+    { n: "Simulation Properties\u2026", f: () => simSettingsDialog() }];
 }
 /* ---- the Production menu (W51): Colorway (key O) is after the release, Grading Review (3D) is too (BUILD-PLAN) ---- */
 function menuProduction() {
-  return [nbRow("Colorway", "O"), { n: "BOM", f: () => bomView() }, { sep: 1 }, nbRow("Grading Review (3D)"), { n: "Grading Review (2D) (Beta)", f: () => gradingReview() }];
+  return [{ n: "Colorway", k: keyOf("colorway"), f: () => colorwayEditor(true) }, { n: "BOM", f: () => bomView() }, { sep: 1 }, nbRow("Grading Review (3D)"), { n: "Grading Review (2D) (Beta)", f: () => gradingReview() }];
 }
 /* ---- the File menu (Round D / D3) ----
    In the recording's shape (W40), without the rows of the online service (D3). What ours does is a working row with its key
@@ -26007,24 +29782,27 @@ function menuFile() {
   const nbs = (...ns) => ns.map(n => n === "---" ? { sep: 1 } : nbRow(n));
   return [
     { n: "New Project", k: keyOf("new"), f: () => newDoc() }, nbRow("New Garment"), { n: "New from Starter Pattern", f: () => starterDoc() },
-    subRow("Open", () => [{ n: "Project", k: keyOf("open"), f: openDoc }, { sep: 1 }, ...nbs("Garment", "Pattern", "Trim"),
-      { n: "Avatar", k: keyOf("loadAvatar"), f: () => loadAvatar() }, nbRow("Accessory"), { n: "Pose", k: keyOf("loadPose"), f: () => loadPoseFile() },
-      ...nbs("Hand Pose", "Joint Motion", "Camera Motion", "Scene and Props", "Render Properties", "---", "Camera Projection", "Camera Transformation", "---", "Tool Set", "User Setting")]),
-    subRow("Add", () => [{ n: "Project", k: keyOf("addProject"), f: () => addProject() }, { sep: 1 }, ...nbs("Garment", "Pattern", "Avatar", "Scene and Props")]),
+    subRow("Open", () => [{ n: "Project", k: keyOf("open"), f: openDoc }, { sep: 1 }, { n: "Garment…", f: () => garmentOpen("open", false) }, { n: "Pattern…", f: () => garmentOpen("open", true) } /* (run 14d, FMT-1 / B) */, nbRow("Trim"),
+      { n: "Avatar", k: keyOf("loadAvatar"), f: () => loadAvatar() }, { n: "Accessory", f: registerAccessory } /* (POST8 FIX-8 / C2) */, { n: "Pose", k: keyOf("loadPose"), f: () => loadPoseFile() },
+      { n: "Hand Pose…", f: () => setFileOpen("hand") } /* (run 14d, FMT-1 / C) */, ...nbs("Joint Motion", "Camera Motion", "Scene and Props"), { n: "Render Properties…", f: () => setFileOpen("render") }, { sep: 1 },
+      { n: "Camera Projection…", f: () => setFileOpen("camP") }, { n: "Camera Transformation…", f: () => setFileOpen("camT") }, { sep: 1 }, { n: "Tool Set…", f: toolSetOpenFile } /* (POST8 FIX-7 / C: Customize Tools' file) */, { n: "User Setting…", f: () => setFileOpen("user") }]),
+    subRow("Add", () => [{ n: "Project", k: keyOf("addProject"), f: () => addProject() }, { sep: 1 }, { n: "Garment…", f: () => garmentOpen("add", false) }, { n: "Pattern…", f: () => garmentOpen("add", true) } /* (run 14d, FMT-1 / B) */, { n: "Avatar…", f: avatarAddFile } /* (run 15) */, nbRow("Scene and Props")]),
     { n: "Save Project", k: keyOf("save"), f: () => saveDoc(false) },
-    subRow("Save As", () => [{ n: "Project", k: keyOf("saveAs"), f: () => saveDoc(true) }, nbRow("Project (with Other Files)"), { sep: 1 }, ...nbs("Garment", "Garment (Selected)", "---", "Pattern", "Trim", "Avatar", "Accessory", "Pose",
-      "Hand Pose", "Joint Motion", "Camera Motion", "Scene and Props", "Render Properties", "---", "Camera Projection", "Camera Transformation", "---", "Surface Textures", "---", "Tool Set", "User Setting")]),
+    subRow("Save As", () => [{ n: "Project", k: keyOf("saveAs"), f: () => saveDoc(true) }, { n: "Project (with Other Files)…", f: projectBundleSave } /* (run 15) */, { sep: 1 }, { n: "Garment…", f: () => garmentSave("all") }, { n: "Garment (Selected)…", f: () => garmentSave("sel"), off: !(S.sel || []).length } /* (run 14d, FMT-1 / B) */, { sep: 1 }, { n: "Pattern…", f: () => garmentSave("pattern") }, nbRow("Trim"), { n: "Avatar…", f: avatarSaveFile } /* (run 15) */, { n: "Accessory…", f: accSaveFile } /* (POST8 FIX-8 / C2) */, { n: "Pose…", f: () => poseSaveFile() } /* (POST8 FIX-8 / C) */,
+      { n: "Hand Pose…", f: () => setFileSave("hand") } /* (run 14d, FMT-1 / C) */, ...nbs("Joint Motion", "Camera Motion", "Scene and Props"), { n: "Render Properties…", f: () => setFileSave("render") }, { sep: 1 },
+      { n: "Camera Projection…", f: () => setFileSave("camP") }, { n: "Camera Transformation…", f: () => setFileSave("camT") }, { sep: 1 }, { n: "Surface Textures…", f: surfaceTexturesSave }, { sep: 1 },
+      { n: "Tool Set…", f: toolSetSaveFile } /* (POST8 FIX-7 / C) */, { n: "User Setting…", f: () => setFileSave("user") }]),
     ...(DESK ? [{ n: "Recent Files\u2026", f: () => showRecentMenu(120, 60) }] : []), { sep: 1 },
     subRow("Import", () => [{ n: "DXF", k: keyOf("importDXF"), f: () => importDXF(false) }, nbRow("AI/PDF"), nbRow("MYU"), { sep: 1 },
-      ...nbs("OBJ", "COLLADA", "FBX", "glTF 2.0 (GLTF/GLB)", "Alembic", "USD", "DNA", "VRM"),
+      { n: "OBJ…", f: () => importMesh("obj") }, nbRow("COLLADA"), { n: "FBX…", f: () => importMesh("fbx") }, { n: "glTF 2.0 (GLTF/GLB)…", f: () => importMesh("gltf") } /* (run 14c, FMT-1 / A) */, ...nbs("Alembic", "USD", "DNA", "VRM"),
       ...(S.ui.unbuilt ? [{ hd: "Animation" }] : []), ...nbs("MC cache", "MCX cache", "Point Cache 2", "MDD Cache (Standard)", "MDD Cache (second layout)"),
       ...(S.ui.unbuilt ? [{ hd: "Script" }] : []), nbRow("Python Script File (py)"),
       { hd: "Ours" }, { n: "Import .zprj / .zpac…", f: zprjOpen }, { n: "Pattern File (.pdraft, .json)\u2026", f: openDoc }, { n: "Re-read Grainlines from Original File\u2026", f: grainRereadPick }]),
-    subRow("Import (Add)", () => [{ n: "DXF", k: keyOf("addDXF"), f: () => importDXF(true) }, nbRow("AI/PDF"), { sep: 1 }, ...nbs("OBJ", "OBJ to Garment", "FBX", "Alembic", "COLLADA", "USD", "DNA")]),
+    subRow("Import (Add)", () => [{ n: "DXF", k: keyOf("addDXF"), f: () => importDXF(true) }, nbRow("AI/PDF"), { sep: 1 }, { n: "OBJ…", f: () => importMesh("obj") }, nbRow("OBJ to Garment"), { n: "FBX…", f: () => importMesh("fbx") } /* (run 14c, FMT-1 / A) */, ...nbs("Alembic", "COLLADA", "USD", "DNA")]),
     // Export in the other program's shape and words, by format names (Round CF): the rows ours can do are live
     subRow("Export", () => [{ n: "DXF", f: () => act("dxf-out") }, { n: "PDF", f: () => S.mode === "layout" ? layoutCmd("print") : pdfExportDialog() }, { n: "Plotter (PLT)", f: () => exportPLT() }, { sep: 1 },
       nbRow("Fabric (GLTF/GLB)"), { n: "BOM (XML)", f: exportBOM }, { n: "Tech Pack (JSON)", f: exportTechPack }, { sep: 1 },
-      { n: "OBJ", f: () => exportOBJ(false) }, { n: "OBJ (Selected)", f: () => exportOBJ(true) }, ...nbs("FBX", "glTF 2.0 (GLTF)", "glTF 2.0 (GLB)", "Alembic", "Jean (JEAN)", "USD", "VRM"),
+      { n: "OBJ", f: () => exportOBJ(false) }, { n: "OBJ (Selected)", f: () => exportOBJ(true) }, { n: "FBX", f: () => exportMesh3("fbx") } /* (run 14d, FMT-1 / D) */, ...nbs("glTF 2.0 (GLTF)", "glTF 2.0 (GLB)", "Alembic", "Jean (JEAN)"), { n: "USD", f: () => exportMesh3("usd") }, nbRow("VRM"),
       ...(S.ui.unbuilt ? [{ hd: "Animation" }] : []), ...nbs("MC cache", "MCX cache", "Point Cache 2", "MDD Cache (Standard)", "MDD Cache (second layout)", "OBJ Sequence"),
       { hd: "Ours" }, { n: "SVG, true size", f: () => act("ex-svg") }, { n: "Print or PDF\u2026", f: () => S.mode === "layout" ? layoutCmd("print") : act("pr-open") }]),
     { sep: 1 },
@@ -26098,7 +29876,7 @@ function normUI(o) {
   return { layout: ["2d", "3d", "both"].includes(o.layout) ? o.layout : "both", arrPts: o.arrPts === true, timeline: o.timeline === true, ...(Number.isFinite(o.histH) && o.histH >= 120 && o.histH <= 4000 ? { histH: Math.round(o.histH) } : {}),      /* (Round H1b / 2: the History panel's height, a preference, kept only once it was dragged) */ unbuilt: o.unbuilt === true,      /* (Round FIX-4b / A, beta.8 gate G1: off unless chosen; it started on) */ render: RENDER.some(r => r[0] === o.render) ? o.render : "front", mesh2: o.mesh2 === true,
     render3: RENDER3.some(r => r[0] === o.render3) ? o.render3 : "front", wire3: o.wire3 === true, joints3: o.joints3 === true, jointSize: Number.isFinite(o.jointSize) && o.jointSize >= 2 && o.jointSize <= 30 ? Math.round(o.jointSize) : 8, jointMode: o.jointMode === "ik" ? "ik" : "fk", jointLimits: o.jointLimits !== false, ...(Number.isFinite(o.grid3b) && o.grid3b !== 1 ? { grid3b: Math.max(0.2, Math.min(2, o.grid3b)) } : {}), ...(normGrid3(o.grid3s) ? { grid3s: normGrid3(o.grid3s) } : {}), ikEdit: o.ikEdit === "full" ? "full" : "part",
     ikSym: o.ikSym !== false, avOut: ["front", "back", "side", "off"].includes(o.avOut) ? o.avOut : "front", avOutObj: o.avOutObj === true,      /* (Round UI-1e / C: the avatar's outline in 2D, a view setting) */
-    quality3: o.quality3 === true, schem3: o.schem3 === true && o.quality3 !== true, bv3: o.bv3 === true, meas3: o.meas3 !== false, suit3: o.suit3 === true, blendFav: Array.isArray(o.blendFav) ? o.blendFav.filter(x => typeof x === "string").slice(0, 200) : [], avW: o.avW === "weight" ? "weight" : "chest", avH: ["hps", "inseam"].includes(o.avH) ? o.avH : "total", avUnit: ["cm", "in"].includes(o.avUnit) ? o.avUnit : "mm", avLinkW: o.avLinkW !== false, avLinkH: o.avLinkH !== false, show3d, strain3: o.strain3 === true, fit3: o.fit3 === true && o.strain3 !== true,
+    quality3: o.quality3 === true, schem3: o.schem3 === true && o.quality3 !== true, bv3: o.bv3 === true, meas3: o.meas3 !== false, pen3: o.pen3 !== false, suit3: o.suit3 === true, blendFav: Array.isArray(o.blendFav) ? o.blendFav.filter(x => typeof x === "string").slice(0, 200) : [], avW: o.avW === "weight" ? "weight" : "chest", avH: ["hps", "inseam"].includes(o.avH) ? o.avH : "total", avUnit: ["cm", "in"].includes(o.avUnit) ? o.avUnit : "mm", avLinkW: o.avLinkW !== false, avLinkH: o.avLinkH !== false, show3d, strain3: o.strain3 === true, fit3: o.fit3 === true && o.strain3 !== true,
     // (Round r20 continued (4)) the Stress and Pressure Maps, their units and scales: kept only when not the default
     ...(o.stress3 === true && o.strain3 !== true && o.fit3 !== true ? { stress3: true } : {}), ...(o.press3 === true && o.strain3 !== true && o.fit3 !== true && o.stress3 !== true ? { press3: true } : {}),
     ...(Object.keys(normMapUnit(o.mapUnit)).length ? { mapUnit: normMapUnit(o.mapUnit) } : {}), ...(Object.keys(normMapRange(o.mapRange)).length ? { mapRange: normMapRange(o.mapRange) } : {}),
@@ -26333,12 +30111,13 @@ function wireLayout() {
       if (was && was.on && e.type === "pointerup") setDock(win, dockAt(win, pane.getBoundingClientRect(), e.clientX, e.clientY));
     };
     rail.addEventListener("pointerup", end); rail.addEventListener("pointercancel", end);
-    // (Round r23 / 2) a right-click on its empty part: its places and Reset Toolbars, under More ▸ (no reference showed a toolbar's
-    // own menu, so these are this program's own commands)
+    // (Round r23 / 2) a right-click on its empty part: its places and Reset Toolbars, under More ▸ (this program's own commands).
+    // (POST8 FIX-7 / A) on its tools too, and first the reference's Customize Toolbar rows (its manual: "Right-click on the 3D or 2D
+    // toolbar and select Group Tools")
     rail.addEventListener("contextmenu", (e) => {
-      if (e.target !== rail) return;
+      if (e.target !== rail && !(e.target && e.target.closest && e.target.closest(".slot"))) return;
       e.preventDefault(); hideMenu(); closeFlyouts();
-      listMenu([{ n: "More", menu: () => toolbarRows(win) }], e.clientX, e.clientY);
+      listMenu([...customizeToolRows(win), { sep: 1 }, { n: "More", menu: () => toolbarRows(win) }], e.clientX, e.clientY);
     });
   }
 }
@@ -26507,7 +30286,8 @@ const view3d = (() => {
     if (!host) return;
     if (!have()) { if (note) note.textContent = "The 3D window needs vendor/three.min.js next to the page."; return; }
     // (alpha: a snapshot's transparent background, Round r17b / 4; the scene's own background stays)
-    try { R = new THREE.WebGLRenderer({ antialias: true, alpha: true }); } catch (e) { R = null; if (note) note.textContent = "The 3D window could not start: no WebGL here."; return; }
+    // (POST8 FIX-7 / C: Graphic Options ▸ Antialiasing, read when the window starts)
+    try { R = new THREE.WebGLRenderer({ antialias: !(S.prefs && S.prefs.aa === "off"), alpha: true }); } catch (e) { R = null; if (note) note.textContent = "The 3D window could not start: no WebGL here."; return; }
     build();
     if (typeof renderLensApply === "function") renderLensApply();
     R.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -26603,7 +30383,9 @@ const view3d = (() => {
     for (const c of scene.children) if (c.isGridHelper || c.type === "AxesHelper" || /^grid:/.test(c.name || "") || (RENDER_HIDE.includes(c.name) && !(ro.map && c.name === "strain"))) hide(c);
     const own = scene.children.filter(c => c.isLight);
     let casters = own.filter(c => c.isDirectionalLight).slice(0, 1);
-    if (ro.lights && ro.lights.length) {
+    // (POST8 batch 0k, found by scripts/light-check.js) a dome lit by its picture alone is a light of the document too: it has no three.js
+    // light here (the environment below), and the window's own two stayed on beside it, so its picture at intensity 0 still lit the garment
+    if ((ro.lights && ro.lights.length) || ro.env) {
       for (const c of own) hide(c);
       const g = new THREE.Group(); g.name = "render:lights";
       for (const L of ro.lights) { g.add(L); if (L.target) g.add(L.target); }
@@ -26611,6 +30393,17 @@ const view3d = (() => {
       casters = ro.lights.filter(L => L.isDirectionalLight || L.isSpotLight || L.isPointLight);
     }
     if (ro.shapes && ro.shapes.length) { const g = new THREE.Group(); g.name = "render:shapes"; for (const m of ro.shapes) g.add(m); scene.add(g); undo.push(() => { scene.remove(g); for (const m of ro.shapes) { m.geometry.dispose(); m.material.dispose(); } }); }
+    // (POST8 FIX-6 / C) a dome's picture: its light as the scene's environment (scaled by its intensity), behind the garment if asked, on the ground with Finite Dome
+    if (ro.env && THREE.PMREMGenerator) {
+      const b = ro.box || { x0: 0, x1: 0, z0: 0, z1: 0 }, fc = new THREE.Vector3((b.x0 + b.x1)/2, 0, (b.z0 + b.z1)/2), az = camAzOf(cam.position, fc);
+      const lit = envTexture(ro.env, az, ro.env.intensity, "quick"), pic = envTexture(ro.env, az, 1, "quickbg");
+      if (lit && pic) {
+        const pm = new THREE.PMREMGenerator(R), rt = pm.fromEquirectangular(lit), was = scene.environment;
+        scene.environment = rt.texture; undo.push(() => { scene.environment = was; rt.dispose(); pm.dispose(); });
+        if (ro.envBg) scene.background = pic;
+        if (ro.env.finite) { const gnd = envGround(pic, fc); gnd.position.y = -1; gnd.updateMatrixWorld(true); scene.add(gnd); undo.push(() => { scene.remove(gnd); gnd.geometry.dispose(); gnd.material.dispose(); }); }
+      }
+    }
     if (!ro.shadows || !R.shadowMap) return;
     const sm = R.shadowMap, was = { enabled: sm.enabled, type: sm.type };
     sm.enabled = true; sm.type = THREE.PCFSoftShadowMap;
@@ -26628,7 +30421,7 @@ const view3d = (() => {
     }
     scene.traverse((m) => {
       if (!m.isMesh || !m.visible || m.isSkinnedMesh === undefined && !m.geometry) return;
-      if (m.name === "render:lightshape") return;                // (Round r29) a light's own shape shades nothing, or it would put the floor and the garment in its shadow
+      if (m.name === "render:lightshape" || m.name === "render:dome") return;                // (Round r29) a light's own shape shades nothing, or it would put the floor and the garment in its shadow (POST8 FIX-6 / C: Finite Dome's ground takes its shadow from the floor's, drawn over it)
       const c0 = m.castShadow, r0 = m.receiveShadow; m.castShadow = true; m.receiveShadow = true;
       undo.push(() => { m.castShadow = c0; m.receiveShadow = r0; });
     });
@@ -27106,7 +30899,7 @@ function avOutKey() {
   const av = S.av, m = (S.ui || {}).avOut || "off";
   if (!av || m === "off") return "";
   const e = S.avedit || {};
-  return [m, !!(S.ui || {}).avOutObj, av.name, av.height, av.scale, JSON.stringify(av.pose || null), JSON.stringify(av.baseQ || null), JSON.stringify(e.joints || null), JSON.stringify(e.size || null), JSON.stringify(e.blend || null)].join("|");
+  return [m, !!(S.ui || {}).avOutObj, av.name, av.height, av.scale, JSON.stringify(av.pose || null), JSON.stringify(av.baseQ || null), JSON.stringify(e.joints || null), JSON.stringify(e.size || null), JSON.stringify(e.blend || null), JSON.stringify(e.place || null) /* (FIX-8 / A: its place's x) */].join("|");
 }
 // the meshes the outline is made of: the body, and with Include Objects every other part of the avatar that is shown
 function avOutMeshes(av, obj) { const body = avatarSolid(av); return obj ? av.meshes.filter(m => body.includes(m) || (m.visible !== false && !m.userData.hidden)) : body; }
@@ -27296,7 +31089,9 @@ function avatarSetup(root, name) {
 // the avatar scaled evenly by av.scale, about the floor point under it: what stood on the floor still does
 function avatarScale(av) {
   av.root.scale.copy(av.s0).multiplyScalar(av.scale);
-  av.root.position.y = av.p0.y*av.scale;
+  // (POST8 FIX-8 / A) and moved by the document's place for it (Move to Ground / Move to Center), when it is the document's avatar
+  const pl = av === S.av && S.avedit && S.avedit.place || {};
+  av.root.position.set(av.p0.x + (pl.x || 0), av.p0.y*av.scale + (pl.y || 0), av.p0.z + (pl.z || 0));
   av.root.updateMatrixWorld(true);
 }
 /* Put the avatar in its pose: the base (the file's own rotations, or a pose file's by
@@ -27370,7 +31165,12 @@ function poseFromRoot(root) {
 }
 // the body as a signed distance field, as posed and scaled now (kept until either changes)
 function avatarField(av) {
-  if (!av.sdf) av.sdf = SIM3D.buildSDF(avatarTris(av), { cell: S.avSet.cell });
+  if (!av.sdf) {
+    // (POST8 FIX-8 / C2) with the accessories that collide, where they are now
+    const T = avatarTris(av), A = accTris(av), all = A.length ? new Float32Array(T.length + A.length) : T;
+    if (A.length) { all.set(T, 0); all.set(A, T.length); }
+    av.sdf = SIM3D.buildSDF(all, { cell: S.avSet.cell });
+  }
   return av.sdf;
 }
 
@@ -27394,6 +31194,7 @@ function applyAvatar() {
   // (Round r17b / 3) Translucent Surface: the body see-through in one grey, the cloth seen through it (guess r17/17)
   if (!av.see) av.see = new THREE.MeshLambertMaterial({ color: MANNEQUIN, transparent: true, opacity: AV_SEE, depthWrite: false });
   for (const m of av.meshes) m.material = st.display === "grey" ? av.grey : st.display === "translucent" ? av.see : m.userData.mat0;
+  accShow(av);                                                // (POST8 FIX-8 / C2) its accessories, on their bones
   showCollision();
   avatarStatus(); note3d();
   if (typeof garmentAvatarChanged === "function") garmentAvatarChanged();
@@ -27529,6 +31330,30 @@ function normAvEdit(o) {
   if (Array.isArray(o.meas)) { const m = o.meas.map(normAvMeas).filter(Boolean); if (m.length) out.meas = m; }
   // (Round beta.6 / 0) the avatar outline's vertical offset in the 2D window, mm, kept only when not 0
   if (o.outline && Number.isFinite(o.outline.dy) && o.outline.dy) out.outline = { dy: Math.max(-3000, Math.min(3000, Math.round(o.outline.dy*10)/10)) };
+  // (POST8 FIX-8 / A, roadmap 1.S16b) the avatar's place in the scene, mm, on top of how it is stood when loaded (Move to Ground / Move to
+  // Center); kept only when not 0, so a file of version 36 without it opens as it was
+  if (o.place && typeof o.place === "object") {
+    const pl = {};
+    for (const k of ["x", "y", "z"]) { const v = o.place[k]; if (Number.isFinite(v) && Math.abs(v) >= 0.05) pl[k] = Math.max(-20000, Math.min(20000, Math.round(v*10)/10)); }
+    if (Object.keys(pl).length) out.place = pl;
+  }
+  // (POST8 FIX-8 / B, roadmap 3.D4, W21) the avatar's Property Editor: Information ▸ Item No.; Surface ▸ Static / Kinetic Friction against the
+  // body (the solver's bodyStatic / bodyKinetic; none: the fabric's own); Material ▸ Color (#rrggbb). Each kept only when set
+  if (o.info && typeof o.info === "object" && typeof o.info.itemNo === "string" && o.info.itemNo.trim()) out.info = { itemNo: o.info.itemNo.trim().slice(0, 80) };
+  if (o.surface && typeof o.surface === "object") {
+    // (POST8 batch 0p) at least AV_FRIC_MIN: below it a skirt pulled down slid off the hips (scripts/pull-real.js, its minfric cases)
+    const sf = {}, f = (v) => (v !== null && v !== "" && Number.isFinite(+v) && +v >= 0 ? Math.max(AV_FRIC_MIN, Math.min(AV_FRIC_MAX, Math.round(+v*100)/100)) : null);
+    if (f(o.surface.fs) !== null) sf.fs = f(o.surface.fs);
+    if (f(o.surface.fk) !== null) sf.fk = f(o.surface.fk);
+    if (sf.fs !== undefined && sf.fk === undefined) sf.fk = sf.fs;      // one given: both (static never below kinetic)
+    if (sf.fk !== undefined && sf.fs === undefined) sf.fs = sf.fk;
+    if (sf.fs !== undefined) { if (sf.fs < sf.fk) sf.fs = sf.fk; out.surface = sf; }
+  }
+  if (typeof o.color === "string" && /^#[0-9a-f]{6}$/i.test(o.color)) out.color = o.color.toLowerCase();
+  // (POST8 FIX-8 / C2, roadmap 3.A14) the avatar's accessories (normAcc()), kept only when there are some
+  if (Array.isArray(o.acc)) { const a = normAcc(o.acc); if (a.length) out.acc = a; }
+  // (run 14c, roadmap 1.T45) the lines drawn on the avatar (normAvPens()), kept only when there are some
+  if (Array.isArray(o.pens)) { const p = normAvPens(o.pens); if (p.length) out.pens = p; }
   return out;
 }
 /* (Round r18 / 5) an avatar measurement: { id, kind ("tape" two places, "circ" three places, or one with axis: the girth square to the
@@ -27545,7 +31370,7 @@ function normAvMeas(x) {
   if (x.showLen === false) out.showLen = false;
   return out;
 }
-const avEditOn = () => !!S.avedit && (Object.keys(S.avedit.joints || {}).length > 0 || !!S.avedit.lockR || !!S.avedit.lockT || !!S.avedit.size || !!S.avedit.meas || !!S.avedit.arrange || !!S.avedit.ik || !!S.avedit.suit || !!S.avedit.blend || !!S.avedit.outline);
+const avEditOn = () => !!S.avedit && (Object.keys(S.avedit.joints || {}).length > 0 || !!S.avedit.lockR || !!S.avedit.lockT || !!S.avedit.size || !!S.avedit.meas || !!S.avedit.arrange || !!S.avedit.ik || !!S.avedit.suit || !!S.avedit.blend || !!S.avedit.outline || !!S.avedit.place || !!S.avedit.info || !!S.avedit.surface || !!S.avedit.color || !!S.avedit.acc || !!S.avedit.pens);
 // the document's avatar edits put on the avatar, when they changed (commit(): undo, redo, a file opened, an edit made)
 function avEditSync() {
   const av = S.av;
@@ -27563,10 +31388,24 @@ function avEditSync() {
     if (av.fsig !== fsig) { av.fsig = fsig; suitShow(); if (typeof avEditorRender === "function") avEditorRender(); }
     const bsig = JSON.stringify(S.avedit.blend || null);
     if (av.bsig !== bsig) { av.bsig = bsig; blendApply(av); av.sdf = null; av.meas = null; showCollision(); garmentAvatarChanged(); if (typeof avEditorRender === "function") avEditorRender(); }
+    // (POST8 FIX-8 / A) the avatar's place: moved, its collision body, measurements, arrangement points and 2D outline follow
+    const psig = JSON.stringify(S.avedit.place || null);
+    if (av.psig !== psig) { av.psig = psig; avatarScale(av); av.sdf = null; av.meas = null; showCollision(); garmentAvatarChanged(); }
+    if ((av.csig || "") !== (S.avedit.color || "")) avColorApply(av);      // (FIX-8 / B) its Material ▸ Color
+    const shape0 = av.accShape;
+    accShow(av);                                                             // (FIX-8 / C2) its accessories
+    if (av.accShape !== shape0 && (shape0 || "[]") !== av.accShape) garmentAvatarChanged();
+    if (G3.accSel && !accOf(G3.accSel)) G3.accSel = null;
+    const nsig = JSON.stringify(S.avedit.pens || null);                     // (run 14c, 1.T45) the lines drawn on it
+    if (av.nsig !== nsig) { av.nsig = nsig; if (G3.penSel && !penById(G3.penSel.id)) G3.penSel = null; penShow(); }
     return;
   }
+  av.nsig = JSON.stringify(S.avedit.pens || null);
+  av.psig = JSON.stringify(S.avedit.place || null);
+  avColorApply(av);
   av.msig = msig;
   av.lsig = lsig;
+  if (G3.accSel && !accOf(G3.accSel)) G3.accSel = null;
   applyAvatar(); jointPanel(); ui(); if (typeof avEditorRender === "function") avEditorRender();
 }
 // what the avatar is sized by: its size's targets and shape (the links and the preset's name change nothing on the body)
@@ -28380,17 +32219,19 @@ function avEditorFront(which) { if (S.aved) stageFront(which); }
 function stageFront(which) {
   if (S.aved) S.aved.front = which === "ed" ? "ed" : "2d";
   RWIN.front = which === "rw" && RWIN.open;
-  rwinFrontApply(); stageTabs(); avEditorRender(); avEditorShow3();
+  CWED.front = which === "cw" && CWED.open;                  // (Round CW-1 / B) the Colorway Editor
+  UVED.front = which === "uv" && UVED.open;                  // (Round UV-1 / B) the UV Editor
+  rwinFrontApply(); stageTabs(); avEditorRender(); avEditorShow3(); cwedRender(); uvedRender();
   if (which === "2d") draw();
   if (which === "rw") rwinSide();
 }
 function stageTabs() {
   const stage = document.getElementById("stage");
   let bar = document.getElementById("avtabs");
-  if (!S.aved && !RWIN.open) { if (bar && bar.remove) bar.remove(); return; }
+  if (!S.aved && !RWIN.open && !CWED.open && !UVED.open) { if (bar && bar.remove) bar.remove(); return; }
   if (!bar) { bar = document.createElement("div"); bar.id = "avtabs"; if (stage && stage.appendChild) stage.appendChild(bar); }
-  const f = RWIN.open && RWIN.front ? "rw" : S.aved && S.aved.front === "ed" ? "ed" : "2d", tab = (k, n) => '<button data-f="' + k + '"' + (k === f ? ' class="on" aria-pressed="true"' : '') + '>' + n + '</button>';
-  bar.innerHTML = tab("2d", "2D Pattern Window") + (S.aved ? tab("ed", "Avatar Editor") : "") + (RWIN.open ? tab("rw", "Render") : "");
+  const f = UVED.open && UVED.front ? "uv" : CWED.open && CWED.front ? "cw" : RWIN.open && RWIN.front ? "rw" : S.aved && S.aved.front === "ed" ? "ed" : "2d", tab = (k, n) => '<button data-f="' + k + '"' + (k === f ? ' class="on" aria-pressed="true"' : '') + '>' + n + '</button>';
+  bar.innerHTML = tab("2d", "2D Pattern Window") + (S.aved ? tab("ed", "Avatar Editor") : "") + (RWIN.open ? tab("rw", "Render") : "") + (CWED.open ? tab("cw", "Colorway Editor") : "") + (UVED.open ? tab("uv", "UV Editor") : "");
   for (const b of bar.querySelectorAll ? bar.querySelectorAll("[data-f]") : []) b.onclick = () => stageFront(b.dataset.f);
 }
 // what the editor's tab in front draws on the avatar: the size's lines, the volumes and points, the fitting suit's lines
@@ -29127,8 +32968,8 @@ function loadAvatar(at) {
 }
 // "Load your own…": pick an .fbx, .glb or .gltf
 function loadOwnAvatar() { pickBinary(".fbx,.glb,.gltf", (name, buf, path) => avatarLoaded(buf, name, path, false, true)); }
-// own: picked by hand through "Load your own…" (the one to bring back next time)
-function avatarLoaded(buf, file, path, quiet, own) {
+// own: picked by hand through "Load your own…" (the one to bring back next time); done(av): called once it is in the scene (run 16)
+function avatarLoaded(buf, file, path, quiet, own, done) {
   if (!buf) return avatarFail("That file could not be read");
   const name = avatarShown(file);
   avatarParse(buf, file, (err, root) => {
@@ -29151,6 +32992,7 @@ function avatarLoaded(buf, file, path, quiet, own) {
     const main = POSE_BONES.filter(([r]) => av.roles[r]).length;
     if (!quiet) toast(name + " — " + Math.round(av.height) + " mm tall, " + av.bones.size + " bones" + (main ? "" : " (none of them known by name: no pose sliders)") + (av.unit !== 1 ? ", read as " + (av.unit === 1000 ? "metres" : "centimetres") : ""), 6000);
     avatarCheck();
+    if (typeof done === "function") done(av);
   });
 }
 /* ---- the avatar and the document ----
@@ -29292,16 +33134,56 @@ function collisionDialog(at) {
     toast("Collision mesh: " + (S.av ? S.av.colTris + " triangles at " : "") + v.c + " mm");
   }, { hint: "The collision body is sampled this far apart. Smaller follows the skin more closely and takes longer; 8 to 12 mm suits cloth." });
 }
-function setPosePreset(k) {
-  const av = S.av;
-  if (!av) return toast("Load an avatar first (Avatar → Load Avatar…)");
-  if (k === "file") return setAvatar({ pose: {}, base: null });
-  const ang = { a: [45, 8], t: [90, 8], i: [12, 4] }[k];
-  if (!av.roles.armL && !av.roles.armR) return toast("This avatar's arm bones are not known by name, so the pose can't be worked out");
-  av.pose = {}; setAvatar({ pose: posePreset(av, ang[0], ang[1]) });
+// (POST8 batch 0f) a preset is a document edit, one undo step (posePresetStep()); it was this machine's pose sliders
+function setPosePreset(k) { return posePresetStep(k); }
+/* (POST8 FIX-8 / C, roadmap 3.A14: Avatar ▸ Register Pose/Motion; BS p.7 "save a pose: File ▸ Save As ▸ Pose") REGISTER POSE: the avatar as it
+   stands now (the pose file, the sliders, the joints turned by hand, the IK) kept as a pose of this computer's pose list: every bone's own
+   turn, as a pose file is kept ({ name, q }); then a pose like any loaded one (Avatar ▸ Pose file: …). File ▸ Save As ▸ Pose… writes it as
+   our JSON ({ gusset: "pose", v: 1, name, q }), Load Pose File reads it back besides .fbx / .glb. Motions: the Animation Editor's, after 1.0.
+   Guess post8/38. */
+const POSE_FILE = "pose";
+function poseNow() {
+  const av = S.av; if (!av) return null;
+  const q = {};
+  for (const [nm, b] of av.bones) q[nm] = b.quaternion.toArray().map(v => Math.round(v*1e6)/1e6);
+  return q;
+}
+function registerPose(name) {
+  const q = poseNow();
+  if (!q) return toast("There is no avatar");
+  const nm = String(name || "").trim().slice(0, 60);
+  if (!nm) return;
+  S.poses = normPoses([{ name: nm, q }, ...S.poses.filter(p => p.name !== nm)]);
+  try { localStorage.setItem(POSES_KEY, JSON.stringify(S.poses)); } catch (e) {}
+  toast("Pose “" + nm + "” kept in the pose list (Avatar ▸ Pose file: " + nm + ")");
+}
+function registerPoseAsk() {
+  if (!S.av) return toast("There is no avatar");
+  askText("Register Pose", "Pose " + (S.poses.length + 1), (t) => registerPose(t), { note: "The avatar as it stands now, kept in this computer's pose list" });
+}
+function poseFileText(name, q) { return JSON.stringify({ gusset: POSE_FILE, v: 1, name, q }); }
+function poseSaveFile() {
+  const q = poseNow();
+  if (!q) return toast("There is no avatar");
+  const nm = (S.avSet && S.avSet.base) || (S.av.name.replace(/\.[^.]+$/, "") + " pose");
+  dl(nm.replace(/[\\/:*?\x22<>|]+/g, "_") + ".pose.json", poseFileText(nm, q), "application/json", (f) => toast("Saved " + f));
+}
+// our pose file's text: { name, q } or why not
+function poseFileRead(text) {
+  let d = null; try { d = JSON.parse(text); } catch (e) {}
+  if (!d || d.gusset !== POSE_FILE || !d.q || typeof d.q !== "object") return "That is not a pose file";
+  const q = {};
+  for (const k of Object.keys(d.q)) { const v = d.q[k]; if (k && Array.isArray(v) && v.length === 4 && v.every(Number.isFinite)) q[k] = v; }
+  return Object.keys(q).length ? { name: typeof d.name === "string" && d.name.trim() ? d.name.trim().slice(0, 60) : "Pose", q } : "There are no bones in that pose file";
 }
 function loadPoseFile() {
-  pickBinary(".fbx,.glb,.gltf", (name, buf) => avatarParse(buf, name, (err, root) => {
+  pickBinary(".fbx,.glb,.gltf,.json", (name, buf) => /\.json$/i.test(name) ? (() => {
+    const r = poseFileRead(new TextDecoder().decode(new Uint8Array(buf)));
+    if (typeof r === "string") return toast(r, 6000);
+    S.poses = normPoses([{ name: r.name, q: r.q }, ...S.poses.filter(p => p.name !== r.name)]);
+    setAvatar({ base: r.name, pose: {} });
+    toast("Pose “" + r.name + "”: " + Object.keys(r.q).length + " bones. It is kept in the pose list.", 6000);
+  })() : avatarParse(buf, name, (err, root) => {
     if (err || !root) return toast("That file could not be read as a pose: " + shortErr(err || "nothing in it"), 8000);
     const q = poseFromRoot(root), nm = name.replace(/\.[^.]+$/, ""), hit = S.av ? Object.keys(q).filter(k => S.av.bones.has(k)).length : 0;
     if (!Object.keys(q).length) return toast("There are no bones in " + name);
@@ -29311,6 +33193,414 @@ function loadPoseFile() {
   }));
 }
 function deletePose(name) { S.poses = S.poses.filter(p => p.name !== name); setAvatar({ base: S.avSet.base === name ? null : S.avSet.base }); }
+/* (POST8 FIX-8 / C2, roadmap 3.A14: Avatar ▸ Register Accessory; the 3D pattern menu's Convert ▸ to Avatar Accessory (W18); Edit ▸ Context Menu ▸
+   Avatar ▸ Delete Accessory; File ▸ Open / Save As ▸ Accessory) AVATAR ACCESSORIES: a mesh of the avatar's own (a hat, a shoe, a belt, hair) that
+   follows one bone as the avatar is posed, sized and moved, and is part of what the cloth collides with. The reference's rows are named in the
+   recordings, their pages not (guesses post8/39-41):
+     Convert ▸ to Avatar Accessory  the selected patterns' cloth as it hangs now, made a closed shell its fabric's thickness thick (accShell():
+                                    the cloth offset half of it each way along its normals, the edges closed: a solid the collision body can tell
+                                    inside from outside), one accessory; the patterns are Archived (out of the 3D garment, kept in 2D; Unarchive
+                                    brings them back), one undo step (guess post8/39)
+     Register Accessory…            a mesh file (.obj, as this program's OBJ export writes it, or .glb / .gltf) in the avatar's scene frame, its
+                                    Unit asked (millimetres for .obj, metres for glTF by default) and the bone it follows (the nearest by default)
+                                    (guess post8/40). File ▸ Open ▸ Accessory does the same; File ▸ Save As ▸ Accessory writes the selected one as OBJ
+     the bone                       the nearest one: the bone whose joint, or whose segment to a child joint, lies nearest the mesh's middle
+                                    (accNearestBone()); the mesh is kept in that bone's own frame and drawn as its child, so it follows the pose
+   S.avedit.acc = [{ id, name, bone, pos, idx, col?, nocol? }] (normAcc(); in the file with the avatar edits and in undo, kept only when there are
+   some): pos the vertices in the bone's frame (32-bit floats, base64), idx the triangles (32-bit, base64), col its colour, nocol left out of the
+   collision body. With Select/Move a click on one selects it (G3.accSel): its Property Editor (Name, Attached To, Collision, Color, Delete,
+   Save as OBJ). Not built: the reference's own .acc files and its library's Hair / Shoes folders (LIB-1). Guess post8/41: drawn in its own
+   colour whatever the avatar's display style but Hidden; the 2D outline stays the body's. */
+const ACC_COL = "#7f8a99", ACC_THICK_MIN = 1, ACC_MAX_V = 300000;
+const ACC_UNITS = [["mm", "Millimeters", 1], ["cm", "Centimeters", 10], ["m", "Meters", 1000], ["in", "Inches", 25.4]];
+const ACC_GEOM = new Map();
+// an accessory's mesh decoded (kept per text): { P: Float32Array in its bone's frame, I: Uint32Array } or null when it is not a mesh
+function accGeom(a) {
+  const key = a.pos + "#" + a.idx;
+  if (ACC_GEOM.has(key)) return ACC_GEOM.get(key);
+  let g = null;
+  try {
+    const re = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (re.test(a.pos) && re.test(a.idx) && a.pos.length % 4 === 0 && a.idx.length % 4 === 0) {
+      const pb = bytesOf(a.pos), ib = bytesOf(a.idx);
+      if (pb.length && pb.length % 12 === 0 && ib.length && ib.length % 12 === 0) {
+        const P = new Float32Array(pb.buffer.slice(pb.byteOffset, pb.byteOffset + pb.length)), I = new Uint32Array(ib.buffer.slice(ib.byteOffset, ib.byteOffset + ib.length)), n = P.length/3;
+        if (n <= ACC_MAX_V && P.every(Number.isFinite) && I.every(i => i < n)) g = { P, I };
+      }
+    }
+  } catch (e) { g = null; }
+  if (ACC_GEOM.size > 64) ACC_GEOM.clear();
+  ACC_GEOM.set(key, g);
+  return g;
+}
+const accEncode = (P, I) => ({ pos: b64Of(new Uint8Array(new Float32Array(P).buffer)), idx: b64Of(new Uint8Array(new Uint32Array(I).buffer)) });
+function normAcc(list) {
+  const out = [], ids = new Set();
+  for (const a of Array.isArray(list) ? list : []) {
+    if (!a || typeof a !== "object" || !Number.isInteger(a.id) || a.id < 1 || ids.has(a.id)) continue;
+    if (typeof a.pos !== "string" || typeof a.idx !== "string" || typeof a.bone !== "string" || !a.bone || !accGeom(a)) continue;
+    ids.add(a.id);
+    const o = { id: a.id, name: (typeof a.name === "string" && a.name.trim() ? a.name.trim() : "Accessory " + a.id).slice(0, 80), bone: a.bone.slice(0, 80), pos: a.pos, idx: a.idx };
+    if (typeof a.col === "string" && /^#[0-9a-f]{6}$/i.test(a.col)) o.col = a.col.toLowerCase();
+    if (a.nocol === true) o.nocol = true;
+    out.push(o);
+  }
+  return out;
+}
+const accList = () => (S.avedit && S.avedit.acc) || [];
+const accOf = (id) => accList().find(a => a.id === id) || null;
+// the bone an accessory follows on this avatar: its own by name, else the skeleton's root (another avatar than the one it was made on)
+function accBone(av, name) {
+  const b = av.bones.get(name);
+  if (b) return b;
+  return jointBones(av).find(x => !(x.parent && x.parent.isBone)) || null;
+}
+// the bone nearest a mesh (world points, flat): its joint, or its segment to a child's joint, nearest the mesh's middle
+function accNearestBone(av, W) {
+  const n = W.length/3, c = new THREE.Vector3();
+  for (let i = 0; i < W.length; i += 3) c.x += W[i]/n, c.y += W[i+1]/n, c.z += W[i+2]/n;
+  av.root.updateMatrixWorld(true);
+  const at = new Map(), seg = (p, a, b) => { const ab = b.clone().sub(a), t = Math.max(0, Math.min(1, ab.lengthSq() > 1e-9 ? p.clone().sub(a).dot(ab)/ab.lengthSq() : 0)); return p.distanceTo(a.clone().addScaledVector(ab, t)); };
+  for (const b of jointBones(av)) at.set(b, b.getWorldPosition(new THREE.Vector3()));
+  let best = null, bd = Infinity;
+  for (const [b, p] of at) {
+    const d0 = c.distanceTo(p);
+    if (d0 < bd) { bd = d0; best = b; }
+    const up = b.parent && b.parent.isBone && at.get(b.parent);
+    if (up) { const d = seg(c, up, p); if (d < bd) { bd = d; best = b.parent; } }
+  }
+  return best ? best.name : "";
+}
+// world points into a bone's frame, and back
+function accLocal(av, bone, W) {
+  av.root.updateMatrixWorld(true);
+  const M = accBone(av, bone).matrixWorld.clone().invert(), v = new THREE.Vector3(), L = new Float32Array(W.length);
+  for (let i = 0; i < W.length; i += 3) { v.set(W[i], W[i+1], W[i+2]).applyMatrix4(M); L[i] = v.x; L[i+1] = v.y; L[i+2] = v.z; }
+  return L;
+}
+function accWorld(av, a) {
+  const g = accGeom(a), b = g && accBone(av, a.bone);
+  if (!b) return null;
+  av.root.updateMatrixWorld(true);
+  const M = b.matrixWorld, v = new THREE.Vector3(), W = new Float32Array(g.P.length);
+  for (let i = 0; i < W.length; i += 3) { v.set(g.P[i], g.P[i+1], g.P[i+2]).applyMatrix4(M); W[i] = v.x; W[i+1] = v.y; W[i+2] = v.z; }
+  return W;
+}
+// the accessories that collide, as triangles (9 numbers each) where they are now: added to the body's (avatarField())
+function accTris(av) {
+  const list = av === S.av ? accList().filter(a => !a.nocol) : [];
+  const parts = list.map(a => { const W = accWorld(av, a), I = accGeom(a).I; if (!W) return null; const T = new Float32Array(I.length*3); for (let k = 0; k < I.length; k++) { T[3*k] = W[3*I[k]]; T[3*k+1] = W[3*I[k]+1]; T[3*k+2] = W[3*I[k]+2]; } return T; }).filter(Boolean);
+  const T = new Float32Array(parts.reduce((s, p) => s + p.length, 0));
+  let o = 0; for (const p of parts) { T.set(p, o); o += p.length; }
+  return T;
+}
+// a cloth (world points X, triangles tri) made a closed shell t mm thick: front and back half of t off it along its normals, the edges closed
+function accShell(X, tri, t) {
+  const n = X.length/3, Nn = clothNormals(X, tri), h = t/2, P = new Float32Array(6*n);
+  for (let v = 0; v < n; v++) for (let k = 0; k < 3; k++) { P[3*v+k] = X[3*v+k] + Nn[3*v+k]*h; P[3*(v+n)+k] = X[3*v+k] - Nn[3*v+k]*h; }
+  const I = [], edges = new Map();
+  for (let i = 0; i + 2 < tri.length; i += 3) {
+    const a = tri[i], b = tri[i+1], c = tri[i+2];
+    I.push(a, b, c, a + n, c + n, b + n);
+    for (const [u, w] of [[a, b], [b, c], [c, a]]) { const k = Math.min(u, w) + "," + Math.max(u, w), e = edges.get(k); if (e) e.n++; else edges.set(k, { u, w, n: 1 }); }
+  }
+  for (const e of edges.values()) if (e.n === 1) I.push(e.u, e.u + n, e.w + n, e.u, e.w + n, e.w);      // the wall along an edge of the cloth, facing out
+  return { P, I };
+}
+// meshes joined into one: [{ P, I }] -> { P, I }
+function accJoin(parts) {
+  const P = new Float32Array(parts.reduce((s, p) => s + p.P.length, 0)), I = new Uint32Array(parts.reduce((s, p) => s + p.I.length, 0));
+  let po = 0, io = 0;
+  for (const p of parts) { for (let k = 0; k < p.I.length; k++) I[io + k] = p.I[k] + po/3; P.set(p.P, po); po += p.P.length; io += p.I.length; }
+  return { P, I };
+}
+// a new accessory from a mesh where it is now (world mm) on the bone named (nearest when none): its record (not yet in the document)
+function accRecord(av, name, W, I, bone, col) {
+  const b = bone && av.bones.has(bone) ? bone : accNearestBone(av, W), id = accList().reduce((m, a) => Math.max(m, a.id), 0) + 1;
+  return { id, name: String(name || "Accessory " + id).slice(0, 80), bone: b, ...accEncode(accLocal(av, b, W), I), ...(col ? { col } : {}) };
+}
+function accAdd(rec, step) {
+  push(step);
+  S.avedit = normAvEdit({ ...S.avedit, acc: [...accList(), rec] });
+  return rec;
+}
+const accNeed = () => (S.av ? true : (toast("Load an avatar first: an accessory belongs to the avatar"), false));
+// Convert ▸ to Avatar Accessory: the selected patterns' cloth as it hangs, one accessory; the patterns archived; one step
+function convertToAccessory() {
+  if (!accNeed()) return null;
+  const av = S.av, ps = sel3(true).filter(p => { const it = G3.items.get(p.id); return it && it.X && it.mesh && !p.arch3; });
+  if (!ps.length) return toast("Select a pattern in the 3D window first"), null;
+  if (typeof simHalt === "function") simHalt();
+  const m = accJoin(ps.map(p => { const it = G3.items.get(p.id), f = fabricOf(p), t = Math.max(ACC_THICK_MIN, +(fabricPhys(f) || {}).thick || 0); return accShell(it.X, it.mesh.tri, t); }));
+  const f0 = fabricOf(ps[0]), col = f0 && typeof f0.color === "string" && /^#[0-9a-f]{6}$/i.test(f0.color) ? f0.color.toLowerCase() : "";
+  const rec = accAdd(accRecord(av, ps.length === 1 ? ps[0].name : ps[0].name + " + " + (ps.length - 1), m.P, m.I, "", col), "Convert to Avatar Accessory");
+  for (const p of ps) p.arch3 = true;
+  S.sel = []; G3.giz = null; G3.accSel = rec.id; G3.avSel = false;
+  commit();
+  toast("“" + rec.name + "” is an accessory of the avatar now, following its bone " + rec.bone + ". The pattern" + (ps.length > 1 ? "s are" : " is") + " archived (Unarchive brings " + (ps.length > 1 ? "them" : "it") + " back).", 7000);
+  return rec;
+}
+// an OBJ's text as a mesh (faces fanned into triangles; negative indices count back): { P, I } or null
+function objParse(text) {
+  const V = [], I = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const s = line.trim();
+    if (/^v\s/.test(s)) { const q = s.split(/\s+/); V.push(+q[1], +q[2], +q[3]); }
+    else if (/^f\s/.test(s)) { const q = s.split(/\s+/).slice(1).map(w => { const k = parseInt(w, 10); return k < 0 ? V.length/3 + k : k - 1; }); for (let j = 1; j + 1 < q.length; j++) I.push(q[0], q[j], q[j+1]); }
+  }
+  if (!V.length || !I.length || !V.every(Number.isFinite) || I.some(i => !(i >= 0 && i < V.length/3))) return null;
+  return { P: Float32Array.from(V), I: Uint32Array.from(I) };
+}
+// every mesh of a scene (a glTF's) in the scene's frame, joined: { P, I } or null
+function meshOfRoot(root) {
+  root.updateMatrixWorld(true);
+  const parts = [], v = new THREE.Vector3();
+  root.traverse((m) => {
+    if (!m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+    const A = m.geometry.attributes.position, ix = m.geometry.index, n = ix ? ix.count : A.count, P = new Float32Array(A.count*3), I = new Uint32Array(Math.floor(n/3)*3);
+    for (let i = 0; i < A.count; i++) { if (m.getVertexPosition) m.getVertexPosition(i, v); else v.fromBufferAttribute(A, i); v.applyMatrix4(m.matrixWorld); P[3*i] = v.x; P[3*i+1] = v.y; P[3*i+2] = v.z; }
+    for (let k = 0; k < I.length; k++) I[k] = ix ? ix.getX(k) : k;
+    parts.push({ P, I });
+  });
+  return parts.length ? accJoin(parts) : null;
+}
+// Register Accessory… (and File ▸ Open ▸ Accessory): a mesh file, its unit and bone asked, one step
+function registerAccessory() {
+  if (!accNeed()) return;
+  pickBinary(".obj,.glb,.gltf", (name, buf) => {
+    const got = (m) => (m ? accFileDialog(name, m) : toast("There is no mesh in " + name, 6000));
+    if (/\.obj$/i.test(name)) return got(objParse(new TextDecoder().decode(new Uint8Array(buf))));
+    avatarParse(buf, name, (err, root) => (err || !root ? toast("That file could not be read as an accessory: " + shortErr(err || "nothing in it"), 8000) : got(meshOfRoot(root))));
+  }, true);
+}
+function accFileDialog(name, m, at) {
+  const av = S.av, glb = !/\.obj$/i.test(name), b = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, z0: Infinity, z1: -Infinity };
+  for (let i = 0; i < m.P.length; i += 3) { b.x0 = Math.min(b.x0, m.P[i]); b.x1 = Math.max(b.x1, m.P[i]); b.y0 = Math.min(b.y0, m.P[i+1]); b.y1 = Math.max(b.y1, m.P[i+1]); b.z0 = Math.min(b.z0, m.P[i+2]); b.z1 = Math.max(b.z1, m.P[i+2]); }
+  const r = (x) => +x.toPrecision(4);
+  numDialog("Register Accessory", [
+    { k: "unit", label: "Unit", options: ACC_UNITS.map(u => [u[0], u[1]]), val: glb ? "m" : "mm" },
+    { k: "bone", label: "Attached To", options: [["", "The nearest bone"], ...jointBones(av).map(x => [x.name, esc(x.name)])], val: "" }],
+    at || { x: window.innerWidth/2 - 160, y: 140 }, (o) => accFromMesh(name, m, o.unit, o.bone),
+    { hint: esc(name) + ": " + m.I.length/3 + " triangles, " + r(b.x1 - b.x0) + " × " + r(b.y1 - b.y0) + " × " + r(b.z1 - b.z0) + " in the file's unit. It is placed where the file has it in the avatar's scene (y up) and follows the bone it is attached to." });
+}
+function accFromMesh(name, m, unit, bone) {
+  if (!accNeed()) return null;
+  const s = (ACC_UNITS.find(u => u[0] === unit) || ACC_UNITS[0])[2], W = m.P.map(v => v*s);
+  if (typeof simHalt === "function") simHalt();
+  const rec = accAdd(accRecord(S.av, String(name).replace(/\.[^.]+$/, ""), W, m.I, bone || ""), "Register Accessory");
+  S.sel = []; G3.giz = null; G3.accSel = rec.id; G3.avSel = false;
+  commit();
+  toast("Accessory “" + rec.name + "”: " + m.I.length/3 + " triangles, following the bone " + rec.bone + ".", 6000);
+  return rec;
+}
+// an accessory as OBJ text, where it is now (mm, y up), as Register Accessory reads it back
+function accObjText(a) {
+  const W = S.av && accWorld(S.av, a), g = accGeom(a);
+  if (!W) return "";
+  const L = ["# Gusset – Pattern Drafter: an avatar accessory, millimeters, y up", "o " + a.name.replace(/\s+/g, "_")];
+  for (let i = 0; i < W.length; i += 3) L.push("v " + +W[i].toFixed(3) + " " + +W[i+1].toFixed(3) + " " + +W[i+2].toFixed(3));
+  for (let k = 0; k < g.I.length; k += 3) L.push("f " + (g.I[k] + 1) + " " + (g.I[k+1] + 1) + " " + (g.I[k+2] + 1));
+  return L.join("\n") + "\n";
+}
+/* (Round LIB-1 / E, roadmap 3.A18's Register rows; the spec §4.8; the reference's Materials/UV ▸ Button ▸ Register Button / Register Buttonhole,
+   ▸ Zipper ▸ Register OBJ, and its manual's Slider/Puller/Stopper OBJ Registration: Type, Name, Scale, Axis Conversion, the file) REGISTER A
+   TRIM'S MESH. A mesh file (.obj in millimeters, .glb / .gltf in meters, the unit asked) becomes a new type of the document's library: a
+   button or buttonhole drawn as that mesh in the 3D window (its Width the mesh's across, a button's Thickness its height), a zipper type whose
+   slider and puller are that mesh at the chain's end. The axis named up is turned to stand along the cloth's normal; the mesh is centred
+   across and stands on the cloth. One step; the new type is selected in its tab and also kept in the library panel (Trim ▸ Button,
+   Buttonhole, Zipper). A type's mesh: { name, pos, idx } (pos the points in mm as 32-bit floats, idx the triangles, base64; normTrimMesh()),
+   kept only when set (no file version change: an older beta drops it and draws the type's shape). Guesses post8/61, post8/73. */
+const TRIM_UP = [["y", "Y"], ["z", "Z"], ["x", "X"]], TRIM_REG = { button: "Register Button", buttonhole: "Register Buttonhole", zipper: "Register OBJ" };
+function normTrimMesh(m) {
+  if (!m || typeof m !== "object" || typeof m.pos !== "string" || typeof m.idx !== "string" || !accGeom(m)) return null;
+  return { name: (typeof m.name === "string" && m.name.trim() ? m.name.trim() : "Mesh").slice(0, 80), pos: m.pos, idx: m.idx };
+}
+// a file's mesh made a trim's: scaled to mm (s), the axis named up turned to +y, centred across, standing on y = 0: { P, I, w (across), h }
+function trimMeshOf(m, s, up) {
+  const n = m.P.length/3, P = new Float32Array(m.P.length);
+  for (let i = 0; i < n; i++) {
+    const x = m.P[3*i]*s, y = m.P[3*i+1]*s, z = m.P[3*i+2]*s;
+    const q = up === "z" ? [x, z, -y] : up === "x" ? [-y, x, z] : [x, y, z];
+    P.set(q, 3*i);
+  }
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < P.length; i++) { lo[i % 3] = Math.min(lo[i % 3], P[i]); hi[i % 3] = Math.max(hi[i % 3], P[i]); }
+  const c = [(lo[0] + hi[0])/2, lo[1], (lo[2] + hi[2])/2];
+  for (let i = 0; i < P.length; i++) P[i] -= c[i % 3];
+  return { P, I: Uint32Array.from(m.I), w: Math.max(hi[0] - lo[0], hi[2] - lo[2]), h: hi[1] - lo[1] };
+}
+/* (Q2, guess post8/75) a button's and a buttonhole's mesh is a choice of the Shape list ("Mesh: <name>" / "Mesh…"), the zipper's keeps its
+   Mesh row. The data is as LIB-1 / E wrote it (the type's mesh beside its stored shape), so a file that has one opens and draws the same.
+   Choosing Round, Square, … on a type with a mesh takes the mesh away (one step "Shape"); "Mesh…" registers one onto this type. */
+const MESH_OPT = "__mesh", meshShaped = (kind) => kind === "button" || kind === "buttonhole";
+function trimShapeSet(kind, it, v, redraw) {
+  if (v === MESH_OPT) { if (!it.mesh) registerTrim(kind, it); if (redraw) redraw(); return; }
+  if (!it.mesh && it.shape === v) return;
+  push("Shape"); delete it.mesh; it.shape = v;
+  Object.assign(it, normLibItem(kind, it, it.id)); commit();
+}
+/* ---- (run 14c, roadmap FMT-1 / A: 1.T5 3.A3) FILE ▸ IMPORT ▸ OBJ, FBX, glTF 2.0 (GLTF/GLB) ----
+   A mesh file brought in as what it is for, chosen in a box after the file (Load Type, guess fmt1/1): an FBX or glTF as an Avatar
+   (Load Avatar's own reading, one's own avatar), and any of them as an Avatar Accessory (Register Accessory's box), a Button, Buttonhole or
+   Zipper Slider type (Register Button / Buttonhole / OBJ's box). An OBJ has no skeleton: not an avatar (rigging one is AFTER 1.0, 1.T21).
+   Import (Add) ▸ OBJ / FBX are the same (everything this brings in is added). OBJ to Garment (a mesh made patterns) is not built. */
+const IMPORT_FMTS = { obj: [".obj", "OBJ"], fbx: [".fbx", "FBX"], gltf: [".gltf,.glb", "glTF 2.0"] };
+function importMesh(fmt) {
+  const f = IMPORT_FMTS[fmt];
+  if (!f) return;
+  pickBinary(f[0], (name, buf, path) => importMeshAs(name, buf, path), true);
+}
+// the box after the file: what it becomes
+function importMeshAs(name, buf, path) {
+  const obj = /\.obj$/i.test(name);
+  const read = (then) => {
+    if (obj) { const m = objParse(new TextDecoder().decode(new Uint8Array(buf))); return m ? then(m) : toast("There is no mesh in " + name, 6000); }
+    avatarParse(buf, name, (err, root) => (err || !root ? toast("That file could not be read: " + shortErr(err || "nothing in it"), 8000) : (m => (m ? then(m) : toast("There is no mesh in " + name, 6000)))(meshOfRoot(root))));
+  };
+  const types = [...(obj ? [] : [{ k: "avatar", n: "Avatar", f: () => avatarLoaded(buf, name, path, false, true) }]),
+    { k: "acc", n: "Avatar Accessory", f: () => { if (accNeed()) read((m) => accFileDialog(name, m)); } },
+    { k: "button", n: "Button", f: () => read((m) => trimRegDialog("button", name, m)) },
+    { k: "buttonhole", n: "Buttonhole", f: () => read((m) => trimRegDialog("buttonhole", name, m)) },
+    { k: "zipper", n: "Zipper Slider", f: () => read((m) => trimRegDialog("zipper", name, m)) },
+    { k: "cancel", n: "Cancel", f: () => {} }];
+  askModal("Import " + name, "Load Type: what " + esc(name) + " is brought in as." + (obj ? " (An OBJ file has no skeleton, so it cannot be an avatar.)" : ""), types.map((t, i) => ({ ...t, primary: i === 0 })));
+  return types;
+}
+function registerTrim(kind, onto) {
+  pickBinary(".obj,.glb,.gltf", (name, buf) => {
+    const got = (m) => (m ? trimRegDialog(kind, name, m, onto) : toast("There is no mesh in " + name, 6000));
+    if (/\.obj$/i.test(name)) return got(objParse(new TextDecoder().decode(new Uint8Array(buf))));
+    avatarParse(buf, name, (err, root) => (err || !root ? toast("That file could not be read as a mesh: " + shortErr(err || "nothing in it"), 8000) : got(meshOfRoot(root))));
+  }, true);
+}
+function trimRegDialog(kind, name, m, onto) {
+  const glb = !/\.obj$/i.test(name);
+  numDialog(onto ? "Shape: Mesh" : TRIM_REG[kind], [
+    { k: "unit", label: "Unit", options: ACC_UNITS.map(u => [u[0], u[1]]), val: glb ? "m" : "mm" },
+    { k: "up", label: kind === "zipper" ? "Axis along the zipper" : "Axis Conversion (up)", options: TRIM_UP, val: "y" }],
+    { x: window.innerWidth/2 - 160, y: 140 }, (o) => trimRegister(kind, name, m, o.unit, o.up, onto),
+    { hint: esc(name) + ": " + m.I.length/3 + " triangles. " + (kind === "zipper" ? "It is drawn as the zipper's slider and puller at the end of its chain." : "It is drawn in the 3D window where each " + kind + " of this type is placed, its up axis along the cloth's normal; its Width is the mesh's size across.") });
+}
+// the new type made from the mesh: one step; also kept in the library panel. Returns the type, or null
+function trimRegister(kind, name, m, unit, up, onto) {
+  const s = (ACC_UNITS.find(u => u[0] === unit) || ACC_UNITS[0])[2], t = trimMeshOf(m, s, up);
+  if (!(t.w > 0) || t.P.length/3 > ACC_MAX_V) return toast("That mesh is " + (t.w > 0 ? "too large" : "empty"), 6000), null;
+  const nm = String(name).replace(/\.[^.]+$/, "").slice(0, 80) || LIB[kind].one, mesh = { name: nm, ...accEncode(t.P, t.I) };
+  // onto a type that is there (its Shape ▸ Mesh…): the mesh and its size on that type, one step "Shape"
+  const there = onto && (libOf()[kind] || []).find(x => x.id === onto.id);
+  if (there) {
+    push("Shape");
+    there.mesh = mesh;
+    if (kind !== "zipper") there.width = Math.round(t.w*10)/10;
+    if (kind === "button") there.thickness = Math.max(0.5, Math.round(t.h*10)/10);
+    Object.assign(there, normLibItem(kind, there, there.id)); commit();
+    toast(LIB[kind].name + " type “" + there.name + "”: drawn as " + nm + ", " + t.I.length/3 + " triangles, " + there.width + " mm across.", 6000);
+    return there;
+  }
+  push(TRIM_REG[kind]);
+  const L = libOf(), from = { name: nm, mesh, ...(kind === "zipper" ? {} : { width: Math.round(t.w*10)/10 }), ...(kind === "button" ? { thickness: Math.max(0.5, Math.round(t.h*10)/10) } : {}) };
+  const it = normLibItem(kind, from, L.nextId++);
+  L[kind].push(it);
+  const o = obState(); o.tab = kind; o.sel = it.id;
+  commit();
+  libAddFromScene(kind, it);
+  toast(LIB[kind].name + " type “" + nm + "”: " + t.I.length/3 + " triangles" + (kind === "zipper" ? "" : ", " + it.width + " mm across") + ". Kept in the library too.", 6000);
+  return it;
+}
+// a type's mesh as three.js geometry (its own points, y up): made afresh each time, the caller disposes it
+function trimGeometry(mesh) {
+  const g = mesh && accGeom(mesh);
+  if (!g) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(g.P.slice(), 3)); geo.setIndex(new THREE.BufferAttribute(g.I.slice(), 1)); geo.computeVertexNormals();
+  return geo;
+}
+// the accessory File ▸ Save As ▸ Accessory and Delete Accessory act on: the selected one, else the only one
+const accTarget = () => accOf(G3.accSel) || (accList().length === 1 ? accList()[0] : null);
+function accSaveFile() {
+  const a = accTarget();
+  if (!a || !S.av) return toast(accList().length ? "Select an accessory first (Select/Move, a click on it)" : "There is no accessory");
+  dl(a.name.replace(/[\\/:*?\x22<>|]+/g, "_") + ".obj", accObjText(a), "text/plain", (f) => toast("Saved " + f));
+}
+function accDelete(id) {
+  const a = accOf(id === undefined ? (accTarget() || {}).id : id);
+  if (!a) return toast(accList().length ? "Select an accessory first (Select/Move, a click on it)" : "There is no accessory");
+  push("Delete Accessory");
+  S.avedit = normAvEdit({ ...S.avedit, acc: accList().filter(x => x.id !== a.id) });
+  if (G3.accSel === a.id) G3.accSel = null;
+  commit();
+}
+// one accessory changed (a patch of name, col, nocol, or bone: then kept where it is, in the new bone's frame); one step
+function accSet(id, patch, step) {
+  const a = accOf(id), av = S.av;
+  if (!a) return;
+  let next = { ...a, ...patch };
+  if (patch.bone !== undefined) {
+    if (!av || !av.bones.has(patch.bone) || patch.bone === a.bone) return;
+    next = { ...next, ...accEncode(accLocal(av, patch.bone, accWorld(av, a)), accGeom(a).I) };
+  }
+  for (const k of Object.keys(next)) if (next[k] === null) delete next[k];
+  if (canonJSON(next) === canonJSON(a)) return;
+  push(step);
+  S.avedit = normAvEdit({ ...S.avedit, acc: accList().map(x => (x.id === id ? next : x)) });
+  commit();
+}
+// the accessories on the avatar: each a mesh child of its bone (rebuilt when they, the selection or the display style change); the collision
+// body made again when what collides changed
+function accShow(av) {
+  if (!av || typeof THREE === "undefined") return;
+  const list = av === S.av ? accList() : [], sel = typeof G3 !== "undefined" ? G3.accSel : null, disp = (S.avSet || {}).display;
+  const shape = JSON.stringify(list.map(a => [a.id, a.bone, a.nocol || 0, a.pos.length, a.idx.length, a.pos.slice(0, 48), a.pos.slice(-48)]));
+  const look = shape + "|" + JSON.stringify(list.map(a => [a.name, a.col || ""])) + "|" + sel + "|" + disp;
+  if (av.accLook === look) return;
+  if ((av.accShape || "[]") !== shape) { av.accShape = shape; av.sdf = null; if (typeof showCollision === "function") showCollision(); }
+  av.accLook = look;
+  for (const o of av.accObjs || []) { if (o.parent) o.parent.remove(o); o.traverse((x) => { if (x.geometry) x.geometry.dispose(); if (x.material) x.material.dispose(); }); }
+  av.accObjs = [];
+  for (const a of list) {
+    const g = accGeom(a), b = g && accBone(av, a.bone);
+    if (!b) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(g.P.slice(), 3)); geo.setIndex(new THREE.BufferAttribute(g.I.slice(), 1)); geo.computeVertexNormals();
+    const on = a.id === sel, mat = new THREE.MeshStandardMaterial({ color: a.col || ACC_COL, roughness: 0.6, side: THREE.DoubleSide, emissive: on ? 0x2a2a08 : 0x000000, ...(disp === "translucent" ? { transparent: true, opacity: AV_SEE + 0.15, depthWrite: false } : {}) });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.acc = a.id; mesh.frustumCulled = false;
+    // selected: its edges drawn over it as well (not by colour alone)
+    if (on) { const ed = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: 0x1c1c1e, depthTest: false, transparent: true })); ed.renderOrder = 6; ed.userData.acc = a.id; mesh.add(ed); }
+    b.add(mesh); av.accObjs.push(mesh);
+  }
+  if (typeof view3d !== "undefined" && view3d.ask) view3d.ask();
+}
+// the accessory under a ray (its mesh, as drawn): { id, dist } or null
+function accHit(r) {
+  const av = S.av;
+  if (!av || !r || !r.rc || !(av.accObjs || []).length || !av.root.visible) return null;
+  const hits = r.rc.intersectObjects(av.accObjs, false);
+  return hits.length ? { id: hits[0].object.userData.acc, dist: hits[0].distance } : null;
+}
+function accSelect(id) { if ((G3.accSel || null) === (id || null)) return; G3.accSel = id || null; if (id) { G3.avSel = false; S.sel = []; G3.giz = null; } if (S.av) accShow(S.av); ui(); }
+function accPanel(a) {
+  const av = S.av, g = accGeom(a), sec = (name, body) => '<details class="pe" open><summary>' + name + '</summary>' + body + '</details>';
+  const row = (l, v) => '<div class="row"><label>' + l + '</label>' + v + '</div>';
+  return '<h2>Avatar Accessory</h2>' +
+    sec("Information", row("Name", '<input type="text" data-acc="name" value="' + esc(a.name) + '" style="width:150px">') +
+      row("Attached To", '<select data-acc="bone">' + jointBones(av).map(b => '<option value="' + esc(b.name) + '"' + (b.name === a.bone ? " selected" : "") + '>' + esc(b.name) + '</option>').join("") + (av.bones.has(a.bone) ? "" : '<option value="" selected>' + esc(a.bone) + ' (not on this avatar)</option>') + '</select>') +
+      row("Mesh", '<span class="w">' + g.I.length/3 + ' triangles</span>')) +
+    sec("Collision", '<label class="lk"><input type="checkbox" data-acc="col"' + (a.nocol ? "" : " checked") + '> Part of the collision body</label><div class="note">The cloth collides with it as with the body, from the next Simulate.</div>') +
+    sec("Material", row("Color", '<input type="color" data-acc="color" value="' + (a.col || ACC_COL) + '">' + (a.col ? ' <button type="button" class="btn" data-acc-reset="1" title="Back to the accessory grey">↻</button>' : ""))) +
+    '<div class="row"><button type="button" class="btn" data-acc-do="save">Save as OBJ…</button> <button type="button" class="btn" data-acc-do="lib" title="Keep it in the library (Avatar ▸ Accessory)">Save to Library</button> <button type="button" class="btn" data-acc-do="del">Delete Accessory</button></div>';
+}
+function wireAccPanel(pr, a) {
+  const q = (s) => pr.querySelector(s);
+  if (q('[data-acc="name"]')) q('[data-acc="name"]').onchange = (e) => { const v = e.target.value.trim(); if (v) accSet(a.id, { name: v.slice(0, 80) }, "Accessory Name"); };
+  if (q('[data-acc="bone"]')) q('[data-acc="bone"]').onchange = (e) => { if (e.target.value) accSet(a.id, { bone: e.target.value }, "Accessory Attached To"); };
+  if (q('[data-acc="col"]')) q('[data-acc="col"]').onchange = (e) => accSet(a.id, { nocol: e.target.checked ? null : true }, "Accessory Collision");
+  if (q('[data-acc="color"]')) q('[data-acc="color"]').onchange = (e) => accSet(a.id, { col: e.target.value.toLowerCase() }, "Accessory Color");
+  if (q("[data-acc-reset]")) q("[data-acc-reset]").onclick = () => accSet(a.id, { col: null }, "Accessory Color");
+  if (q('[data-acc-do="save"]')) q('[data-acc-do="save"]').onclick = accSaveFile;
+  if (q('[data-acc-do="lib"]')) q('[data-acc-do="lib"]').onclick = () => accToLibrary(a.id);      // (Round LIB-1 / C, spec 4.7)
+  if (q('[data-acc-do="del"]')) q('[data-acc-do="del"]').onclick = () => accDelete(a.id);
+}
 /* The pose panel: a preset list and three sliders for every main bone the avatar has.
    Dragging a slider turns the bone at once; letting go saves it and brings the
    collision body up to date. */
@@ -29343,17 +33633,100 @@ function posePanel(open) {
     inp.ondblclick = () => { inp.value = 0; inp.oninput(); inp.onchange(); };
   }
 }
+/* (POST8 FIX-8 / A, roadmap 1.S16b; S16 04:15-04:35: "move avatar to ground … move it to center") Move to Ground stands the avatar as it
+   is posed with its lowest point on the floor; Move to Center puts its middle over the floor's middle (x = 0, z = 0). Each moves the avatar
+   (the document's S.avedit.place, kept with the file) as one undo step; the garment stays where it is (simulate to drape it again), the
+   collision body, measurements, arrangement points and the 2D outline go with the avatar. Nothing to do: said, no step. Guess post8/36. */
+const AV_PLACE_TOL = 0.5;
+/* (POST8 FIX-8 / B, roadmap 3.D4: W21, the reference's Property Editor with the avatar clicked) THE AVATAR'S PROPERTY EDITOR, while a click with
+   Select/Move picked the avatar (G3.avSel): Information (Avatar Name, Size: its height and Avatar Size preset, both as they are; Item No.,
+   the document's), Surface (Skin Offset: this program's fixed 3 mm, shown as it is; Static and Kinetic Friction: the body's own friction in
+   the solver, bodyStatic / bodyKinetic, empty for the fabric's own as before), Material (Color: the avatar's colour, the mannequin grey when
+   none). Each change one undo step, kept with the avatar edits in the file. Left out: Body Styling (decided against: plain mannequins), Eye
+   Control (no eyes here), Skin Inward Offset, Soft Body Simulation and Divide Mesh (nothing behind them), Tech Pack (the other program's
+   service), the material's maps. Guess post8/37. */
+/* (POST8 batch 0p, the maintainer's brief: the avatar's friction must not undercut PULL-3c's "never off") AV_FRIC_MIN: the lowest body friction
+   the fields take (a lower value is raised to it; empty is still each fabric's own). scripts/pull-real.js, every case on both avatars with the
+   body's friction forced: at 0 and at 0.2 Marty's skirt pulled down slid off his hips (overHip -667 mm) at 5.6 N and at 8 N; at 0.3 nothing
+   came off at either strength (at 8 N one T-shirt's neckline one sector of 36 short, as at 0.4 and below, and the tight skirt's turn 0.72 of
+   the loose one's against 0.7: neither coming off); 0.3 is also the lightest fabric preset's own friction. The gate's minfric cases pull at it. */
+const AV_FRIC_MIN = 0.3, AV_FRIC_MAX = 2;
+const avColorDefault = () => "#" + MANNEQUIN.toString(16).padStart(6, "0");
+// the colour on every shown material of the avatar (each one's own colour kept to be put back)
+function avColorApply(av) {
+  if (!av || typeof THREE === "undefined") return;
+  const c = (S.avedit && S.avedit.color) || "";
+  av.csig = c;
+  for (const m of av.meshes) for (const mt of [].concat(m.userData.mat0 || [])) {
+    if (!mt || !mt.color) continue;
+    if (mt.userData.col0 === undefined) mt.userData.col0 = mt.color.getHex();
+    mt.color.setHex(c ? parseInt(c.slice(1), 16) : mt.userData.col0);
+  }
+  if (typeof view3d !== "undefined" && view3d.ask) view3d.ask();
+}
+// the solver's options for the body's friction (none: the fabric's own, as before)
+const avSurfaceOpt = () => { const s = S.av && S.avedit && S.avedit.surface; return s ? { bodyStatic: s.fs, bodyKinetic: s.fk } : {}; };
+function avatarPanel() {
+  const av = S.av, e = S.avedit || {}, sec = (name, body) => '<details class="pe" open><summary>' + name + '</summary>' + body + '</details>';
+  const row = (l, v) => '<div class="row"><label>' + l + '</label>' + v + '</div>', sf = e.surface || {}, sz = e.size && e.size.preset;
+  const num = (k, v) => '<input type="text" inputmode="decimal" data-num="1" data-avp="' + k + '" value="' + (v === undefined ? "" : v) + '" placeholder="the fabric\'s" style="width:70px">';
+  return '<h2>Avatar</h2>' +
+    sec("Information", row("Avatar Name", '<span class="w">' + esc(av.name) + '</span>') + row("Size", '<span class="w">' + Math.round(av.height) + ' mm' + (sz ? " · " + esc(sz) : "") + '</span>') +
+      row("Item No.", '<input type="text" data-avp="itemNo" value="' + esc((e.info && e.info.itemNo) || "") + '" style="width:140px">')) +
+    sec("Surface", row("Skin Offset (mm)", '<span class="w">' + SKIN_OFFSET.toFixed(1) + '</span>') + row("Static Friction", num("fs", sf.fs)) + row("Kinetic Friction", num("fk", sf.fk)) +
+      '<div class="note">The cloth keeps the skin offset off the body. Friction against the body: empty, each fabric\'s own (as before); set, the body\'s own for every fabric, static (holds a slide smaller than it) and kinetic (holds a larger one back), ' + AV_FRIC_MIN + ' to ' + AV_FRIC_MAX + ' (less lets a garment slide off). Used at the next Simulate.</div>') +
+    sec("Material", row("Color", '<input type="color" data-avp="color" value="' + (e.color || avColorDefault()) + '"> ' + (e.color ? '<button type="button" class="btn" data-avp-reset="color" title="Back to its own colour">↻</button>' : "")));
+}
+function wireAvatarPanel(pr) {
+  // (a value that changes nothing, as a second change event of the same field: no step)
+  const set = (patch, name) => { const next = normAvEdit({ ...S.avedit, ...patch }); if (canonJSON(next) === canonJSON(normAvEdit(S.avedit))) return; push(name); S.avedit = next; commit(); };
+  pr.querySelectorAll("[data-avp]").forEach(el => {
+    el.onchange = () => {
+      const k = el.dataset.avp, e = S.avedit || {};
+      if (k === "itemNo") return set({ info: el.value.trim() ? { itemNo: el.value } : null }, "Avatar Item No.");
+      if (k === "color") return set({ color: el.value }, "Avatar Color");
+      const v = el.value.trim() === "" ? null : numOf(el.value), sf = { ...(e.surface || {}), [k]: v };
+      if (v === null) delete sf[k];
+      set({ surface: Object.keys(sf).length ? sf : null }, "Avatar Friction");
+    };
+  });
+  pr.querySelectorAll("[data-avp-reset]").forEach(b => { b.onclick = () => set({ color: null }, "Avatar Color"); });
+}
+function avPlaceRows() {
+  const none = { off: true, note: "no avatar", f: () => toast("There is no avatar") };
+  return [S.av ? { n: "Move to Ground", f: () => avatarMove("ground") } : { n: "Move to Ground", ...none }, S.av ? { n: "Move to Center", f: () => avatarMove("center") } : { n: "Move to Center", ...none }];
+}
+// "ground" | "center": the place the avatar would get; null with no avatar
+function avatarMovePlace(how) {
+  const av = S.av;
+  if (!av) return null;
+  const b = avatarBox(av), pl = { ...((S.avedit && S.avedit.place) || {}) };
+  if (!Number.isFinite(b.y0)) return null;
+  if (how === "ground") pl.y = (pl.y || 0) - b.y0;
+  else { pl.x = (pl.x || 0) - (b.x0 + b.x1)/2; pl.z = (pl.z || 0) - (b.z0 + b.z1)/2; }
+  return { pl, d: how === "ground" ? Math.abs(b.y0) : Math.hypot((b.x0 + b.x1)/2, (b.z0 + b.z1)/2) };
+}
+function avatarMove(how) {
+  const m = avatarMovePlace(how);
+  if (!m) return toast("There is no avatar");
+  if (m.d < AV_PLACE_TOL) return toast(how === "ground" ? "The avatar already stands on the ground" : "The avatar is already in the middle");
+  push(how === "ground" ? "Move to Ground" : "Move to Center");
+  S.avedit = normAvEdit({ ...S.avedit, place: m.pl });
+  commit();
+  toast((how === "ground" ? "Avatar on the ground" : "Avatar in the middle") + " (moved " + fmt(m.d) + " " + S.unit + "); simulate to drape the garment on it again");
+}
 function avatarMenu() {
   const av = S.av, st = S.avSet, mid = { x: window.innerWidth/2 - 110, y: 120 }, I = [];
   I.push({ n: "Load Avatar…", k: keyOf("loadAvatar"), f: () => loadAvatar() });
   if (!av) I.push({ hd: "No avatar is loaded" });
   else {
     I.push({ hd: esc(av.name) + " · " + Math.round(av.height) + " mm" });
-    I.push({ n: "Avatar Editor", on: !!S.aved, f: () => avEditor(!S.aved) }, { n: "Scale to Height…", f: () => scaleAvatarDialog(mid) }, { n: "Remove Avatar", f: () => removeAvatar() });
+    I.push({ n: "Avatar Editor", on: !!S.aved, f: () => avEditor(!S.aved) }, { n: "Scale to Height…", f: () => scaleAvatarDialog(mid) }, ...avPlaceRows(), { n: "Remove Avatar", f: () => removeAvatar() });
     I.push({ hd: "Display" }, ...AV_DISPLAY.map(([k, n]) => ({ n, on: st.display === k, f: () => setAvatar({ display: k }) })));
     I.push({ n: "Show Collision Mesh", on: !!st.showCol, f: () => { setAvatar({ showCol: !st.showCol }); if (S.avSet.showCol) toast("Collision mesh: " + av.colTris + " triangles, closed, sampled every " + st.cell + " mm"); } }, { n: "Collision Detail…", f: () => collisionDialog(mid) });
     I.push({ hd: "Pose" }, { n: "Pose Panel", on: !!st.panel, f: () => posePanel(!st.panel) }, ...POSE_PRESETS.map(([k, n]) => ({ n, f: () => setPosePreset(k) })),
-      ...S.poses.map(p => ({ n: "Pose file: " + esc(p.name), on: st.base === p.name, f: () => setAvatar({ base: p.name, pose: {} }) })), { n: "Load Pose File… (.fbx)", k: keyOf("loadPose"), f: loadPoseFile });
+      ...S.poses.map(p => ({ n: "Pose file: " + esc(p.name), on: st.base === p.name, f: () => setAvatar({ base: p.name, pose: {} }) })), { n: "Load Pose File… (.fbx, .glb, .json)", k: keyOf("loadPose"), f: loadPoseFile }, { n: "Register Pose…", f: registerPoseAsk } /* (POST8 FIX-8 / C) */,
+      { hd: "Accessories" }, { n: "Register Accessory… (.obj, .glb)", f: registerAccessory } /* (POST8 FIX-8 / C2) */, ...accList().map(a => ({ n: "Accessory: " + esc(a.name), on: G3.accSel === a.id, f: () => accSelect(a.id) })));
   }
   I.push({ hd: "Arrangement" }, { n: "Show Arrangement Points", k: keyOf("arr_points"), on: !!S.ui.arrPts, f: () => setArrPoints(!S.ui.arrPts) }, { n: "Reset 3D Arrangement (All)", f: () => resetArrangement3(false) }, { n: "Reset 2D Arrangement (All)", f: () => resetArrangement2(false) }, { n: "Cloth Density\u2026", f: () => densityDialog() },
     { hd: "Simulation" }, { n: SIM.on ? "Stop Simulating" : "Simulate", k: keyOf("simulate"), f: simToggle }, { n: "Simulation Settings\u2026", f: () => simSettingsDialog() });
@@ -29361,7 +33734,8 @@ function avatarMenu() {
   // (Round FIX-2 / B) W51's Avatar ▸ Measurement ▸, with the avatar tapes this program has (they were on the 3D toolbar only); the
   // reference's Attach to Measure and Linear Measure (Avatar) are not built and are not shown. At the end: Load Avatar stays first
   I.push({ sep: 1 }, subRow("Measurement", () => [toolRow("Edit Measure (Avatar)", "edit_measure_avatar"), toolRow("Basic Tape Measure (Avatar)", "tape_basic"), toolRow("Surface Tape Measure (Avatar)", "tape_surface"),
-    toolRow("Height Measure (Avatar)", "height_measure"), toolRow("Basic Circumference Measure (Avatar)", "circ_basic"), toolRow("Surface Circumference Measure (Avatar)", "circ_surface")]));
+    toolRow("Height Measure (Avatar)", "height_measure"), toolRow("Basic Circumference Measure (Avatar)", "circ_basic"), toolRow("Surface Circumference Measure (Avatar)", "circ_surface"),
+    toolRow("Attach to Measure (Avatar)", "attach_to_measure") /* (run 14c, 3.A16: the manual's row, WW p.8) */]));
   return I;
 }
 
@@ -29402,7 +33776,8 @@ function normP3(o) {
   if (!o || typeof o !== "object" || !Array.isArray(o.pos) || o.pos.length !== 3 || !o.pos.every(Number.isFinite) || !Array.isArray(o.q) || o.q.length !== 4 || !o.q.every(Number.isFinite)) return null;
   const l = Math.hypot(o.q[0], o.q[1], o.q[2], o.q[3]);
   if (l < 1e-9) return null;
-  const out = { pos: o.pos.slice(), q: o.q.map(v => v/l), r: Number.isFinite(o.r) && o.r > 0 ? o.r : 0 };
+  // (Round POST8 / FIX-5 A) r may be below 0 (Reverse-Arrange: curved toward its face); a build before reads such a pattern flat
+  const out = { pos: o.pos.slice(), q: o.q.map(v => v/l), r: Number.isFinite(o.r) && o.r !== 0 ? o.r : 0 };
   if (typeof o.pt === "string" && o.pt) out.pt = o.pt;
   if (Array.isArray(o.o) && o.o.length === 2 && o.o.every(Number.isFinite)) out.o = o.o.slice();       // the 2D place it hangs on (Round F / 1)
   return out;
@@ -29469,7 +33844,7 @@ const holesOf = (p) => (p.internals || []).filter(it => it.hole && it.closed);
 function pieceMesh3(p, res) {
   const lp = pieceLoop(p, res);
   if (lp.pts.length < 3) return null;
-  const m = SIM3D.meshPolygon(lp.pts, res, holesOf(p).map(h => holeLoop(h, res)), (p.internals || []).filter(meshLine).map(it => foldLine(it, res)));
+  const m = SIM3D.meshPolygon(lp.pts, res, holesOf(p).map(h => holeLoop(h, res)), (p.internals || []).filter(meshLine).map(it => foldLine(it, res)), meshOpt(p));
   if (!m || !m.tri.length) return null;
   const n0 = lp.pts.length, N = m.loop.length, tags = [];
   for (let k = 0; k < N; k++) {
@@ -29497,14 +33872,59 @@ function pieceMesh3(p, res) {
   ids.forEach((id, i) => { chains.get(id).push({ v: chains.get(ids[(i + 1) % ids.length])[0].v, t: 1, jump: false }); });
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const q of lp.pts) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
-  return { xy: m.xy, tri: m.tri, loop: m.loop, tags, chains, darts: darts.filter(d => d.apex >= 0), c: [(x0 + x1)/2, (y0 + y1)/2], w: x1 - x0, h: y1 - y0, box: { x0, y0, x1, y1 }, res };
+  return { xy: m.xy, tri: m.tri, loop: m.loop, tags, chains, darts: darts.filter(d => d.apex >= 0), c: [(x0 + x1)/2, (y0 + y1)/2], w: x1 - x0, h: y1 - y0, box: { x0, y0, x1, y1 }, res, ...(m.gij ? { gij: m.gij } : {}) };
+}
+/* (Round POST8 / FIX-5 C, roadmap 3.B10 / 3.B12's Mesh Type, Quadrangulate, Triangulate; ⚑ a pattern's mesh3) MESH TYPE. A pattern's
+   cloth is triangles (the honeycomb, the default) or, with mesh3 "quad", a square grid along its grainline, each square two triangles
+   (SIM3D.meshPolygon()'s opt.quad): the reference's "Quad gives a softer fold line" (A10 p.20; M:115002727468), here because a fold
+   along or across the grain then lies on the grid's lines. Show Wireframe and the 2D Show Mesh draw the squares without their
+   diagonals (meshEdgesOf()). Kept only when set (file version 36: a beta.8 build meshes such a pattern with triangles). Guess post8/6. */
+const MESH_TYPES = [["tri", "Triangle"], ["quad", "Quad"]];
+const meshTypeOf = (p) => (p && p.mesh3 === "quad" ? "quad" : "tri");
+function meshOpt(p) {
+  if (meshTypeOf(p) !== "quad") return undefined;
+  const g = grainOf(p);
+  return { quad: g && g.a && g.b ? Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x) : Math.PI/2 };
+}
+// a mesh's edges for drawing, each once ([a, b, …]): a quad mesh's square diagonals left out
+function meshEdgesOf(m) {
+  const T = m.tri, seen = new Set(), out = [];
+  for (let k = 0; k < T.length; k += 3) for (const [a, b] of [[T[k], T[k+1]], [T[k+1], T[k+2]], [T[k+2], T[k]]]) {
+    const key = a < b ? a*1e7 + b : b*1e7 + a;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!SIM3D.quadDiag(m, a, b)) out.push(a, b);
+  }
+  return out;
+}
+// Mesh Type ▸ Triangle / Quad: the selection's mesh type ticked (both when mixed)
+const meshTypeRows = () => MESH_TYPES.map(([k, n]) => ({ n, h: "Mesh Type", on: S.sel.some(id => meshTypeOf(byId(id)) === k), f: () => setMeshType(S.sel, k) }));
+// Mesh Type ▸ Triangle / Quad, Quadrangulate, Triangulate on the selected patterns and their symmetric copies (the reference's 2025.2
+// patch notes: "mesh type changes … apply to symmetric patterns"): one step "Mesh Type"; the cloth is meshed again keeping its drape
+function setMeshType(ids, kind) {
+  const ps = [];
+  for (const id of ids || []) {
+    const p = byId(id);
+    if (!p) continue;
+    for (const q of [p, ...S.pieces.filter(o => (o.link && o.link.of === p.id && o.link.kind === "symmetric") || (p.link && p.link.of === o.id && p.link.kind === "symmetric"))]) if (!ps.includes(q)) ps.push(q);
+  }
+  const ch = ps.filter(p => meshTypeOf(p) !== kind);
+  if (!ps.length) { toast("Select a pattern first"); return false; }
+  if (!ch.length) { toast("The mesh is " + (kind === "quad" ? "Quad" : "Triangle") + " already"); return false; }
+  push("Mesh Type");
+  for (const p of ch) { if (kind === "quad") p.mesh3 = "quad"; else delete p.mesh3; }
+  commit();
+  toast(ch.length + " pattern" + (ch.length === 1 ? "" : "s") + " meshed " + (kind === "quad" ? "Quad" : "Triangle"));
+  return true;
 }
 // what a pattern's cloth depends on: when this text changes the pattern is meshed again
 // (a pattern's holes only when it has any: the text of one without is what it always was, which a saved drape is matched by)
 const pieceSig = (p, res) => JSON.stringify([res, p.pts, p.segs.map(s => [s.id, s.curved ? [s.c1, s.c2, s.cps, s.e0, s.e1] : 0]), (p.darts || []).map(d => [d.sid, d.t, d.width, d.depth])]
   .concat(holesOf(p).length ? [holesOf(p).map(h => [h.pts, h.segs.map(s => s.curved ? [s.c1, s.c2, s.cps, s.e0, s.e1] : 0)])] : [])
   // (Round r14 / 2, 3) and its fold and elastic lines, which the cloth is meshed along, only when it has any
-  .concat((p.internals || []).some(meshLine) ? [["folds", (p.internals || []).filter(meshLine).map(h => [h.pts, h.segs.map(s => s.curved ? [s.c1, s.c2, s.cps, s.e0, s.e1] : 0)])]] : []));
+  .concat((p.internals || []).some(meshLine) ? [["folds", (p.internals || []).filter(meshLine).map(h => [h.pts, h.segs.map(s => s.curved ? [s.c1, s.c2, s.cps, s.e0, s.e1] : 0)])]] : [])
+  // (Round POST8 / FIX-5 C) a Quad mesh and the grain it runs along, only when Quad
+  .concat(meshOpt(p) ? [["quad", +meshOpt(p).quad.toFixed(6)]] : []));
 // where a pattern stands when it first comes into the 3D window: flat, facing forward, in front of the avatar. (Round FIX-3 / A,
 // the maintainer's brief: "that's how the reference does it, that's how I want it") **The 2D window's horizontal axis is the 3D
 // floor and its vertical axis the 3D window's x = 0**: a pattern's middle c at 2D (x, y) stands at 3D x = x, y = -y (the 2D window
@@ -29694,7 +34114,7 @@ function extras3(it) {
   const wantW = !!S.ui.wire3, wantT = style3()[1] !== 0 && !mapOn3();
   if (wantW && !it.wire && g) {
     const lg = new THREE.BufferGeometry();
-    lg.setAttribute("position", it.obj.geometry.attributes.position); lg.setIndex(new THREE.BufferAttribute(new Uint32Array(triEdges(it.mesh.tri, false)), 1));
+    lg.setAttribute("position", it.obj.geometry.attributes.position); lg.setIndex(new THREE.BufferAttribute(new Uint32Array(it.mesh.gij ? meshEdgesOf(it.mesh) : triEdges(it.mesh.tri, false)), 1));
     it.wire = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x202024, transparent: true, opacity: 0.45 }));
     it.wire.frustumCulled = false; g.add(it.wire);
   } else if (!wantW && it.wire) dropWire(it);
@@ -29793,6 +34213,7 @@ function garmentAvatarChanged() {
   if (S.av) S.av.box = avatarBox(S.av);
   showJoints(); if (typeof sizeLinesShow === "function") { sizeLinesShow(); suitShow(); }                                              // (Round r17b / 3) the joints follow the avatar's pose and height
   S.arr = null; S.avPick = null; measRebuild(); showMeasures();          // (Round r18 / 5) the measurements go with the skin
+  if (typeof penShow === "function") { G3.penDraft = null; penShow(); }      // (run 14c, 1.T45) and the lines drawn on it
   if (view3d.ready()) { garmentSync(); showArrPoints(); }
 }
 // the selection, shown on the cloth: a selected pattern's outline is light and is seen through everything
@@ -29949,6 +34370,7 @@ function ov3Items() {
     }
   }
   if (typeof ov3Seams === "function") out.push(...ov3Seams());
+  if (typeof ov3AutoLeft === "function") out.push(...ov3AutoLeft());       // (POST8 batch 0c) the lines Auto Sewing left
   if (typeof ov3Shared === "function") out.push(...ov3Shared());
   return out;
 }
@@ -29982,7 +34404,8 @@ const clothAt = (it, a) => [0, 1, 2].map(c => a.w[0]*it.X[3*a.i[0]+c] + a.w[1]*i
 function ov3Key() {
   const d = S.draft;
   return JSON.stringify([S.undo.length, S.redo.length, S.seams.length, S.selSeam, S.sel, S.selSeg, S.selPt, S.selKind, S.selInt, S.selStitch, S.selBtn, S.tool, S.over3d, S.sewCheck.on, S.ui.show3d,
-    [...G3.items.values()].map(it => it.uid), G3.ov || [], S.over3d ? "" : G3.hovKey, d ? JSON.stringify(d, (k, v) => (k === "host" || k === "p" || k === "sh" ? (v && v.id) : v)) : "", G3.ovExtra || "", d && d.sew ? JSON.stringify(sewPreviewLinks(sewPreview())) : ""]);
+    [...G3.items.values()].map(it => it.uid), G3.ov || [], S.over3d ? "" : G3.hovKey, d ? JSON.stringify(d, (k, v) => (k === "host" || k === "p" || k === "sh" ? (v && v.id) : v)) : "", G3.ovExtra || "", d && d.sew ? JSON.stringify(sewPreviewLinks(sewPreview())) : "",
+    typeof autoLeftNow === "function" ? JSON.stringify(autoLeftNow()) : ""]);
 }
 function ov3Draw() {
   const g = view3d.group("ov3");
@@ -30031,7 +34454,7 @@ function ov3Place(rec) {
   if (at && at.array.length === arr.length) { at.array.set(arr); at.needsUpdate = true; } else o.geometry.setAttribute("position", new THREE.BufferAttribute(arr, 3));
   if (rec.dash) o.computeLineDistances();
 }
-if (typeof view3d !== "undefined") view3d.before(() => { if (G3.items.size) ov3Draw(); else { const g = view3d.group("ov3"); if (g && g.children.length) ov3Draw(); } });
+if (typeof view3d !== "undefined") view3d.before(() => { holdCheck(); if (G3.items.size) ov3Draw(); else { const g = view3d.group("ov3"); if (g && g.children.length) ov3Draw(); } });
 /* ---- seams in 3D (Round r10 / 2) ----
    The seams are drawn along their edges on the cloth as in 2D (each in its colour, a deactivated one white and dotted, one whose
    sides differ beyond Check Sewing Length's limit red, dashed and thick), the selected seam thick; the threads between the two
@@ -30402,6 +34825,9 @@ function setTool3(id) {
   S.tool3 = id;
   GROUPS.forEach(g => { if (g.some(x => x.id === id)) g.active = id; });
   view3d.tool(TOOL3[id]); refreshRail();
+  if (typeof penToolChanged === "function") { penToolChanged(id); pencilPanel(id === "pencil_avatar"); }      // (run 14c, 1.T45) the garment see-through while a pen draws on the avatar; the 3D Pencil's panel
+  if (typeof foldgPanel === "function") foldgPanel(id === "fold_garment");      // (POST8 / FIX-5 E) Fold 3D Garment's panel while it is in hand
+  if (typeof pressPanel === "function") pressPanel(id === "press");      // (run 14d) Press's kind, Pressed Open or to One Side
   if (typeof brushPanel === "function") brushPanel(id === "select_mesh_brush" || id === "glue_brush" || id === "steam");      /* (BETA8-1 / D: Glue Brush too) */      // (Round FIX-4 / B) the Brush panel while the brush is in hand
   const t = TOOLS[id], h = document.getElementById("s-hint");
   if (h && t) h.textContent = macKeys(t.n + (t.key ? " (" + t.key + ")" : "") + " — " + (HINT[id] || t.tip));
@@ -30449,6 +34875,14 @@ TOOL3.select_move = {
     if (pt) { arrangeAt(pt); return true; }
     if (typeof simGrab === "function" && simGrab(e, r)) { this.d = { sim: true }; return true; }
     const h = garmentHit(r);
+    // (POST8 FIX-8 / C2) an accessory of the avatar with no cloth in front of it: selected (its Property Editor); the press is not taken
+    const ah = accHit(r);
+    if (ah && (!h || ah.dist < h.dist)) { accSelect(ah.id); return false; }
+    if (G3.accSel) accSelect(null);
+    // (POST8 FIX-8 / B, roadmap 3.D4) a click on the avatar where no cloth is in front selects it (its Property Editor); anywhere else
+    // clears that. The press is not taken: the view's own drag goes on as before
+    const avs = !h && !!S.av && !!avatarHit(r);
+    if (avs !== !!G3.avSel) { G3.avSel = avs; if (avs) { S.sel = []; G3.giz = null; } ui(); }
     if (!h) return false;
     // a plain click on one of several selected patterns: they move together if it becomes a drag, otherwise that one alone stays selected
     const one = !(e.ctrlKey || e.metaKey) && S.sel.length > 1 && S.sel.includes(h.p.id) ? h.p.id : null;
@@ -30824,9 +35258,40 @@ function env3Frame() {
   // what casts: the cloth and the avatar's meshes (made anew as they change), every frame while it is on
   if (sh) for (const name of ["garment", "avatar"]) { const g = sc.getObjectByName(name); if (g) g.traverse((m) => { if (m.isMesh && !m.castShadow) m.castShadow = true; }); }
   lights3Marks(sc);
+  cams3Marks();
+  if (G3.bgImg) bg3Cover();      // (FIX-7 / B) the background picture keeps its proportions as the window changes
   schem3Frame();
 }
 view3d.before(env3Frame);
+/* (POST8 FIX-7 / B, roadmap 3.A21) Show Camera (Settings ▸ Display ▸ Environment, off at first, per machine): each custom view the Render
+   workspace keeps (Image/Video ▸ Custom View; Viewpoint ▸ Custom View ▸ Add Current Viewport) drawn where its camera stands: a wire
+   pyramid pointing at what it looks at, a line to that point, its name. Never in a render or a snapshot (RENDER_HIDE). Guess post8/32. */
+function cams3Marks() {
+  const g = view3d.group("cams3");
+  if (!g) return;
+  const vs = show3On("cam3") ? (loadRender().views || []) : [], sig = JSON.stringify(vs.map(v => [v.name, camOf(v)]));
+  if (g.userData.sig === sig) return;
+  g.userData.sig = sig;
+  for (const c of g.children.slice()) { g.remove(c); c.traverse((m) => { if (m.geometry) m.geometry.dispose(); if (m.material) { if (m.material.map) m.material.map.dispose(); m.material.dispose(); } }); }
+  vs.forEach((v, k) => {
+    const c = camOf(v);
+    if (![c.az, c.el, c.dist].every(Number.isFinite)) return;
+    const t = { tx: c.tx || 0, ty: c.ty || 0, tz: c.tz || 0 }, at = camPos({ ...c, ...t }), p = new THREE.Vector3(at.x, at.y, at.z), tg = new THREE.Vector3(t.tx, t.ty, t.tz);
+    const dir = tg.clone().sub(p), len = dir.length();
+    if (len < 1) return;
+    dir.divideScalar(len);
+    const grp = new THREE.Group(); grp.position.copy(p);
+    const body = new THREE.Mesh(new THREE.ConeGeometry(110, 180, 4, 1, true), new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, depthTest: false }));
+    body.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir)); body.position.copy(dir.clone().multiplyScalar(90)); grp.add(body);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(90, 70, 70), new THREE.MeshBasicMaterial({ color: 0x111111, depthTest: false })); grp.add(box);
+    const ln = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), dir.clone().multiplyScalar(len)]);
+    grp.add(new THREE.Line(ln, new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 40, gapSize: 30, depthTest: false })));
+    grp.children[grp.children.length - 1].computeLineDistances();
+    const lb = label3d(v.name || ("View " + (k + 1))); lb.position.set(0, 140, 0); grp.add(lb);
+    grp.renderOrder = 9; g.add(grp);
+  });
+  view3d.ask();
+}
 view3d.marksOnly(schem3Marks);
 /* (Round r23 / 5: "lights you can see") The document's lights in the 3D window, each a small mark of its own shape, named:
      Directional   a flat disc with three parallel arrows towards the garment (rays from far away)
@@ -30897,6 +35362,11 @@ function lights3Marks(sc) {
       const h = 240, r = h*Math.tan(Math.min(80, l.spread)*Math.PI/180);
       const cone = new THREE.Mesh(new THREE.ConeGeometry(r, h, 20, 1, true), mat());
       cone.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir)); cone.position.copy(dir.clone().multiplyScalar(h/2)); grp.add(cone);
+    } else if (l.type === "ies") {
+      // (POST8 FIX-6 / C) an IES light: a small solid ball (the lamp) and a wide open bell towards the garment, told from the spot's narrow cone by shape
+      grp.add(new THREE.Mesh(new THREE.SphereGeometry(40, 12, 8), Object.assign(mat(), { wireframe: !l.on })));
+      const bell = new THREE.Mesh(new THREE.SphereGeometry(170, 16, 6, 0, 2*Math.PI, 0, Math.PI*0.42), Object.assign(mat(), { wireframe: true }));
+      bell.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().negate())); grp.add(bell);      // the shade over the lamp, open towards the garment
     } else if (l.type === "rect") {
       // (Round r29) a rectangle at its own size, facing the garment
       const pl = new THREE.Mesh(new THREE.PlaneGeometry(l.w || LIGHT_ROWS.w, l.h || LIGHT_ROWS.h), Object.assign(mat(), { side: THREE.DoubleSide, wireframe: !l.on }));
@@ -31225,11 +35695,11 @@ function garmentMenu(e) {
       ...state3Rows(), { sep: 1 },
       { n: state3Name("freeze3"), k: keyOf("freeze3"), f: () => state3Toggle("freeze3") }, { n: state3Name("strong3"), k: keyOf("strong3"), f: () => state3Toggle("strong3") }, { n: state3Name("solid3"), k: keyOf("solid3"), f: () => state3Toggle("solid3") }, { n: "Flip Normal", f: () => state3Toggle("flip3") }, { sep: 1 },
       { n: state3Name("arch3"), f: () => state3Toggle("arch3") }, { n: state3Name("hide3"), k: keyOf("hide3"), f: () => state3Toggle("hide3") }, { sep: 1 },
-      { n: "Convert", menu: () => [ctxNb("to Trim"), ctxNb("to Avatar Accessory")] }, { n: "Mesh Type", menu: () => [ctxNb("Triangle"), ctxNb("Quad")] }, { sep: 1 },
-      ctxNb("Symmetric Arrangement"), ctxNb("Smart Arrangement"), { n: "Superimpose", menu: () => [{ n: "Over", k: keyOf("superOver"), h: "Superimpose (Over)", f: () => superimpose3("over") }, { n: "Under", k: keyOf("superUnder"), h: "Superimpose (Under)", f: () => superimpose3("under") }, { n: "Side", h: "Superimpose (Side)", f: () => superimpose3("side") }] }, { sep: 1 },
+      { n: "Convert", menu: () => [ctxNb("to Trim"), { n: "to Avatar Accessory", f: convertToAccessory } /* (POST8 FIX-8 / C2) */].filter(Boolean) }, { n: "Mesh Type", menu: meshTypeRows }, { sep: 1 },
+      { n: "Symmetric Arrangement", f: symArrange3 }, { n: "Smart Arrangement", f: smartArrange3 }, { n: "Superimpose", menu: () => [{ n: "Over", k: keyOf("superOver"), h: "Superimpose (Over)", f: () => superimpose3("over") }, { n: "Under", k: keyOf("superUnder"), h: "Superimpose (Under)", f: () => superimpose3("under") }, { n: "Side", h: "Superimpose (Side)", f: () => superimpose3("side") }] }, { sep: 1 },
       { n: "Reset 2D Arrangement (Selected)", f: () => resetArrangement2(true) }, { n: "Reset 3D Arrangement (Selected)", k: keyOf("reset3d"), f: () => resetArrangement3(true) }, { n: "Move to Ground Center", f: moveToGround3 }, { sep: 1 },
-      { n: "Flip", menu: () => [{ n: "Horizontally", h: "Flip Horizontally", k: keyOf("turnHalf"), f: () => turnPieces3([0, 1, 0], 180) }, { n: "Vertically", h: "Flip Vertically", k: keyOf("flipOver"), f: () => turnPieces3([1, 0, 0], 180) }, ctxNb("Wrap Direction")] },
-      { n: "Reverse-Arrange", menu: () => [ctxNb("Horizontally"), ctxNb("Vertically")] }, { sep: 1 },
+      { n: "Flip", menu: () => [{ n: "Horizontally", h: "Flip Horizontally", k: keyOf("turnHalf"), f: () => turnPieces3([0, 1, 0], 180) }, { n: "Vertically", h: "Flip Vertically", k: keyOf("flipOver"), f: () => turnPieces3([1, 0, 0], 180) }, { n: "Wrap Direction", h: "Flip Wrap Direction", off: wrapFlipOff(), note: wrapFlipOff() ? "a flat pattern" : undefined, f: wrapFlip3 }] },
+      { n: "Reverse-Arrange", menu: reverseArrangeRows }, { sep: 1 },
       { n: "Focus Zoom", k: keyOf("zoomSel"), f: focusZoom3 }, { n: "Zoom Extents All", f: home3d }, { sep: 1 },
       ctxNb("Export To USD Layer"), { n: "Refresh Textures", f: refreshTextures },
       // (Round FIX-2 / B) as on the 2D pattern menu
@@ -31294,13 +35764,46 @@ function focusZoom3() {
 const BG3_DEFAULT = "#4a4c50";
 function bg3Apply() {
   const sc = view3d && view3d.scene && view3d.scene(), c = S.ui.bg3 && /^#[0-9a-f]{6}$/i.test(S.ui.bg3) ? S.ui.bg3 : null;
-  if (sc && typeof THREE !== "undefined") { if (!bg3Apply.was) bg3Apply.was = sc.background ? "#" + sc.background.getHexString() : BG3_DEFAULT; sc.background = new THREE.Color(c || bg3Apply.was); view3d.ask(); }
+  if (sc && typeof THREE !== "undefined") {
+    if (!bg3Apply.was) bg3Apply.was = sc.background && sc.background.isColor ? "#" + sc.background.getHexString() : BG3_DEFAULT;
+    sc.background = G3.bgImg ? G3.bgImg.tex : new THREE.Color(c || bg3Apply.was); bg3Cover(); view3d.ask();
+  }
+}
+/* (POST8 FIX-7 / B, roadmap 3.A21) Add Background Image (Settings ▸ Display): a picture behind the 3D window's scene, filling the window
+   with its proportions kept (cut at the sides or top, never stretched), for a photo to set the garment against. For this session only
+   (view state, never written; a new start is the same as any other); Format 3D Background ▸ reset takes it away. A snapshot or render
+   whose background is the window's shows it. Guess post8/33. */
+function bg3Cover() {
+  const b = G3.bgImg, el = document.getElementById("stage3d");
+  if (!b || !el || !el.clientWidth || !el.clientHeight) return;
+  const va = el.clientWidth/el.clientHeight, ia = b.w/b.h, t = b.tex;
+  if (va > ia) { t.repeat.set(1, ia/va); t.offset.set(0, (1 - ia/va)/2); } else { t.repeat.set(va/ia, 1); t.offset.set((1 - va/ia)/2, 0); }
+}
+function bg3ImageSet(name, img) {
+  if (G3.bgImg) G3.bgImg.tex.dispose();
+  G3.bgImg = null;
+  if (img) {
+    const tex = new THREE.Texture(img); tex.colorSpace = THREE.SRGBColorSpace; tex.needsUpdate = true;
+    G3.bgImg = { tex, w: img.naturalWidth || img.width || 1, h: img.naturalHeight || img.height || 1, name: String(name || "picture") };
+  }
+  bg3Apply();
+}
+function bg3ImageAdd() {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { const im = new Image(); im.onload = () => { if (S.ui.layout === "2d") setLayout("both"); bg3ImageSet(f.name, im); toast("Background image " + f.name + " (for this session; Format 3D Background ▸ reset takes it away)"); }; im.onerror = () => toast("That picture could not be read"); im.src = String(rd.result); };
+    rd.readAsDataURL(f);
+  };
+  inp.click();
 }
 function bg3Dialog(at) {
   const cur = S.ui.bg3 || bg3Apply.was || BG3_DEFAULT;
   askText("Format 3D Background", cur, (t) => {
     const v = String(t).trim().toLowerCase();
-    if (v === "reset" || v === "") { delete S.ui.bg3; saveUI(); bg3Apply(); return toast("The 3D window's own background"); }
+    if (v === "reset" || v === "") { delete S.ui.bg3; saveUI(); if (G3.bgImg) bg3ImageSet(null, null); bg3Apply(); return toast("The 3D window's own background"); }
     if (!/^#[0-9a-f]{6}$/.test(v)) return toast("A color as #rrggbb, for example #ffffff (or reset)");
     S.ui.bg3 = v; saveUI(); bg3Apply(); toast("3D background " + v);
   }, { note: "A color as #rrggbb (white #ffffff, black #000000); reset for the window's own gray", at });
@@ -31317,7 +35820,9 @@ function infoGarment() {
     [...area].map(([n, a]) => row("Fabric " + esc(n), a.toFixed(3) + " m\u00b2")).join("") +
     row("Seams", S.seams.length + " \u00b7 " + metricAnd(seamLen) + " sewn") + row("Zippers", S.seams.filter(x => x.zip).length) + row("Topstitches", (S.stitches || []).length) +
     row("Puckerings", (S.puckers || []).length) + row("Buttons", (S.buttons || []).filter(b => b.kind !== "hole").length + " \u00b7 buttonholes " + (S.buttons || []).filter(b => b.kind === "hole").length) +
-    row("Avatar", S.av ? esc(S.av.name) + (S.av.height ? ", " + Math.round(S.av.height) + " mm" : "") : "none") + row("File version", FILE_VERSION);
+    row("Avatar", S.av ? esc(S.av.name) + (S.av.height ? ", " + Math.round(S.av.height) + " mm" : "") : "none") +
+    // (Round CW-1 / D, spec 4.5, W-Info) the default colorway: the one current when the project is saved, which it opens in (guess cw1/17)
+    row("Colorways", cwOn() ? S.colorways.list.length + " · opens in " + esc(cwCur().name) + " (the current one when saved)" : "one") + row("File version", FILE_VERSION);
   askModal("Garment Information", html, [{ k: "ok", n: "Close", primary: true, esc: true, f: () => {} }]);
   return html;
 }
@@ -31349,16 +35854,285 @@ function flatPieces3() {
   for (const p of ps) { const it = G3.items.get(p.id), b = p.p3 || defaultP3(p, it.mesh.c); p.p3 = { ...b, r: 0 }; }
   commit();
 }
+/* (Round POST8 / FIX-5 A, roadmap 3.B10 3.B12) The 3D pattern menu's arrangement rows. Each is one step and changes only the
+   patterns' 3D places (p3), never their 2D shape; the cloth is put on the new place as Reset 3D Arrangement puts it.
+   Flip ▸ Wrap Direction (Context Menu ▸ 3D Garment ▸ Flip Wrap Direction; guess post8/1): a pattern wrapped round the body (on an
+     arrangement point, or given a curve) turned half round in its own plane about the place it hangs on, still round the same
+     axis: what the Avatar Editor's Wrap Direction Up / Down does to a point (arrPoints()). A flat pattern has no wrap: the row is
+     greyed for it, as the reference greys it on a label (Advanced 1, the fly).
+   Reverse-Arrange ▸ Horizontally / Vertically (the reference's manual: "flips the pattern left to right or top to bottom where it
+     stands, keeping its curve round the body"; guess post8/2): turned half round about its own upright / its own width, and its
+     curve turned the other way (p3.r below 0), so it still bends round the same axis with its other face out.
+   Symmetric Arrangement (guess post8/3): each selected pattern's symmetric copy (symPartner()) placed as its mirror image across
+     the avatar's middle (x = 0): its place mirrored through the pair's own 2D mirror (link.m), the same curve, the partner
+     arrangement point (arrPartner()). Exact for any pair laid flat and for a pair mirrored about an upright or level line, which
+     is what Symmetric Pattern makes; a pair mirrored about a slanted line is placed by its middle and turn.
+   Duplicate to Symmetric Patterns (its place among the pin rows; guess post8/4): the selected patterns' pins mirrored onto their
+     symmetric copies (a pin already within 1 mm there is not doubled). */
+function wrapFlip3() {
+  const ps = sel3(true).filter(p => p.p3 && p.p3.r);
+  if (!ps.length) return toast(sel3(true).length ? "Flip Wrap Direction: the pattern is flat (arrange it on an arrangement point first)" : "Select a pattern in the 3D window first");
+  push("Flip Wrap Direction");
+  for (const p of ps) p.p3 = { ...p.p3, q: SIM3D.qMul(p.p3.q, SIM3D.qAxis([0, 0, 1], 180)) };
+  commit();
+}
+const wrapFlipOff = () => !sel3(true).some(p => p.p3 && p.p3.r);
+const reverseArrangeRows = () => [{ n: "Horizontally", h: "Reverse-Arrange Horizontally", f: () => reverseArrange3("h") }, { n: "Vertically", h: "Reverse-Arrange Vertically", f: () => reverseArrange3("v") }];
+function reverseArrange3(how) {
+  const ps = sel3(true);
+  if (!ps.length) return toast("Select a pattern in the 3D window first");
+  push("Reverse-Arrange " + (how === "v" ? "Vertically" : "Horizontally"));
+  for (const p of ps) {
+    const it = G3.items.get(p.id), b = p.p3 || defaultP3(p, it.mesh.c);
+    p.p3 = { ...b, q: SIM3D.qMul(b.q, SIM3D.qAxis(how === "v" ? [1, 0, 0] : [0, 1, 0], 180)), r: b.r ? -b.r : 0 };
+  }
+  commit();
+}
+// the 2D map from pattern p to its symmetric copy q (q.link.m, or its inverse when p is the copy), or null
+function symMap(p, q) {
+  if (q.link && q.link.kind === "symmetric" && q.link.of === p.id) return q.link.m;
+  if (p.link && p.link.kind === "symmetric" && p.link.of === q.id) return affInv(p.link.m);
+  return null;
+}
+// pattern q's place as the mirror image of p's (b, hanging on 2D point o), through the 2D map A from p to q
+function symP3(b, o, A) {
+  const L = [A[0], -A[1], -A[2], A[3]];                          // the map in the pattern's own frame (u right, v up): [u' v'] = [L0 L2; L1 L3][u v]
+  const col = (x, y) => { const w = SIM3D.qRot(b.q, x, y, 0, [0, 0, 0]); return [-w[0], w[1], w[2]]; };
+  const cx = col(L[0], L[1]), cy = col(L[2], L[3]), cz = (() => { const w = SIM3D.qRot(b.q, 0, 0, 1, [0, 0, 0]); return [-w[0], w[1], w[2]]; })();
+  const o2 = affApply(A, V(o[0], o[1])), out = { pos: [-b.pos[0], b.pos[1], b.pos[2]], q: SIM3D.qFromBasis(cx, cy, cz), r: b.r || 0, o: [o2.x, o2.y] };
+  const pt = b.pt && typeof arrPartner === "function" ? arrPartner(b.pt) : null;
+  if (pt) out.pt = pt;
+  return out;
+}
+function symArrange3() {
+  const ps = sel3(true), done = new Set();
+  if (!ps.length) return toast("Select a pattern in the 3D window first");
+  const pairs = [];
+  for (const p of ps) {
+    if (done.has(p.id)) continue;
+    const q = symPartner(p), A = q && symMap(p, q);
+    if (!q || !A || !G3.items.has(q.id) || !affRigid(A) || A[0]*A[3] - A[1]*A[2] > 0) continue;
+    done.add(p.id); done.add(q.id); pairs.push([p, q, A]);
+  }
+  if (!pairs.length) return toast("Symmetric Arrangement: select a pattern that has a symmetric copy (Symmetric Pattern)");
+  push("Symmetric Arrangement");
+  for (const [p, q, A] of pairs) { const c = G3.items.get(p.id).mesh.c, b = p.p3 || defaultP3(p, c); q.p3 = symP3(b, b.o || c, A); }
+  commit();
+  toast(pairs.length === 1 ? pairs[0][1].name + " placed as " + pairs[0][0].name + "'s mirror image" : pairs.length + " symmetric copies placed");
+}
+function pinsToSymmetric3() {
+  const ps = sel3(true).filter(p => p.pins && p.pins.length);
+  if (!ps.length) return toast("Duplicate to Symmetric Patterns: select a pattern with pins");
+  const jobs = [];
+  for (const p of ps) { const q = symPartner(p), A = q && symMap(p, q); if (q && A) jobs.push([p, q, A]); }
+  if (!jobs.length) return toast("Duplicate to Symmetric Patterns: the pattern has no symmetric copy");
+  const add = [];
+  for (const [p, q, A] of jobs) for (const pin of p.pins) {
+    const w = affApply(A, V(pin.x, pin.y));
+    if (![...(q.pins || []), ...add.filter(a => a[0] === q).map(a => a[1])].some(x => Math.hypot(x.x - w.x, x.y - w.y) < 1)) add.push([q, { x: w.x, y: w.y }]);
+  }
+  if (!add.length) return toast("The symmetric copy has these pins already");
+  push("Duplicate to Symmetric Patterns");
+  for (const [q, pin] of add) (q.pins = q.pins || []).push(pin);
+  commit();
+  toast(add.length + (add.length === 1 ? " pin" : " pins") + " mirrored onto the symmetric copy");
+}
+/* (Round POST8 / FIX-5 D, roadmap 3.B12) Edit ▸ Context Menu ▸ 3D Garment's last arrangement rows. The reference shows them by name only
+   (dimmed in the one frame, F11 never answered), so both are our design.
+   Roll Up Horizontally / Vertically (guess post8/9): the selected patterns' cloth rolled up in 3D where it hangs, as a cuff or a rolled
+     hem, without simulating (as Fold Arrangement turns cloth: the drape kept, one step named by drape snapshots, so undo and redo are
+     exact). Horizontally rolls up from the pattern's bottom edge in the 2D window (or its top), Vertically in from its left (or right)
+     edge: Number turns of Width each. Every turn folds what lies beyond its line (the earlier turns with it) half round onto the cloth
+     before the line, outward, so each layer lies SUPERIMPOSE_GAP off the one under it, following the cloth's own shape there (rollPlan():
+     a point's place along the pattern and its layer worked out in 2D, then put on the cloth as it hung: rollApply()). Outward is away
+     from the cloth's own middle in 3D; for a pattern hanging flat, its front. The 2D line's Roll Up (fold lines to fold along) stays.
+   Copy Symmetric Weights (guess post8/10): the selected pattern's simulation properties (the Property Editor's Simulation rows: Particle
+     Distance, Shrinkage, Pressure, Fill, Solidify and its Strength, Strengthen) copied onto its symmetric copy, one step; Mesh Type
+     follows the copy already. */
+const ROLL_HINT = "Add a fold line or tack to keep it rolled when simulating.";
+const ROLL_HOW = { h: { name: "Horizontally", from: [["bottom", "Bottom"], ["top", "Top"]] }, v: { name: "Vertically", from: [["left", "Left"], ["right", "Right"]] } };
+// each mesh point's place along the roll's way (s) and layer (d, 0 = the cloth itself), or a reason it can't
+function rollPlan(xy, from, w, n) {
+  const N = xy.length/2, ax = from === "left" || from === "right" ? 0 : 1, sg = from === "top" || from === "left" ? -1 : 1;
+  const s = new Float64Array(N), d = new Int32Array(N);
+  let lo = Infinity, hi = -Infinity;
+  for (let v = 0; v < N; v++) { s[v] = sg*xy[2*v + ax]; lo = Math.min(lo, s[v]); hi = Math.max(hi, s[v]); }
+  if (!(w > 0) || !(n >= 1) || (n + 1)*w > hi - lo + 1e-6) return { why: "the pattern is shorter than " + (n + 1) + " widths that way" };
+  for (let k = 1; k <= n; k++) {
+    const h = hi - k*w;
+    let D = 0;
+    for (let v = 0; v < N; v++) if (s[v] > h + 1e-9 && d[v] > D) D = d[v];
+    for (let v = 0; v < N; v++) if (s[v] > h + 1e-9) { s[v] = 2*h - s[v]; d[v] = 1 + D - d[v]; }
+  }
+  return { s, d, ax, sg };
+}
+// area-weighted point normals of a cloth as it hangs
+function clothNormals(X, tri) {
+  const Nn = new Float64Array(X.length);
+  for (let t = 0; t < tri.length; t += 3) {
+    const a = 3*tri[t], b = 3*tri[t+1], c = 3*tri[t+2];
+    const ux = X[b] - X[a], uy = X[b+1] - X[a+1], uz = X[b+2] - X[a+2], vx = X[c] - X[a], vy = X[c+1] - X[a+1], vz = X[c+2] - X[a+2];
+    const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    for (const q of [a, b, c]) { Nn[q] += nx; Nn[q+1] += ny; Nn[q+2] += nz; }
+  }
+  for (let q = 0; q < Nn.length; q += 3) { const l = Math.hypot(Nn[q], Nn[q+1], Nn[q+2]) || 1; Nn[q] /= l; Nn[q+1] /= l; Nn[q+2] /= l; }
+  return Nn;
+}
+// the cloth of item it rolled by plan R: each folded point on the cloth's place it now lies over, its layer's gaps outward
+// which way a cloth's normals (clothNormals()) point outward, 1 or -1: away from the cloth's own middle in 3D (a panel curved round the
+// body, a sleeve's tube round the arm both have it on their inner side); a pattern hanging flat (no clear side) takes its front (its
+// place's +z)
+function outwardSign(p, it, B, Nn) {
+  const mid = [0, 0, 0], NV = B.length/3;
+  for (let q = 0; q < B.length; q += 3) { mid[0] += B[q]/NV; mid[1] += B[q+1]/NV; mid[2] += B[q+2]/NV; }
+  let dot = 0, rad = 0;
+  for (let q = 0; q < B.length; q += 3) { const rx = B[q] - mid[0], ry = B[q+1] - mid[1], rz = B[q+2] - mid[2]; dot += Nn[q]*rx + Nn[q+1]*ry + Nn[q+2]*rz; rad += Math.hypot(rx, ry, rz); }
+  if (Math.abs(dot) >= 0.2*rad) return dot >= 0 ? 1 : -1;
+  const f = SIM3D.qRot((p.p3 || defaultP3(p, it.mesh.c)).q, 0, 0, 1, [0, 0, 0]);
+  let fd = 0;
+  for (let q = 0; q < B.length; q += 3) fd += Nn[q]*f[0] + Nn[q+1]*f[1] + Nn[q+2]*f[2];
+  return fd >= 0 ? 1 : -1;
+}
+function rollApply(it, p, R) {
+  const B = it.X.slice(), Nn = clothNormals(B, it.mesh.tri), m = it.mesh, src = { X: B }, sg = outwardSign(p, it, B, Nn);
+  let moved = 0;
+  for (let v = 0; v < m.xy.length/2; v++) {
+    if (!R.d[v]) continue;
+    const x = R.ax ? m.xy[2*v] : R.sg*R.s[v], y = R.ax ? R.sg*R.s[v] : m.xy[2*v+1], a = clothAnchor(it, x, y), Q = clothAt(src, a);
+    let nx = 0, ny = 0, nz = 0;
+    for (let k = 0; k < 3; k++) { const q = 3*a.i[k]; nx += a.w[k]*Nn[q]; ny += a.w[k]*Nn[q+1]; nz += a.w[k]*Nn[q+2]; }
+    const l = Math.hypot(nx, ny, nz) || 1, g = sg*R.d[v]*SUPERIMPOSE_GAP/l;
+    it.X[3*v] = Q[0] + nx*g; it.X[3*v+1] = Q[1] + ny*g; it.X[3*v+2] = Q[2] + nz*g;
+    moved++;
+  }
+  itemMoved(it); it.draped = true;
+  return moved;
+}
+const rollUpOff = () => !sel3(true).length;
+function rollUp3(how, opt) {
+  const ps = sel3(true), H = ROLL_HOW[how];
+  if (!ps.length) return toast("Roll Up " + H.name + ": select a pattern in the 3D window first");
+  const go = (w, n, from) => {
+    const plans = [], bad = [];
+    for (const p of ps) { const it = G3.items.get(p.id), R = rollPlan(it.mesh.xy, from, w, n); if (R.why) bad.push(p.name + ": " + R.why); else plans.push([p, it, R]); }
+    if (!plans.length) return toast("Roll Up " + H.name + ": " + bad.join("; "), 6000), 0;
+    simHalt();
+    drapeCapture(); push("Roll Up " + H.name);
+    for (const [p, it, R] of plans) rollApply(it, p, R);
+    if (typeof clothLines === "function") clothLines();
+    commit(); drapeCapture();
+    view3d.ask();
+    // (POST8 batch 0d, the maintainer's brief) held until the next action, as Auto Sewing's result is
+    holdToast(ROLL_HINT + (bad.length ? " Not rolled: " + bad.join("; ") + "." : ""));
+    return plans.length;
+  };
+  if (opt) return go(opt.w, opt.n, opt.from || H.from[0][0]);
+  numDialog("Roll Up " + H.name, [{ k: "w", label: "Width", val: +toDisp(S.rollW || 30).toFixed(2), unit: S.unit }, { k: "n", label: "Number", val: S.rollN || 2, unit: "", step: 1, spin: true, min: 1, max: 20 },
+    { k: "from", label: "From", val: H.from[0][0], options: H.from }], { x: window.innerWidth/2 - 160, y: 120 }, (v) => {
+    const w = fromDisp(v.w), n = Math.round(v.n);
+    if (!(w > 0) || !(n >= 1 && n <= 20)) return toast("A width above 0 and 1 to 20 turns");
+    S.rollW = w; S.rollN = n;
+    go(w, n, v.from);
+  }, { hint: "Rolls the selected cloth up where it hangs, in turns of this width, from that edge of the pattern as it lies in the 2D window. Simulating afterwards lets it unroll unless something holds it (fold lines from the 2D line's Roll Up, tacks)." });
+}
+const SYM_WEIGHTS = ["res3", "shrink3", "press3", "fill", "solid3", "solid3s", "strong3"];
+const symWeightsOff = () => !sel3(true).some(p => symPartner(p));
+function copySymWeights() {
+  const ps = sel3(true), jobs = [], done = new Set();
+  for (const p of ps) { const q = symPartner(p); if (q && !done.has(p.id)) { done.add(p.id); done.add(q.id); jobs.push([p, q]); } }
+  if (!jobs.length) return toast("Copy Symmetric Weights: select a pattern that has a symmetric copy (Symmetric Pattern)"), 0;
+  const diff = jobs.filter(([p, q]) => SYM_WEIGHTS.some(k => JSON.stringify(p[k]) !== JSON.stringify(q[k])));
+  if (!diff.length) return toast("The symmetric copy has these simulation properties already"), 0;
+  push("Copy Symmetric Weights");
+  for (const [p, q] of diff) for (const k of SYM_WEIGHTS) { if (p[k] === undefined) delete q[k]; else q[k] = clone(p[k]); }
+  commit();
+  toast(diff.length === 1 ? diff[0][1].name + " takes " + diff[0][0].name + "'s simulation properties" : diff.length + " symmetric copies take their patterns' simulation properties");
+  return diff.length;
+}
+/* (Round POST8 / FIX-5, roadmap 3.B10 1.T32) Smart Arrangement (the 3D pattern menu; the reference's manual: "puts patterns next to the
+   ones they are sewn to, keeping their drape"; how it chooses is ours, guess post8/11). Each selected pattern is moved as one, its drape
+   kept, so that its sewn edges lie on the edges they are sewn to: the places matched along each seam in proportion (SMART_SAMPLES a
+   seam, sideAtP()) read on both cloths as they hang (clothAnchor()), the rigid turn and move that best lays one set on the other
+   (rigidFit(), Horn's); when every sewn place lies on one line (one straight seam: the turn about it is not known) the shortest turn that
+   lines the seam up instead, so the pattern keeps how it faces. The patterns it is fitted to are the ones not selected, and selected ones
+   already arranged, in rounds, so a chain (cuff to sleeve to body) is placed in order. A pattern sewn to nothing that stays is left and
+   named. The place (p3: pos, q) is moved with the cloth, so Reset 3D Arrangement and a new mesh find it there. One step between two drape
+   snapshots (undo and redo exact). */
+const SMART_SAMPLES = 16;
+function sideAtP(sm, side, f) {
+  const R = sideRun(sm, side);
+  if (!R) return null;
+  const d = f*R.len, q = R.parts.find(x => d <= x.at + x.len + 1e-9) || R.parts[R.parts.length - 1], m = partPlace(q.X, q.part, Math.max(0, Math.min(1, (d - q.at)/q.len)), q.len);
+  return { p: q.X.p, pt: segPt(q.X.sh, m.i, m.t) };
+}
+function smartFit(p, still) {
+  const it = G3.items.get(p.id), A = [], B = [];
+  for (const sm of S.seams) {
+    if (sm.off || sm.zip) continue;
+    for (const [mine, other] of [["a", "b"], ["b", "a"]]) {
+      if (!sm[mine].every(q => q.piece === p.id) || !sm[other].every(q => still.has(q.piece))) continue;
+      for (let k = 0; k < SMART_SAMPLES; k++) {
+        const f = (k + 0.5)/SMART_SAMPLES, a = sideAtP(sm, mine, f), b = sideAtP(sm, other, f), ib = b && G3.items.get(b.p.id);
+        if (!a || !b || !ib) continue;
+        A.push(...clothAt(it, clothAnchor(it, a.pt.x, a.pt.y))); B.push(...clothAt(ib, clothAnchor(ib, b.pt.x, b.pt.y)));
+      }
+    }
+  }
+  const n = A.length/3;
+  if (n < 2) return null;
+  // one line? the farthest two places, and how far any lies off the line through them
+  let i0 = 0, i1 = 1, far = -1;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const d = Math.hypot(A[3*i] - A[3*j], A[3*i+1] - A[3*j+1], A[3*i+2] - A[3*j+2]); if (d > far) { far = d; i0 = i; i1 = j; } }
+  const u = [0, 1, 2].map(c => (A[3*i1 + c] - A[3*i0 + c])/(far || 1));
+  let off = 0;
+  for (let i = 0; i < n; i++) { const r = [0, 1, 2].map(c => A[3*i + c] - A[3*i0 + c]), t = r[0]*u[0] + r[1]*u[1] + r[2]*u[2]; off = Math.max(off, Math.hypot(r[0] - t*u[0], r[1] - t*u[1], r[2] - t*u[2])); }
+  if (off > 0.05*far) return rigidFit(A, B);
+  const v = [0, 1, 2].map(c => B[3*i1 + c] - B[3*i0 + c]), vl = Math.hypot(...v) || 1, q = qFromTo(u, v.map(c => c/vl));
+  const ca = [0, 0, 0], cb = [0, 0, 0];
+  for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) { ca[c] += A[3*i + c]/n; cb[c] += B[3*i + c]/n; }
+  const o = SIM3D.qRot(q, ca[0], ca[1], ca[2], [0, 0, 0]);
+  return { q, t: [cb[0] - o[0], cb[1] - o[1], cb[2] - o[2]] };
+}
+function smartArrange3() {
+  const ps = sel3(true);
+  if (!ps.length) return toast("Select a pattern in the 3D window first"), 0;
+  const still = new Set(S.pieces.filter(p => G3.items.has(p.id) && !ps.includes(p)).map(p => p.id)), fits = [];
+  let todo = ps.slice();
+  for (let round = 0; todo.length && round < ps.length; round++) {
+    const next = [];
+    for (const p of todo) { const f = smartFit(p, still); if (f) fits.push([p, f]); else next.push(p); }
+    if (next.length === todo.length) break;
+    for (const [p] of fits) still.add(p.id);
+    todo = next;
+  }
+  if (!fits.length) return toast("Smart Arrangement: the selected patterns are not sewn to a pattern that stays (select the ones to move only)", 6000), 0;
+  simHalt();
+  drapeCapture(); push("Smart Arrangement");
+  // each fit was worked out on the cloth as it hung before this step; a chain's later link was fitted to the earlier one's new place
+  // only if it came in a later round, so the fits are put on in their order
+  for (const [p, f] of fits) {
+    const it = G3.items.get(p.id), X = it.X, base = p.p3 || defaultP3(p, it.mesh.c);
+    for (let i = 0; i < X.length; i += 3) { const w = SIM3D.qRot(f.q, X[i], X[i+1], X[i+2], [0, 0, 0]); X[i] = w[0] + f.t[0]; X[i+1] = w[1] + f.t[1]; X[i+2] = w[2] + f.t[2]; }
+    const pos = SIM3D.qRot(f.q, base.pos[0], base.pos[1], base.pos[2], [0, 0, 0]);
+    p.p3 = { ...base, pos: [pos[0] + f.t[0], pos[1] + f.t[1], pos[2] + f.t[2]], q: SIM3D.qMul(f.q, base.q) };
+    it.placed = placeSig(p, it.mesh.c); it.own = placeOwn(p, it.mesh.c); itemMoved(it);
+  }
+  garmentLines(); commit(); drapeCapture();
+  view3d.ask();
+  const left = ps.filter(p => !fits.some(([q]) => q === p));
+  toast("Smart Arrangement: " + fits.map(([p]) => p.name).join(", ") + " placed next to what " + (fits.length === 1 ? "it is" : "they are") + " sewn to" + (left.length ? "; not sewn to a pattern that stays: " + left.map(p => p.name).join(", ") : ""), 6000);
+  return fits.length;
+}
 function placementDialog(p, at) {
   const it = G3.items.get(p.id);
   if (!it) return;
   const b = p.p3 || defaultP3(p, it.mesh.c);
   numDialog("3D Placement — " + p.name, [
     { k: "x", label: "X (to the avatar's left)", val: +b.pos[0].toFixed(1), unit: "mm", step: 1 }, { k: "y", label: "Y (up)", val: +b.pos[1].toFixed(1), unit: "mm", step: 1 }, { k: "z", label: "Z (forward)", val: +b.pos[2].toFixed(1), unit: "mm", step: 1 },
-    { k: "r", label: "Curve radius (0 = flat)", val: +b.r.toFixed(1), unit: "mm", step: 1, head: "Curve" },
+    { k: "r", label: "Curve radius (0 = flat, below 0 toward its face)", val: +b.r.toFixed(1), unit: "mm", step: 1, head: "Curve" },
     { k: "ry", label: "Turn about its upright", val: 0, unit: "°", step: 1, head: "Turn by" }, { k: "rx", label: "Tip forward or back", val: 0, unit: "°", step: 1 }, { k: "rz", label: "Turn in its own plane", val: 0, unit: "°", step: 1 },
   ], at, (v) => {
-    if (![v.x, v.y, v.z, v.r, v.rx, v.ry, v.rz].every(Number.isFinite) || v.r < 0) return toast("Numbers only, and a radius of 0 or more");
+    if (![v.x, v.y, v.z, v.r, v.rx, v.ry, v.rz].every(Number.isFinite)) return toast("Numbers only");
     push("3D Placement");
     let q = b.q;
     for (const [ax, a] of [[[0, 1, 0], v.ry], [[1, 0, 0], v.rx], [[0, 0, 1], v.rz]]) if (a) q = SIM3D.qMul(q, SIM3D.qAxis(ax, a));
@@ -31505,6 +36279,8 @@ function redrape() {
   simStart();
 }
 CMD3.redrape = redrape;
+CMD3.auto_sewing = autoSewRun;      // (Round POST8, second session, roadmap 1.T41)
+HINT.auto_sewing = "Sews the selected patterns (none selected: all of them) where two lines match in length, shape and notches; a sleeve cap into both armholes. Arrange the patterns round the avatar first: where two lines tie, the nearer is taken. It makes only the seams it is sure of and selects them: check them before simulating.";
 HINT.redrape = "After the avatar's size, height or pose changed: the garment is carried with the body and simulated again from where it hangs, with no reset of its arrangement.";
 CMD3.reset_3d_arrangement = () => resetArrangement3(false);
 CMD3.reset_2d_arrangement = () => resetArrangement2(false);
@@ -31609,7 +36385,7 @@ function state3Look(it, p) {
   const m = it.obj.material, off = !!p.off3 || !!p.arch3, col = p.freeze3 ? C_FROZEN : p.solid3 ? C_SOLID : p.strong3 ? C_STRONG : 0xffffff;
   if (m.color.getHex() !== col) { m.color.setHex(col); m.needsUpdate = true; }
   // (Round r17b / 3) Translucent Surface: every pattern see-through, a deactivated one more so
-  const see = off ? 0.35 : S.ui.render3 === "translucent" ? RENDER3_SEE : 1;
+  const see = off ? 0.35 : S.ui.render3 === "translucent" || (typeof penSee === "function" && penSee()) ? RENDER3_SEE : 1;      // (run 14c, 1.T45: and while a pen draws on the avatar)
   if (m.transparent !== (see < 1) || m.opacity !== see) { m.transparent = see < 1; m.opacity = see; m.depthWrite = see === 1; m.needsUpdate = true; }
   it.obj.visible = it.line.visible = !p.hide3 && (!p.arch3 || show3On("arch3")) && (!G3.isolate || G3.isolate.has(p.id));
   extras3(it);
@@ -31643,7 +36419,17 @@ function fabDetailPhys(d) {
   if (Object.keys(dir).length) out.dir = dir;
   return out;
 }
-const SIM = { on: false, sim: null, order: [], seams: [], sig: "", ms: 0, grab: null, tick: 0 };
+const SIM = { on: false, sim: null, order: [], seams: [], sig: "", ms: 0, grab: null, tick: 0, optTest: null };
+/* (Round PULL-3c, guess pull3c/3) Pull Strength: how strongly the mouse pulls cloth while simulating, in newtons, a preference
+   (Settings ▸ 3D ▸ Simulation, S.prefs.pullN), never in a file. PULL_SAFE is the most measured to keep every garment of the pull gate
+   on its body (scripts/pull-real.js, both avatars, throttled too); the default is 70 % of it; the slider goes from a third of the
+   default up to PULL_SAFE and never above. The solver's unit is g·mm/s² (1 N = 1e6). */
+// (measured with the pull gate: 8 N passes every case three times, twice unthrottled and once throttled 3×; at 9 and 10 N a sleeve
+// pulled 800 mm sideways drew the T-shirt's neckline one sector off its neck in some runs, at 12 N Marty's skirt pulled down ended 8 mm
+// above his hips)
+const PULL_SAFE = 8, PULL_DEFAULT = 5.6, PULL_MIN = +(PULL_DEFAULT/3).toFixed(1);
+const pullN = () => { const v = +(S.prefs && S.prefs.pullN); return Number.isFinite(v) && v > 0 ? Math.min(PULL_SAFE, Math.max(PULL_MIN, v)) : PULL_DEFAULT; };
+const pullMax = () => pullN()*1e6;
 const simRunning = () => SIM.on;
 // a seam part as places on its pattern's cloth, in the part's own sewing direction: [{ a, pos, jump }]
 function partNodes(part, order) {
@@ -31719,7 +36505,7 @@ function simSeams(order) {
   return out;
 }
 // what the solver is built from, as text: when it changes while the simulation runs, the solver is built again
-const simSig = () => JSON.stringify([S.seams, S.tacks, S.pipings, S.bindings, S.glues, (S.buttons || []).map(b => [b.id, b.piece, b.x, b.y, b.fasten, b.lib]), ((S.lib || {}).button || []).map(t => [t.id, t.weight]), S.cloth, S.pieces.map(p => [p.id, p.on, p.fabric, p.layer, p.pins, (p.internals || []).filter(foldSet).map(it => [it.id, foldOf(it)]), elasticSig(p), p.freeze3, p.strong3, p.off3, p.solid3, p.solid3s, p.shrink3, p.arch3, p.flip3, p.press3 || 0, p.steam || 0, p.blocks ? [p.blocks, blockLinesOf(p).map(l => [l.pts, l.segs])] : 0]), (S.lib || {}).fabric, S.av ? [S.av.name, S.av.scale, S.av.pose, S.av.baseQ ? 1 : 0, S.avSet.cell, S.av.jsig || "", S.av.ssig || "", S.av.bsig || ""] : 0, [...G3.items.values()].map(it => it.uid)]);
+const simSig = () => JSON.stringify([S.seams, S.tacks, S.pipings, S.bindings, S.glues, ...((S.lacings || []).length ? [S.lacings] : []),(S.buttons || []).map(b => [b.id, b.piece, b.x, b.y, b.fasten, b.lib]), ((S.lib || {}).button || []).map(t => [t.id, t.weight]), S.cloth, S.pieces.map(p => [p.id, p.on, p.fabric, p.layer, p.pins, (p.internals || []).filter(foldSet).map(it => [it.id, foldOf(it)]), elasticSig(p), p.freeze3, p.strong3, p.off3, p.solid3, p.solid3s, p.shrink3, p.arch3, p.flip3, p.press3 || 0, p.steam || 0, p.blocks ? [p.blocks, blockLinesOf(p).map(l => [l.pts, l.segs])] : 0]), (S.lib || {}).fabric, S.av ? [S.av.name, S.av.scale, S.av.pose, S.av.baseQ ? 1 : 0, S.avSet.cell, S.av.jsig || "", S.av.ssig || "", S.av.bsig || ""] : 0, [...G3.items.values()].map(it => it.uid)]);
 function simBuild() {
   SIM.order = S.pieces.filter(p => p.on && G3.items.has(p.id)).map(p => p.id);
   SIM.seams = simSeams(SIM.order);
@@ -31740,7 +36526,7 @@ function simBuild() {
   SIM.order.forEach((id, pi) => { const it = G3.items.get(id), p = byId(id); for (const v of p.freeze3 || p.off3 || p.arch3 ? Array.from({ length: it.mesh.xy.length >> 1 }, (_, k) => k) : piecePins(p, it)) pins.push({ p: pi, v }); });
   zipBuild(SIM.order);
   const extra = simExtras(SIM.order, pieces), tk = simTacks(SIM.order);
-  const spec = { pieces, seams: [...SIM.seams.filter(sm => !sm.skip), ...extra, ...tk.seams, ...simButtons(SIM.order), ...simGlues(SIM.order)], holds: tk.holds, masses: simButtonMasses(SIM.order), rods: simRods(SIM.order), pins, opt: { substeps: simSubsteps(), self: S.cloth.self, selfMin: COLLIDE_THICK + clothAddThick() } }, field = S.av ? avatarField(S.av) : null;
+  const spec = { pieces, seams: [...SIM.seams.filter(sm => !sm.skip), ...extra, ...tk.seams, ...simButtons(SIM.order), ...simGlues(SIM.order)], holds: tk.holds, masses: simButtonMasses(SIM.order), rods: simRods(SIM.order), pins, opt: { substeps: simSubsteps(), self: S.cloth.self, selfMin: COLLIDE_THICK + clothAddThick(), dragMax: pullMax(), ...avSurfaceOpt() /* (FIX-8 / B) the avatar's Surface ▸ friction */, ...(SIM.optTest || {}) } }, field = S.av ? avatarField(S.av) : null;      // (Round PULL-3c: SIM.optTest, the pull gate's own solver options, scripts/pull-real.js --opt; null in use)
   SIM.sig = simSig(); SIM.fillSig = simFillSig();
   const wk = S.cloth.worker !== false ? simWorker() : null;
   if (!wk) { SIM.sim = SIM3D.clothBuild({ ...spec, field }); SIM.forces = mapForcesWanted(); SIM3D.clothForces(SIM.sim, SIM.forces); return; }
@@ -31844,6 +36630,7 @@ function simStop() {
   view3d.loop(null); refreshRail(); note3d(); garmentLines();
   drapeCapture();                                            // how the run ended: what redo puts back
   restBodyKeep();                                            // (Round r33b / 4) the body it came to rest on, for Re-drape
+  if (typeof TPCHAIN !== "undefined" && TPCHAIN.on) tpChainEnd();      // (POST8 batch 0f) the T-pose chain lays it flat in the same step
 }
 function simHalt() { if (SIM.on) simStop(); }
 function simToggle() { SIM.on ? simStop() : simStart(); }
@@ -31875,7 +36662,7 @@ function simFrame() {
 }
 function simNote() {
   const s = SIM.sim;
-  note3d("Simulating (Space stops) · " + s.n + " points · " + SIM.ms.toFixed(1) + " ms a step" + (SIM.ms > 17 ? " (slower than real time)" : "") + " · moving " + simSpeed().toFixed(0) + " mm/s" + (s.remote ? "" : " · in the window's own thread"));
+  note3d((typeof TPCHAIN !== "undefined" && TPCHAIN.on ? "T-pose set: re-draping on the avatar, then Lay Flat · " : "") + "Simulating (Space stops) · " + s.n + " points · " + SIM.ms.toFixed(1) + " ms a step" + (SIM.ms > 17 ? " (slower than real time)" : "") + " · moving " + simSpeed().toFixed(0) + " mm/s" + (s.remote ? "" : " · in the window's own thread"));
 }
 // the cloth was meshed or arranged again while the simulation runs: the solver starts from what there is now
 function garmentRemade() { if (SIM.on) simBuild(); }
@@ -31936,7 +36723,7 @@ function symPinchTo(g, q) {
 }
 // the solver's pull towards `to` (null: let go), in the worker or in the page; also: more pulls at the same time (Symmetric Pinch)
 function simDragTo(d, to, also) {
-  const sm = SIM.sim, m = d && to ? { i: d.i, w: d.w, to, ...(also && also.length ? { also } : {}) } : null;
+  const sm = SIM.sim, m = d && to ? { i: d.i, w: d.w, to, max: (SIM.optTest && SIM.optTest.dragMax) || pullMax(), ...(also && also.length ? { also } : {}) } : null;      // (Round PULL-3c) max: Pull Strength
   if (!sm) return;
   if (!sm.remote) return SIM3D.clothDrag(sm, m);
   try { SIM.wk.postMessage({ t: "drag", d: m }); } catch (e) {}
@@ -32481,15 +37268,32 @@ function clothLineList(p, it) {
     const pts = stitchLine(st, S.pieces);
     if (pts && pts.length > 1) out.push({ kind: "stitch", id: st.id, an: pts.map(hold), closed: false });
   }
+  // (POST8 FIX-7 / B, roadmap 3.A21) Show Puckering (3D Trims): a puckering's wave on the cloth, as 2D draws it; Show 2D Measurements (3D
+  // Garment): a measurement whose two ends are on this pattern, straight or along its outline, on the cloth (one across patterns stays 2D)
+  const dense = (pts) => { const f = []; pts.forEach((q, k) => { if (k) { const a = pts[k-1], n = Math.max(1, Math.ceil(dist(a, q)/m.res)); for (let j = 1; j < n; j++) f.push(V(a.x + (q.x - a.x)*j/n, a.y + (q.y - a.y)*j/n)); } f.push(q); }); return f; };
+  for (const pk of S.puckers || []) {
+    if (!pk.part || pk.part.piece !== p.id) continue;
+    const pts = puckerWave(pk, S.pieces);
+    if (pts && pts.length > 1) out.push({ kind: "pucker", id: pk.id, an: pts.map(hold), closed: false });
+  }
+  for (const ms of S.measures || []) {
+    if (!ms.a || !ms.b || ms.a.piece !== p.id || ms.b.piece !== p.id) continue;
+    const inf = measureInfo(ms, S.pieces);
+    if (!inf) continue;
+    const pts = inf.segs ? inf.segs.flatMap((k, j) => Array.from({ length: 13 }, (_, i) => segPt(inf.sh, k, i/12)).slice(j ? 1 : 0)) : [inf.a, inf.b];
+    if (pts.length > 1) out.push({ kind: "meas", id: ms.id, an: dense(pts).map(hold), closed: false });
+  }
   return out;
 }
-const clothLineSig = (p) => JSON.stringify([p.internals.map(s => [s.id, !!s.foldRender, s.pts, s.segs.map(g => g.curved ? [g.c1, g.c2, g.cps] : 0), s.closed]), p.bases.map(s => [s.id, s.pts, s.closed, s.ref]), (S.stitches || []).filter(st => st.part && st.part.piece === p.id)]);
+const clothLineSig = (p) => JSON.stringify([p.internals.map(s => [s.id, !!s.foldRender, s.pts, s.segs.map(g => g.curved ? [g.c1, g.c2, g.cps] : 0), s.closed]), p.bases.map(s => [s.id, s.pts, s.closed, s.ref]), (S.stitches || []).filter(st => st.part && st.part.piece === p.id),
+  (S.puckers || []).filter(pk => pk.part && pk.part.piece === p.id), (S.measures || []).filter(ms => ms.a && ms.a.piece === p.id), p.pts, p.segs.map(g => g.curved ? [g.c1, g.c2, g.cps] : 0)]);
 function clothLines() {
   const g = view3d.group("lines");
   if (!g) return;
   const show = S.ui.show3d || {};
   g.visible = show.garment !== false;
   if (!G3.lineMat) G3.lineMat = { internals: new THREE.LineBasicMaterial({ color: C_INT }), bases: new THREE.LineDashedMaterial({ color: C_BASE, dashSize: 3, gapSize: 4 }), stitch: new THREE.LineDashedMaterial({ color: 0x3a3a3a, dashSize: 3, gapSize: 2 }), crease: new THREE.LineBasicMaterial({ color: 0x101012 }),
+    pucker: new THREE.LineBasicMaterial({ color: 0x6a4a8a }), meas: new THREE.LineDashedMaterial({ color: 0x0b6e4f, dashSize: 6, gapSize: 3 }),      // (POST8 FIX-7 / B: the wave as 2D draws it; a measurement long-dashed)
     hot: new THREE.LineBasicMaterial({ color: C_HOVER, depthTest: false }) };
   const seen = new Set();
   for (const it of G3.items.values()) {
@@ -32503,7 +37307,7 @@ function clothLines() {
     }); }
     for (const l of it.lines) {
       seen.add(l.obj);
-      l.obj.visible = l.kind === "crease" ? true : l.kind === "internals" ? show.internal3 !== false : l.kind === "bases" ? show.baseline3 !== false : show.topstitch3 !== false;
+      l.obj.visible = l.kind === "crease" ? true : l.kind === "internals" ? show.internal3 !== false : l.kind === "bases" ? show.baseline3 !== false : l.kind === "pucker" ? show.pucker3 !== false : l.kind === "meas" ? show.meas3 === true : show.topstitch3 !== false;
       const hot = G3.hotLine && G3.hotLine.pid === it.pid && G3.hotLine.kind === l.kind && G3.hotLine.id === l.id;
       l.obj.material = hot ? G3.lineMat.hot : G3.lineMat[l.kind]; l.obj.renderOrder = hot ? 7 : 3;
       if (!l.obj.visible) continue;
@@ -32519,7 +37323,7 @@ function clothLines() {
 function clothLineHit(e) {
   let best = null, bd = 9;
   for (const it of G3.items.values()) for (const l of it.lines || []) {
-    if (l.kind === "stitch" || !l.obj.visible) continue;
+    if (l.kind === "stitch" || l.kind === "pucker" || l.kind === "meas" || !l.obj.visible) continue;      // (FIX-7 / B: shown, never picked as a line)
     const P = l.obj.geometry.attributes.position.array;
     for (let k = 0; k < l.an.length; k++) {
       const s = view3d.project({ x: P[3*k], y: P[3*k+1], z: P[3*k+2] });
@@ -33077,6 +37881,16 @@ function showButtons3() {
     if (!P) continue;
     const t = buttonType(b), n = clothNormalAt(at), N = new THREE.Vector3(...n);
     G3.btnScreen.push({ id: b.id, kind: b.kind, P });
+    // (Round LIB-1 / E) a type with a registered mesh: that mesh, standing on the cloth along its normal, turned with the button's angle
+    const mg = t.mesh && trimGeometry(t.mesh);
+    if (mg) {
+      const o = new THREE.Mesh(mg, new THREE.MeshStandardMaterial({ color: t.color || "#ffffff", roughness: 0.5, side: THREE.DoubleSide }));
+      o.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), N).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -(b.angle || 0)*Math.PI/180));
+      o.position.set(P[0] + n[0]*2, P[1] + n[1]*2, P[2] + n[2]*2);
+      if (b.kind === "button") o.userData.btn = b.id; else o.userData.hole = b.id;
+      g.add(o);
+      if (b.kind === "button") continue;
+    }
     if (b.kind === "button") {
       const r = t.width/2, h = Math.max(1, t.thickness || 3), geo = t.shape === "Square" ? new THREE.BoxGeometry(2*r, h, 2*r) : new THREE.CylinderGeometry(r, r, h, 24);
       const o = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: t.color || "#ffffff", roughness: 0.5 }));
@@ -33180,7 +37994,7 @@ HINT.button = "Click the cloth to place a button there."; HINT.buttonhole = "Cli
 const GLUE_K = 1e5;                                        // (Round build-1) the stiffness a glue of Strength s has: GLUE_K·s/(1 − s), in g/s² (N/mm × 1000)
 const PIPE_D = 4, PIPE_RHO = 5e-4, PIPE_SA = 10, PIPE_BEND = 20, BIND_W = 10, BIND_BEND = 3, GLUE_LINE_BEND = 2, GLUE_REACH = 25;   // mm, g/mm³ (a cotton cord), mm each side, × the fabric's bending; mm, × bending; × the seam's bending; mm
 // (functions, not constants: the panels and the drawing call them before this block has run, as the page starts)
-function trimKey(kind) { return { piping: "pipings", binding: "bindings", glue: "glues" }[kind]; }
+function trimKey(kind) { return { piping: "pipings", binding: "bindings", glue: "glues", lace: "lacings" }[kind]; }      // (POST8 FIX-4b: lacing)
 function trimList(kind) { return S[trimKey(kind)] || (S[trimKey(kind)] = []); }
 const trimNext = (kind) => trimList(kind).reduce((m, t) => Math.max(m, t.id), 0) + 1;
 const trimFab = (t) => { const fs = libOf().fabric; return fs.find(f => f.id === t.fabric) || fs[0] || null; };
@@ -33193,7 +38007,7 @@ function normPipings(list) {
     if (!(t1 > t0)) continue;
     seen.add(t.id);
     out.push({ id: t.id, name: typeof t.name === "string" && t.name ? t.name : "Piping " + t.id, seam: t.seam, t0, t1, d: t.d > 0 && Number.isFinite(t.d) ? Math.min(30, t.d) : PIPE_D,
-      fabric: Number.isInteger(t.fabric) ? t.fabric : null, side: t.side === "in" ? "in" : "out" });
+      fabric: Number.isInteger(t.fabric) ? t.fabric : null, side: t.side === "in" ? "in" : "out", ...trimRefs(t), ...trimCut(t, false) });
   }
   return out;
 }
@@ -33201,11 +38015,29 @@ function validPipings(list, seams) { return (list || []).filter(t => seams.some(
 function normBindings(list) {
   return normStitches((Array.isArray(list) ? list : []).map(b => b && { ...b, offset: 0 })).map((s, k) => {
     const b = list.find(x => x && x.id === s.id);
-    return { id: s.id, name: typeof b.name === "string" && b.name ? b.name : "Binding " + s.id, part: s.part, w: b.w > 0 && Number.isFinite(b.w) ? Math.min(60, b.w) : BIND_W, fabric: Number.isInteger(b.fabric) ? b.fabric : null };
+    return { id: s.id, name: typeof b.name === "string" && b.name ? b.name : "Binding " + s.id, part: s.part, w: b.w > 0 && Number.isFinite(b.w) ? Math.min(60, b.w) : BIND_W, fabric: Number.isInteger(b.fabric) ? b.fabric : null, ...trimRefs(b), ...trimCut(b, true) };
   });
 }
+/* (Round PIPE-1b, ⚑ additive: the format stays 37) how a binding's one strip or a piping's strip is cut, each kept only when set: sa (its
+   own seam allowance, mm: a binding made as one strip, and a piping since PIPE-1b, always have it; without it a piping's strip is the
+   PIPE-1 one, its 10 mm flanges inside the outline), grain "cross" (cross-grain; else bias), red (a binding's Reduction, % of the edge). */
+function trimCut(t, bind) {
+  const sa = t.sa !== null && t.sa !== "" && Number.isFinite(+t.sa) && +t.sa >= 0 ? Math.min(50, +t.sa) : null, red = bind && t.red !== null && t.red !== "" && Number.isFinite(+t.red) ? Math.max(0, Math.min(50, +t.red)) : null;
+  return { ...(sa !== null ? { sa } : {}), ...(t.grain === "cross" ? { grain: "cross" } : {}), ...(red !== null ? { red } : {}) };
+}
+/* (Round PIPE-1, ⚑ additive: the format stays 37) a piping or binding made as patterns names them: pat (the strip patterns' ids: a binding's
+   Outside and Inside, or an imported binding's one strip; a piping's strip), sew (the seams that sew a binding's strips on), at (the edge as it
+   was when they were made: they are made again when it changes, trimSync()). Each kept only when set. */
+function trimRefs(t) {
+  const ints = (a, n) => (Array.isArray(a) && a.length >= 1 && a.length <= n && a.every(Number.isInteger) ? a.slice() : null), pat = ints(t.pat, 2), sew = pat && ints(t.sew, 8);
+  return { ...(pat ? { pat } : {}), ...(sew ? { sew } : {}), ...(pat && typeof t.at === "string" && t.at ? { at: t.at } : {}) };
+}
 // a binding stays on the outline only (a part on shape 0), on what is left of its stretch of edge
-function validBindings(list, pieces) { return validStitches((list || []).filter(b => !b.part.shape), pieces); }
+function validBindings(list, pieces) {
+  // (Round PIPE-1) a binding whose strip patterns are not all there no longer names them (commit() runs trimSync() first, which ends it)
+  for (const b of list || []) if (b.pat && b.pat.some(id => !pieces.some(p => p.id === id))) { delete b.pat; delete b.sew; delete b.at; }
+  return validStitches((list || []).filter(b => !b.part.shape), pieces);
+}
 function normGlues(list) {
   const out = [], seen = new Set();
   for (const g of Array.isArray(list) ? list : []) {
@@ -33237,16 +38069,20 @@ function trimSelect(kind, id) { S.selTrim = id == null ? null : { kind, id }; dr
 function deleteTrim(kind, id) {
   const L = trimList(kind);
   if (!L.some(t => t.id === id)) return false;
-  push({ piping: "Delete Piping", binding: "Delete Binding", glue: "Delete Gluing" }[kind]);
+  push({ piping: "Delete Piping", binding: "Delete Binding", glue: "Delete Gluing", lace: "Delete Lacing" }[kind]);
+  // (Round PIPE-1) a piping's or binding's strip patterns and the seams that sew them on go with it
+  const t = L.find(x => x.id === id);
+  if (t.pat) trimDrop(t);
   S[trimKey(kind)] = L.filter(t => t.id !== id);
+  if (kind === "binding") bindEnds();
   if (S.selTrim && S.selTrim.kind === kind && S.selTrim.id === id) S.selTrim = null;
   commit();
   return true;
 }
 // Delete with a trim's tool in hand deletes the selected one
 function trimDeleteSel() {
-  const s = selTrim(), tools = { piping: ["piping", "edit_piping"], binding: ["binding", "select_binding"], glue: ["gluing", "edit_gluing", "sticker", "glue_fill"] };
-  if (!s || !((tools[s.kind] || []).includes(S.tool3) || (s.kind === "glue" && (tools.glue.includes(S.tool))))) return false;
+  const s = selTrim(), tools = { piping: ["piping", "edit_piping"], binding: ["binding", "select_binding"], glue: ["gluing", "edit_gluing", "sticker", "glue_fill"], lace: ["lacing", "edit_lacing"] };
+  if (!s || !((tools[s.kind] || []).includes(S.tool3) || ((s.kind === "glue" || s.kind === "lace") && (tools[s.kind].includes(S.tool))))) return false;
   return deleteTrim(s.kind, s.id);
 }
 
@@ -33307,7 +38143,7 @@ function simRods(order) {
     const f = fabricPhys(trimFab(t)), step = run.len/(run.a.length - 1);
     out.push(runRod(run, pipingMassPerMm(t)*step, PIPE_BEND*f.bend*Math.pow(t.d/PIPE_D, 2), 10*f.stretch, 0.02));
   }
-  return out.concat(bindingRods(order));
+  return out.concat(bindingRods(order), laceRods(order));
 }
 
 /* ---- the 3D window: tubes and strips swept along the cloth ---- */
@@ -33361,7 +38197,12 @@ function showTrims3() {
   };
   if ((S.ui.show3d || {}).piping !== false) for (const t of S.pipings || []) { const sec = pipingSections(t, order); if (sec && sec.length > 1) add(sweepGeo(sec, true), t, "piping"); }
   if (typeof bindingSections === "function") for (const t of S.bindings || []) { const sec = bindingSections(t, order); if (sec && sec.length > 1) add(sweepGeo(sec, false), t, "binding"); }
-  if (typeof showGlues3 === "function") showGlues3(g, order, sel);
+  // (POST8 FIX-4b) the lacings, and one being threaded (thinner, 2 mm)
+  if (typeof laceSections === "function") {
+    for (const t of S.lacings || []) for (const sec of laceSections(t, order)) add(sweepGeo(sec, true), t, "lace");
+    if (S.laceDraft && S.laceDraft.holes.length > 1) { const dt = { id: -1, holes: S.laceDraft.holes, spans: [], d: 2, fabric: -1 }; for (const sec of laceSections(dt, order)) add(sweepGeo(sec, true), dt, "lace-draft"); }
+  }
+  if (typeof showGlues3 === "function" && show3("bond")) showGlues3(g, order, sel);      // (POST8 FIX-7 / B) Show Bond/Skive
 }
 
 /* ---- the 2D window ---- */
@@ -33406,21 +38247,23 @@ function drawTrims2D() {
   }
   if (typeof drawBindings2D === "function") drawBindings2D(sel);
   if (typeof drawGlues2D === "function") drawGlues2D(sel);
+  if (typeof drawLacings2D === "function") drawLacings2D(sel);      // (POST8 FIX-4b)
   ctx.restore();
 }
 
 /* ---- the Object Browser's lists ---- */
 function trimRows(tab, row, items) {
   const sel = selTrim(), list = trimList(tab), seamName = (id) => { const sm = S.seams.find(x => x.id === id), A = sm && byId(sm.a[0].piece), B = sm && byId(sm.b[0].piece); return sm ? (A ? A.name : "?") + " + " + (B ? B.name : "?") : "?"; };
-  const sign = { piping: "○", binding: "⊓", glue: "≈" }[tab];
+  const sign = { piping: "○", binding: "⊓", glue: "≈", lace: "⋈" }[tab];
   for (const t of list) {
-    const f = trimFab(t), sub = tab === "piping" ? "Ø " + fmt(t.d) + " · " + seamName(t.seam) + " · " + (t.side === "in" ? "inside" : "outside")
-      : tab === "binding" ? fmt(t.w) + " · " + esc((byId(t.part.piece) || {}).name || "?")
+    const f = trimFab(t), sub = tab === "lace" ? t.holes.length + " eyelets · " + fmt(laceLen(t)) + " · Ø " + fmt(t.d) + ((t.rev || []).length ? " · reversed at " + t.rev.map(k => k + 1).join(", ") : "")
+      : tab === "piping" ? "Ø " + fmt(t.d) + " · " + seamName(t.seam) + " · " + (t.side === "in" ? "inside" : "outside")
+      : tab === "binding" ? fmt(t.w) + " · " + esc((byId(t.part.piece) || {}).name || "?") + (t.pat ? " · " + t.pat.length + (t.pat.length === 1 ? " strip" : " strips") : "")
       : t.kind === "line" ? "line · " + seamName(t.seam) : "area · " + esc((byId(t.a) || {}).name || "?") + " on " + esc((byId(t.b) || {}).name || "?") + (glueOff(t) ? " · off" : "");
     row(sel && sel.kind === tab && sel.id === t.id ? " on" : "", '<span class="ck">' + sign + '</span><span class="sw" style="background:' + ((f && f.color) || "#3a3a3c") + '"></span><span class="nm">' + esc(t.name) + '</span><span class="sub">' + sub + '</span><button class="x" title="Delete">×</button>',
       () => { trimSelect(tab, t.id); trimEdit(tab, t); }, () => deleteTrim(tab, t.id));
   }
-  if (!list.length) items.innerHTML = '<div class="note">' + { piping: "No piping. In the 3D window, Piping: click a seam on the garment.", binding: "No binding. In the 3D window, Binding: click a free edge of the garment.", glue: "No gluing. In the 3D window, Gluing: drag a box over two layers lying on each other, or click a seam to bond it." }[tab] + '</div>';
+  if (!list.length) items.innerHTML = '<div class="note">' + { lace: "No lacing. Lacing: click the eyelets in order (holes in the patterns), in the 2D window or on the garment, then Enter.", piping: "No piping. In the 3D window, Piping: click a seam on the garment.", binding: "No binding. In the 3D window, Binding: click a free edge of the garment.", glue: "No gluing. In the 3D window, Gluing: drag a box over two layers lying on each other, or click a seam to bond it." }[tab] + '</div>';
 }
 // the box of a trim, to change it (from its tool or the Object Browser)
 function trimEdit(kind, t, at) {
@@ -33428,6 +38271,7 @@ function trimEdit(kind, t, at) {
   if (kind === "piping") return pipingDialog(t.seam, t, at);
   if (kind === "binding" && typeof bindingDialog === "function") return bindingDialog(t.part, t, at);
   if (kind === "glue" && typeof glueDialog === "function") return glueDialog(t, at);
+  if (kind === "lace" && typeof laceDialog === "function") return laceDialog(t, at);
 }
 const fabricChoices = () => libOf().fabric.map(f => [String(f.id), f.name]);
 
@@ -33436,19 +38280,27 @@ function pipingDialog(seamId, t, at) {
   const sm = S.seams.find(x => x.id === seamId);
   if (!sm) return;
   const f = t ? trimFab(t) : libOf().fabric[0];
+  // (Round PIPE-1b) its strip's own seam allowance (a PIPE-1 piping's 10 mm flanges are its allowance) and grain, as a binding's
+  const sa0 = t && Number.isFinite(t.sa) ? t.sa : t ? PIPE_FLANGE : S.saValue, grain0 = t && t.grain === "cross" ? "cross" : "bias";
   numDialog((t ? "Edit Piping" : "Piping") + " — seam " + seamId, [
     { k: "d", label: "Cord Diameter", val: t ? t.d : PIPE_D, unit: "mm", step: 0.5 },
-    { k: "t0", label: "From", val: t ? +(100*t.t0).toFixed(1) : 0, unit: "%", step: 1 }, { k: "t1", label: "To", val: t ? +(100*t.t1).toFixed(1) : 100, unit: "%", step: 1 }],
+    { k: "t0", label: "From", val: t ? +(100*t.t0).toFixed(1) : 0, unit: "%", step: 1 }, { k: "t1", label: "To", val: t ? +(100*t.t1).toFixed(1) : 100, unit: "%", step: 1 },
+    { k: "sa", label: "Seam Allowance", val: sa0, unit: "mm", step: 1 }, { k: "grain", label: "Grain", val: grain0, options: BIND_GRAINS }],
     at, (o) => {
-      const v = { d: Math.min(30, o.d), t0: Math.max(0, Math.min(1, o.t0/100)), t1: Math.max(0, Math.min(1, o.t1/100)), fabric: Number.isInteger(+o.fabric) && o.fabric !== "" ? +o.fabric : null, side: o.side === "in" ? "in" : "out" };
+      const v = { d: Math.min(30, o.d), t0: Math.max(0, Math.min(1, o.t0/100)), t1: Math.max(0, Math.min(1, o.t1/100)), fabric: Number.isInteger(+o.fabric) && o.fabric !== "" ? +o.fabric : null, side: o.side === "in" ? "in" : "out",
+        sa: Number.isFinite(o.sa) ? Math.max(0, Math.min(50, o.sa)) : sa0 };
+      const grain = (o.grain || grain0) === "cross" ? "cross" : "bias";
       push(t ? "Edit Piping" : "Piping");
-      if (t) Object.assign(trimList("piping").find(x => x.id === t.id), v);
-      else { const id = trimNext("piping"); trimList("piping").push({ id, name: "Piping " + id, seam: seamId, ...v }); S.selTrim = { kind: "piping", id }; }
+      let b;
+      if (t) Object.assign(b = trimList("piping").find(x => x.id === t.id), v);
+      else { const id = trimNext("piping"); trimList("piping").push(b = { id, name: "Piping " + id, seam: seamId, ...v }); S.selTrim = { kind: "piping", id }; }
+      if (grain === "cross") b.grain = "cross"; else delete b.grain;
+      pipingMake(b);                                         // (Round PIPE-1) its strip, a pattern to cut (pipe1/10)
       commit();
     }, {
       selects: [{ k: "fabric", label: "Fabric", val: f ? String(f.id) : "", options: fabricChoices() }, { k: "side", label: "Shows on", val: t ? t.side : "out", options: [["out", "Outside"], ["in", "Inside"]] }],
-      hint: "A cord in a strip of fabric, sewn into the seam between its two edges, from and to a share of the seam's length.",
-      check: (o) => (!(o.d > 0) ? "The cord needs a diameter" : !(o.t1 > o.t0) ? "To must be past From" : o.t0 < 0 || o.t1 > 100 ? "From and To are shares of the seam, 0 to 100 %" : ""),
+      hint: "A cord in a strip of fabric, sewn into the seam between its two edges, from and to a share of the seam's length. Its strip (round the cord between its seam lines, and the seam allowance each side) is made as a pattern to cut, on the bias or cross-grain, with a fold line along its middle; it is kept out of the 3D garment: the cord is simulated in the seam.",
+      check: (o) => (!(o.d > 0) ? "The cord needs a diameter" : !(o.t1 > o.t0) ? "To must be past From" : o.t0 < 0 || o.t1 > 100 ? "From and To are shares of the seam, 0 to 100 %" : !(o.sa >= 0) ? "The seam allowance can't be below 0" : ""),
     });
 }
 // the seam under the pointer on the cloth (the 2D Edit Sewing's own picking, through the picking layer)
@@ -33483,6 +38335,355 @@ TOOL3.edit_piping = {
 HINT.piping = "Click a seam on the garment: a box for the piping sewn into it (the cord's diameter, its fabric, the side it shows on, and how much of the seam it runs along). A seam that has piping opens it to change.";
 HINT.edit_piping = "Click a piping on the garment to select it and change it in its box; Delete removes the selected one.";
 
+/* ================================================================
+   LACING (POST8 FIX-4b, roadmap 1.T19; the reference's manual M:55445403329305, What's New 2026.1 #15)
+   Lacing: click the eyelets in order (closed internal shapes: holes, or any closed shape, guess post8/42), in the 2D window
+   or on the garment; a double-click on the last or Enter makes the lacing, Backspace takes the last eyelet back, Esc gives
+   it up. Edit Lacing: click a lacing to select it and change it in its box (Cord Diameter, Length, Curvature, Fabric); with
+   one selected, a click on one of its eyelets reverses the cord there (the reference's Reverse): from that eyelet on it runs
+   on the other face. Delete with either tool deletes the selected lacing.
+   S.lacings = [{ id, name, holes: [{ piece, shape }], spans: [mm], d, fabric, curve?, rev? }] (⚑ in the file only when there
+   are some; file version stays 36). spans: the cord's length between each two eyelets, measured when the lacing is made (on
+   the garment as it hangs, else flat when both eyelets are on one pattern, else straight across the 2D window); a shorter
+   Length pulls the eyelets together. A span runs on the front, the next on the back, and so on (the cord goes through each
+   eyelet), each reversed eyelet (rev) flipping it from there on (guess post8/43).
+   In the simulation a lacing is a slack cord (SIM3D's rods with slack): each span holds its two eyelets no further apart than
+   its length, taken in no faster than the seams close, never pushing; its weight hangs on the eyelets. An eyelet is the mean
+   of three cloth points round its rim (guess post8/44). In the 3D window a tube, each span bowed off the cloth by Curvature
+   on its face; in 2D a line from eyelet to eyelet, solid on the front, dashed on the back, each eyelet ringed and numbered
+   (a reversed one ringed twice): never told by colour alone.
+   ================================================================ */
+const LACE_D = 3, LACE_CURVE = 30, LACE_PICK = 14;          // mm (a round cord), % (the bow of a span, the reference's slider), px
+function normLacings(list) {
+  const out = [], seen = new Set();
+  for (const t of Array.isArray(list) ? list : []) {
+    if (!t || !Number.isInteger(t.id) || seen.has(t.id) || !Array.isArray(t.holes)) continue;
+    const holes = t.holes.filter(h => h && Number.isInteger(h.piece) && Number.isInteger(h.shape)).map(h => ({ piece: h.piece, shape: h.shape }));
+    if (holes.length < 2 || holes.length !== t.holes.length) continue;
+    const spans = holes.slice(1).map((_, j) => (Array.isArray(t.spans) && Number.isFinite(t.spans[j]) && t.spans[j] > 0 ? t.spans[j] : 0));
+    const rev = Array.isArray(t.rev) ? [...new Set(t.rev.filter(k => Number.isInteger(k) && k >= 0 && k < holes.length))].sort((a, b) => a - b) : [];
+    const curve = Number.isFinite(t.curve) ? Math.max(0, Math.min(100, t.curve)) : LACE_CURVE;
+    seen.add(t.id);
+    out.push({ id: t.id, name: typeof t.name === "string" && t.name ? t.name : "Lacing " + t.id, holes, spans, d: t.d > 0 && Number.isFinite(t.d) ? Math.min(20, t.d) : LACE_D,
+      fabric: Number.isInteger(t.fabric) ? t.fabric : null, ...(curve !== LACE_CURVE ? { curve } : {}), ...(rev.length ? { rev } : {}) });
+  }
+  return out;
+}
+// the closed internal shape an eyelet names, or null
+function laceShape(h) {
+  const p = byId(h.piece), sh = p && (p.internals || []).find(x => x.id === h.shape);
+  return sh && sh.closed ? { p, sh } : null;
+}
+// a lacing keeps the eyelets that are still there; the spans either side of one that went are joined; fewer than two: it goes
+function validLacings(list, pieces) {
+  const out = [];
+  for (const t of list || []) {
+    const keep = t.holes.map(h => !!laceShape(h) && pieces.some(p => p.id === h.piece));
+    if (keep.every(Boolean)) { out.push(t); continue; }
+    const holes = [], spans = [], rev = [];
+    let carry = 0;
+    t.holes.forEach((h, k) => {
+      if (k > 0) carry += t.spans[k - 1] || 0;
+      if (!keep[k]) return;
+      if (holes.length) spans.push(carry);
+      carry = 0;
+      if ((t.rev || []).includes(k)) rev.push(holes.length);
+      holes.push(h);
+    });
+    if (holes.length < 2) continue;
+    const { rev: _r, ...base } = t;
+    out.push({ ...base, holes, spans, ...(rev.length ? { rev } : {}) });
+  }
+  return out;
+}
+const laceCurve = (t) => (Number.isFinite(t.curve) ? t.curve : LACE_CURVE);
+// span j's face: 1 the front, -1 the back
+function laceSide(t, j) { let f = j; for (const k of t.rev || []) if (k <= j) f++; return f % 2 ? -1 : 1; }
+// an eyelet in 2D: its middle and mean radius (mm), its outline
+function laceEye(h) {
+  const s = laceShape(h);
+  if (!s) return null;
+  const poly = flatten(s.sh, 8), c = polyCentroid(poly), r = poly.reduce((a, q) => a + dist(q, c), 0)/Math.max(1, poly.length);
+  return { p: s.p, sh: s.sh, c, r, poly };
+}
+// the eyelet under a place of the 2D window: { piece, shape } or null (the smallest shape holding it, else the nearest rim within 6 px)
+function laceHoleAt(sx, sy) {
+  let best = null, bd = Infinity;
+  for (const p of stack().reverse()) {
+    if (!p.on || !pickHere(p)) continue;
+    for (const sh of p.internals || []) {
+      if (!sh.closed || sh.pts.length < 3) continue;
+      const P = flatten(sh, 8).map(toS), q = V(sx, sy);
+      let d = Infinity;
+      for (let k = 0; k < P.length; k++) d = Math.min(d, segDist(q, P[k], P[(k + 1) % P.length]));
+      const area = Math.abs(signedArea(P)), score = inside(P, q) ? -1e9 + area : d <= 6 ? d : Infinity;
+      if (score < bd) { bd = score; best = { piece: p.id, shape: sh.id }; }
+    }
+  }
+  return best;
+}
+// the order of the patterns in the 3D window (the solver's while it runs)
+const laceOrder = () => (SIM.on ? SIM.order : S.pieces.filter(p => p.on && G3.items.has(p.id)).map(p => p.id));
+// an eyelet on the cloth: an anchor of three points round its rim, each one third (the mean is the eyelet's middle); null when its pattern is not in 3D
+const LACE_ANCH = new WeakMap();
+function laceAnchor(h, order) {
+  const pi = order.indexOf(h.piece), it = G3.items.get(h.piece), e = pi < 0 || !it ? null : laceEye(h);
+  if (!e || !it.mesh || !it.mesh.xy) return null;
+  let m = LACE_ANCH.get(it.mesh);
+  if (!m) LACE_ANCH.set(it.mesh, m = new Map());
+  const key = h.shape + ":" + e.c.x.toFixed(2) + ":" + e.c.y.toFixed(2) + ":" + e.r.toFixed(2);
+  let vs = m.get(key);
+  if (!vs) {
+    const xy = it.mesh.xy, nv = xy.length/2;
+    vs = [];
+    for (let k = 0; k < 3; k++) {
+      const a = 2*Math.PI*k/3 + 0.3, tx = e.c.x + e.r*Math.cos(a), ty = e.c.y + e.r*Math.sin(a);
+      let bv = -1, bd = Infinity;
+      for (let v = 0; v < nv; v++) { if (vs.includes(v)) continue; const d = (xy[2*v] - tx)**2 + (xy[2*v+1] - ty)**2; if (d < bd) { bd = d; bv = v; } }
+      if (bv >= 0) vs.push(bv);
+    }
+    m.set(key, vs);
+  }
+  return vs.length ? { p: pi, i: vs, w: vs.map(() => 1/vs.length) } : null;
+}
+const laceAt3 = (a, order) => anchorPos(a, order, [0, 0, 0]);
+// the length of a span as it lies now: on the cloth when both eyelets are in 3D, else flat on one pattern, else across the 2D window
+function laceSpanNow(a, b) {
+  const order = view3d.ready() ? laceOrder() : [], A = order.length ? laceAnchor(a, order) : null, B = A ? laceAnchor(b, order) : null;
+  if (A && B) { const P = laceAt3(A, order), Q = laceAt3(B, order); return Math.hypot(P[0] - Q[0], P[1] - Q[1], P[2] - Q[2]); }
+  const ea = laceEye(a), eb = laceEye(b);
+  return ea && eb ? dist(ea.c, eb.c) : 0;
+}
+const laceLen = (t) => t.spans.reduce((s, x, j) => s + (x > 0 ? x : laceSpanNow(t.holes[j], t.holes[j + 1])), 0);
+function laceMassPerMm(t) { const r = t.d/2; return Math.PI*r*r*PIPE_RHO; }
+// the lacings' cords for the solver: a run of eyelets whose patterns are all in the simulation is one slack rod
+function laceRods(order) {
+  const out = [];
+  for (const t of S.lacings || []) {
+    const f = fabricPhys(trimFab(t)), mpm = laceMassPerMm(t);
+    let run = null;
+    const flush = () => { if (run && run.a.length >= 2) out.push({ a: run.a, m: mpm*run.len/run.a.length, k: 0, ks: 10*f.stretch, lim: 0, S: run.S, L: [], slack: true }); run = null; };
+    t.holes.forEach((h, j) => {
+      const a = laceAnchor(h, order);
+      if (!a) return flush();
+      if (!run) { run = { a: [a], S: [], len: 0 }; return; }
+      const prev = run.a[run.a.length - 1];
+      let s = t.spans[j - 1];
+      if (!(s > 0)) { const P = laceAt3(prev, order), Q = laceAt3(a, order); s = Math.max(1, Math.hypot(P[0] - Q[0], P[1] - Q[1], P[2] - Q[2])); }
+      run.a.push(a); run.S.push(s); run.len += s;
+    });
+    flush();
+  }
+  return out;
+}
+// a lacing's tube in 3D: [sections …] per run of eyelets that are in the 3D window, each span a bow off its face
+function laceSections(t, order) {
+  const runs = [];
+  let cur = null;
+  const n0 = [0, 0, 0], n1 = [0, 0, 0], ring = 8, r = t.d/2;
+  const A = t.holes.map(h => laceAnchor(h, order));
+  for (let j = 0; j + 1 < A.length; j++) {
+    if (!A[j] || !A[j + 1]) { if (cur && cur.length > 1) runs.push(cur); cur = null; continue; }
+    const P = laceAt3(A[j], order), Q = laceAt3(A[j + 1], order), D = Math.hypot(Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]);
+    if (!(D > 1e-6)) continue;
+    anchorNormal(A[j], order, n0); anchorNormal(A[j + 1], order, n1);
+    const N = v3norm([n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2]]), bow = laceSide(t, j)*laceCurve(t)/100*D*0.5 + laceSide(t, j)*(r + 0.5);
+    const C = [(P[0] + Q[0])/2 + N[0]*bow, (P[1] + Q[1])/2 + N[1]*bow, (P[2] + Q[2])/2 + N[2]*bow];
+    const steps = 10;
+    for (let k = cur ? 1 : 0; k <= steps; k++) {
+      const u = k/steps, a = (1 - u)*(1 - u), b = 2*u*(1 - u), c = u*u;
+      const X = [a*P[0] + b*C[0] + c*Q[0], a*P[1] + b*C[1] + c*Q[1], a*P[2] + b*C[2] + c*Q[2]];
+      const T = v3norm([2*(1 - u)*(C[0] - P[0]) + 2*u*(Q[0] - C[0]), 2*(1 - u)*(C[1] - P[1]) + 2*u*(Q[1] - C[1]), 2*(1 - u)*(C[2] - P[2]) + 2*u*(Q[2] - C[2])]);
+      let nn = N; const dt = v3dot(nn, T); nn = v3norm([nn[0] - dt*T[0], nn[1] - dt*T[1], nn[2] - dt*T[2]]);
+      const bb = v3cross(T, nn);
+      (cur || (cur = [])).push(Array.from({ length: ring }, (_, i) => { const w = 2*Math.PI*i/ring, cs = Math.cos(w)*r, sn = Math.sin(w)*r; return [X[0] + cs*nn[0] + sn*bb[0], X[1] + cs*nn[1] + sn*bb[1], X[2] + cs*nn[2] + sn*bb[2]]; }));
+    }
+  }
+  if (cur && cur.length > 1) runs.push(cur);
+  return runs;
+}
+const laceById = (id) => (S.lacings || []).find(t => t.id === id) || null;
+const laceSel = () => { const s = selTrim(); return s && s.kind === "lace" ? laceById(s.id) : null; };
+const laceSame = (a, b) => a && b && a.piece === b.piece && a.shape === b.shape;
+/* ---- the tools ---- */
+function laceAdd(h) {
+  const d = S.laceDraft || (S.laceDraft = { holes: [] }), last = d.holes[d.holes.length - 1];
+  if (!laceSame(last, h)) d.holes.push(h);
+  draw(); if (view3d.ready()) { showTrims3(); view3d.ask(); }
+  toast("Eyelet " + d.holes.length + (d.holes.length > 1 ? ": double-click the last or press Enter to make the lacing" : ": click the next one"));
+}
+function laceFinish() {
+  const d = S.laceDraft;
+  if (!d || d.holes.length < 2) { toast("A lacing needs two eyelets or more"); return; }
+  const holes = d.holes.slice(), spans = holes.slice(1).map((h, j) => Math.max(1, laceSpanNow(holes[j], h)));
+  S.laceDraft = null;
+  push("Lacing");
+  const id = trimNext("lace"), f = libOf().fabric[0];
+  trimList("lace").push({ id, name: "Lacing " + id, holes, spans, d: LACE_D, fabric: f ? f.id : null });
+  S.selTrim = { kind: "lace", id };
+  commit();
+  if (view3d.ready()) { showTrims3(); view3d.ask(); }
+  toast("Lacing made through " + holes.length + " eyelets, " + fmt(spans.reduce((a, b) => a + b, 0)) + " mm of cord. Edit Lacing changes its length, curvature and face.");
+}
+function laceBack() {
+  const d = S.laceDraft;
+  if (!d) return false;
+  d.holes.pop();
+  if (!d.holes.length) S.laceDraft = null;
+  draw(); if (view3d.ready()) { showTrims3(); view3d.ask(); }
+  return true;
+}
+function laceReverse(t, k) {
+  push("Reverse Lacing");
+  const L = laceById(t.id), rv = new Set(L.rev || []);
+  if (rv.has(k)) rv.delete(k); else rv.add(k);
+  if (rv.size) L.rev = [...rv].sort((a, b) => a - b); else delete L.rev;
+  commit();
+  if (view3d.ready()) { showTrims3(); view3d.ask(); }
+  toast("Reversed at eyelet " + (k + 1) + ": from there the cord runs on the " + (laceSide(L, Math.min(k, L.spans.length - 1)) > 0 ? "front" : "back"));
+}
+// the lacing whose line or eyelet lies under a place of the 2D window (within 6 px)
+function laceLineAt(sx, sy) {
+  const q = V(sx, sy);
+  let best = null, bd = 6;
+  for (const t of S.lacings || []) {
+    const E = t.holes.map(laceEye);
+    E.forEach((e, k) => {
+      if (!e || !e.p.on) return;
+      const c = toS(e.c), d0 = Math.max(0, dist(q, c) - Math.max(5, e.r*S.view.s));
+      if (d0 < bd) { bd = d0; best = t; }
+      const f = E[k + 1];
+      if (f && f.p.on) { const d1 = segDist(q, c, toS(f.c)); if (d1 < bd) { bd = d1; best = t; } }
+    });
+  }
+  return best;
+}
+// the 2D window's clicks (and the garment's, through laceDown3 / laceEditDown3)
+function laceClick(sx, sy) {
+  const h = laceHoleAt(sx, sy);
+  if (!h) return toast("Click an eyelet: a hole or another closed internal shape (Internal Ellipse, then right-click ▸ Convert to Hole)");
+  laceAdd(h);
+}
+function laceEditDown(sx, sy, e) {
+  const t = laceSel(), h = laceHoleAt(sx, sy);
+  if (t && h) { const k = t.holes.findIndex(x => laceSame(x, h)); if (k >= 0) return laceReverse(t, k); }
+  const hit = laceLineAt(sx, sy);
+  if (!hit) { if (laceSel()) trimSelect("lace", null); return; }
+  trimSelect("lace", hit.id);
+  laceDialog(hit, { x: e.clientX, y: e.clientY });
+}
+// the eyelet nearest the pointer on the garment (its middle within LACE_PICK px on the screen), or null
+function laceEyeAt3(e) {
+  if (!view3d.ready() || !G3.items.size) return null;
+  const order = laceOrder(), pr = view3d.projector();
+  let best = null, bd = LACE_PICK;
+  for (const id of order) {
+    const p = byId(id);
+    for (const sh of (p && p.internals) || []) {
+      if (!sh.closed) continue;
+      const h = { piece: id, shape: sh.id }, a = laceAnchor(h, order);
+      if (!a) continue;
+      const P = laceAt3(a, order), s = pr(P[0], P[1], P[2]);
+      if (s.z >= 1) continue;
+      const d = Math.hypot(s.x - e.clientX, s.y - e.clientY);
+      if (d < bd) { bd = d; best = h; }
+    }
+  }
+  return best;
+}
+// the lacing under the pointer on the garment (its tube), or null
+function laceTubeAt3(e) {
+  const g = view3d.group("trims"), r = view3d.ray(e);
+  if (!g || !r) return null;
+  const hits = r.rc.intersectObjects(g.children.filter(c => c.isMesh && c.userData.trim && c.userData.trim.kind === "lace"), false);
+  return hits.length ? laceById(hits[0].object.userData.trim.id) : null;
+}
+TOOL3.lacing = {
+  cursor: "crosshair", both: true,
+  down(e) {
+    const h = laceEyeAt3(e);
+    if (h) { laceAdd(h); return true; }
+    if (!pick3(e)) return false;
+    toast("Click an eyelet on the garment: a hole or another closed internal shape");
+    return true;
+  },
+  dbl() { if (!S.laceDraft) return false; laceFinish(); return true; },
+  menu(e) { garmentMenu(e); },
+};
+TOOL3.edit_lacing = {
+  cursor: "default", both: true,
+  down(e) {
+    const t = laceSel(), h = t && laceEyeAt3(e), k = h ? t.holes.findIndex(x => laceSame(x, h)) : -1;
+    if (k >= 0) { laceReverse(t, k); return true; }
+    const hit = laceTubeAt3(e);
+    if (hit) { trimSelect("lace", hit.id); laceDialog(hit, { x: e.clientX, y: e.clientY }); return true; }
+    if (!pick3(e)) return false;
+    trimSelect("lace", null);
+    return true;
+  },
+  menu(e) { garmentMenu(e); },
+};
+HINT.lacing = "Click the eyelets in order (holes, or other closed internal shapes), in the 2D window or on the garment; double-click the last or press Enter to make the lacing. Backspace takes the last eyelet back, Esc gives it up.";
+HINT.edit_lacing = "Click a lacing to select it and change its cord diameter, length (shorter pulls the eyelets together), curvature and fabric. With one selected, click one of its eyelets to reverse the cord there. Delete removes the selected lacing.";
+HINT.lacing_2d = HINT.lacing; HINT.edit_lacing_2d = HINT.edit_lacing;
+function laceDialog(t, at) {
+  const f = trimFab(t), len0 = laceLen(t);
+  numDialog("Edit Lacing — " + esc(t.name), [
+    { k: "d", label: "Cord Diameter", val: t.d, unit: "mm", step: 0.5 },
+    { k: "len", label: "Length", val: +len0.toFixed(1), unit: "mm", step: 1 },
+    { k: "curve", label: "Curvature", val: laceCurve(t), unit: "%", step: 1, range: [0, 100] }],
+    at, (o) => {
+      const L = laceById(t.id);
+      if (!L) return;
+      push("Edit Lacing");
+      const k = len0 > 0 ? o.len/len0 : 1;
+      L.spans = L.spans.map((s, j) => (s > 0 ? s : laceSpanNow(L.holes[j], L.holes[j + 1]))*k);
+      L.d = Math.min(20, o.d);
+      const c = Math.max(0, Math.min(100, o.curve));
+      if (c !== LACE_CURVE) L.curve = c; else delete L.curve;
+      L.fabric = Number.isInteger(+o.fabric) && o.fabric !== "" ? +o.fabric : null;
+      commit();
+      if (view3d.ready()) { showTrims3(); view3d.ask(); }
+    }, {
+      selects: [{ k: "fabric", label: "Fabric", val: f ? String(f.id) : "", options: fabricChoices() }],
+      hint: "A cord threaded through " + t.holes.length + " eyelets. Shorter than it lies, it pulls them together when simulated (it never pushes). Curvature bows each span off the cloth. With Edit Lacing, click an eyelet of the selected lacing to reverse the cord there.",
+      check: (o) => (!(o.d > 0) ? "The cord needs a diameter" : !(o.len > 0) ? "The lacing needs a length" : ""),
+    });
+}
+/* ---- the 2D window ---- */
+function drawLacings2D(sel) {
+  const s = S.view.s, ring = (e, on, dbl) => {
+    const c = toS(e.c), r = Math.max(5, e.r*s + 2);
+    ctx.lineWidth = on ? 2.4 : 1.4; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, 7); ctx.stroke();
+    if (dbl) { ctx.beginPath(); ctx.arc(c.x, c.y, r + 3.5, 0, 7); ctx.stroke(); }
+  };
+  const one = (t, on, draft) => {
+    const E = t.holes.map(laceEye);
+    ctx.strokeStyle = "#1a1a1a";
+    for (let j = 0; j + 1 < E.length; j++) {
+      const a = E[j], b = E[j + 1];
+      if (!a || !b || !a.p.on || !b.p.on) continue;
+      ctx.lineWidth = on ? 3 : 1.6; ctx.setLineDash(draft ? [2, 3] : laceSide(t, j) > 0 ? [] : [6, 4]);
+      strokeLine([toS(a.c), toS(b.c)]);
+    }
+    ctx.setLineDash([]);
+    E.forEach((e, k) => {
+      if (!e || !e.p.on) return;
+      ring(e, on, (t.rev || []).includes(k));
+      lbl(String(k + 1), V(toS(e.c).x + Math.max(5, e.r*s + 2) + 3, toS(e.c).y - 6));
+    });
+  };
+  for (const t of S.lacings || []) one(t, !!(sel && sel.kind === "lace" && sel.id === t.id), false);
+  const d = S.laceDraft;
+  if (d && d.holes.length) {
+    one({ holes: d.holes }, true, true);
+    const e = laceEye(d.holes[d.holes.length - 1]);
+    if (e && S.mouse && S.tool === "lacing") { ctx.lineWidth = 1.2; ctx.setLineDash([2, 3]); strokeLine([toS(e.c), V(S.mouse.sx, S.mouse.sy)]); ctx.setLineDash([]); }
+  }
+  // the eyelet under the pointer, with Lacing in hand
+  if (S.tool === "lacing" && S.mouse && !S.mouseOut) { const h = laceHoleAt(S.mouse.sx, S.mouse.sy), e = h && laceEye(h); if (e) { ctx.strokeStyle = "#1a1a1a"; ring(e, true, false); } }
+}
+
 /* ---- Binding and Select Binding (Round r11 / 4) ---- */
 // whether an outline segment has a seam on any of it (a binding goes on a free edge only)
 const segSewn = (p, sid) => partsOn(S.seams, p.id, sid, 0).length > 0;
@@ -33504,6 +38705,8 @@ function bindingMassPerMm(t) { return fabricPhys(trimFab(t)).weight*1e-6*(2*t.w 
 function bindingRods(order) {
   const out = [];
   for (const t of S.bindings || []) {
+    // (Round PIPE-1, pipe1/2b) one made as strip patterns too: they are its cut pieces, archived in 3D, and the rod simulates it
+    if (bindKind(t) === "file") continue;                  // (an imported one's own strip is simulated as the file has it)
     const run = trimRun([t.part], order, 0, 1);
     if (!run) continue;
     const f = fabricPhys(trimFab(t)), step = run.len/(run.a.length - 1);
@@ -33513,6 +38716,7 @@ function bindingRods(order) {
 }
 // a binding's strip: across the edge, w in on the front face, folded round the raw edge, w in on the back face
 function bindingSections(t, order) {
+  if (bindKind(t) === "file") return null;                 // (Round PIPE-1) an imported one: its own strip is the cloth
   const run = trimRun([t.part], order, 0, 1), p = byId(t.part.piece);
   if (!run || !p) return null;
   const wind = signedArea(flatten(p, 8)) > 0 ? 1 : -1, n = run.a.length, th = 1.2, q = [0, 0, 0], out = [];
@@ -33558,22 +38762,43 @@ function drawBindings2D(sel) {
 function bindingDialog(part, t, at) {
   const p = byId(part.piece);
   if (!p) return;
-  const f = t ? trimFab(t) : libOf().fabric[0];
-  numDialog((t ? "Edit Binding" : "Binding") + " — " + p.name, [{ k: "w", label: "Width", val: t ? t.w : BIND_W, unit: "mm", step: 1 }], at, (o) => {
+  const f = t ? trimFab(t) : libOf().fabric[0], was = t ? bindKind(t) : "rod";
+  // (Round PIPE-1b, the maintainer's answers to PIPE-1) one strip by default: Width on each face, its own seam allowance, bias or
+  // cross-grain, shorter than the edge by the Reduction; Two-piece (PIPE-1's Outside and Inside cut to the curve) as an option
+  const grain0 = t && t.grain === "cross" ? "cross" : "bias", sa0 = t && Number.isFinite(t.sa) ? t.sa : S.saValue, red0 = t && Number.isFinite(t.red) ? t.red : BIND_RED[grain0];
+  numDialog((t ? "Edit Binding" : "Binding") + " — " + p.name, [
+    { k: "w", label: "Width", val: t ? t.w : BIND_W, unit: "mm", step: 1 },
+    { k: "sa", label: "Seam Allowance", val: sa0, unit: "mm", step: 1 },
+    { k: "grain", label: "Grain", val: grain0, options: BIND_GRAINS },
+    { k: "red", label: "Reduction", val: red0, unit: "%", step: 1 }], at, (o) => {
     const v = { w: Math.min(60, o.w), fabric: Number.isInteger(+o.fabric) && o.fabric !== "" ? +o.fabric : null };
+    const two = o.two === true, grain = (o.grain || grain0) === "cross" ? "cross" : "bias";
+    const sa = Number.isFinite(o.sa) ? Math.max(0, Math.min(50, o.sa)) : sa0, red = Number.isFinite(o.red) ? Math.max(0, Math.min(50, o.red)) : o.grain && o.grain !== grain0 ? BIND_RED[grain] : red0;
+    // (part.one: the line clicked, which is all of it when Run on is unticked)
+    const { one, ...base } = part, pt = t ? t.part : o.runOn === false && one != null ? { ...base, sids: [one] } : base;
+    // (Round PIPE-1) made as its strip patterns (an older file's rod binding too, pipe1/8; an imported one's own strip made ours, pipe1/12)
+    if (two && !bandPlan(pt, v.w)) return toast("The two-piece binding can't be made on that edge: a curve or corner there is tighter than " + fmt(v.w) + " across");
+    if (!two) { const X = seamSide(pt, S.pieces); if (!X || !(partLen(X, pt) > 1)) return toast("The binding can't be made on that edge"); }
     push(t ? "Edit Binding" : "Binding");
-    if (t) Object.assign(trimList("binding").find(x => x.id === t.id), v);
-    else {
-      // (part.one: the line clicked, which is all of it when Run on is unticked)
-      const { one, ...base } = part, id = trimNext("binding"), pt = o.runOn === false && one != null ? { ...base, sids: [one] } : base;
-      trimList("binding").push({ id, name: "Binding " + id, part: pt, ...v }); S.selTrim = { kind: "binding", id };
-    }
+    let b;
+    if (t) Object.assign(b = trimList("binding").find(x => x.id === t.id), v);
+    else { const id = trimNext("binding"); trimList("binding").push(b = { id, name: "Binding " + id, part: pt, ...v }); S.selTrim = { kind: "binding", id }; }
+    // a binding of another kind than it was (an imported one, two-piece and one strip either way) loses its strips first
+    if (b.pat && was !== (two ? "two" : "strip")) trimDrop(b);
+    if (two) { delete b.sa; delete b.red; delete b.grain; bindingMake(b); }
+    else { b.sa = sa; b.red = red; if (grain === "cross") b.grain = "cross"; else delete b.grain; stripMake(b); bindEnds(); }
     commit();
   }, {
     selects: [{ k: "fabric", label: "Fabric", val: f ? String(f.id) : "", options: fabricChoices() }],
-    checks: t ? [] : [{ k: "runOn", label: "Run on along the free edge (" + part.sids.length + (part.sids.length === 1 ? " line)" : " lines)"), val: true }],
-    hint: "A strip of fabric folded round the raw edge: this wide on each face. It follows the edge's curves and goes with it in the simulation.",
-    check: (o) => (!(o.w > 0) ? "The binding needs a width" : ""),
+    checks: (t ? [] : [{ k: "runOn", label: "Run on along the free edge (" + part.sids.length + (part.sids.length === 1 ? " line)" : " lines)"), val: true }])
+      .concat([{ k: "two", label: "Two-piece binding (outside and inside strips cut to the edge's curve)", val: was === "two" }]),
+    // the Reduction follows the grain chosen (typed over, it stays)
+    sync: (o, k) => (k === "grain" ? { red: BIND_RED[o.grain === "cross" ? "cross" : "bias"] } : {}),
+    hint: "A strip of fabric folded over the raw edge, Width on each face. It is made as one strip to cut: 2 × Width + 2 × the seam allowance wide, " +
+      "a fold line along its middle, as long as the edge less the Reduction, with notches at its quarters and at the edge's, so the difference is eased in evenly. " +
+      "Bias for woven fabric; cross-grain for knits, cut shorter (10 %) so it hugs the edge. Two-piece: an outside and an inside strip cut to the edge's curve, " +
+      "no allowance, Grain and Reduction not used. In 3D the binding is simulated along the edge; its strips are kept out of the 3D garment.",
+    check: (o) => (!(o.w > 0) ? "The binding needs a width" : !(o.sa >= 0) ? "The seam allowance can't be below 0" : !(o.red >= 0 && o.red <= 50) ? "Reduction is a share of the edge, 0 to 50 %" : ""),
   });
 }
 // the outline line under the pointer on the cloth: { p, i } or null
@@ -33584,9 +38809,17 @@ function outlineUnder3(e) {
   return h && h.k === "seg" && h.kind === "outline" ? { p: h.p, i: h.i } : null;
 }
 const bindingOn = (p, i) => (S.bindings || []).find(b => b.part.piece === p.id && b.part.sids.includes(p.segs[i].id));
+// (Round PIPE-1) a click on a binding's strip (its cloth) selects that binding
+function bindingAt3(e) {
+  const pk = pick3(e), t = pk && pk.it && bindingOfPiece(pk.it.pid);
+  if (!t) return false;
+  trimSelect("binding", t.id); bindingDialog(t.part, t, { x: e.clientX, y: e.clientY });
+  return true;
+}
 TOOL3.binding = {
   cursor: "crosshair",
   down(e) {
+    if (bindingAt3(e)) return true;
     const h = outlineUnder3(e);
     if (!h) { if (!pick3(e)) return false; toast("Binding goes on a free edge: click an edge of the garment that is not sewn"); return true; }
     const t = bindingOn(h.p, h.i);
@@ -33603,6 +38836,7 @@ TOOL3.binding = {
 TOOL3.select_binding = {
   cursor: "default",
   down(e) {
+    if (bindingAt3(e)) return true;
     const h = outlineUnder3(e), t = h && bindingOn(h.p, h.i);
     if (!t) { if (!pick3(e)) return false; trimSelect("binding", null); return true; }
     trimSelect("binding", t.id); bindingDialog(t.part, t, { x: e.clientX, y: e.clientY });
@@ -33610,8 +38844,376 @@ TOOL3.select_binding = {
   },
   menu(e) { garmentMenu(e); },
 };
-HINT.binding = "Click a free edge of the garment (one that is not sewn): a box for the binding wrapped round it (its width on each face and its fabric); it runs on along the free edge unless you untick that. An edge that has binding opens it to change.";
+HINT.binding = "Click a free edge of the garment (one that is not sewn): a box for the binding folded over it (its width on each face and its fabric); it runs on along the free edge unless you untick that, and is made as two strip patterns cut to the edge, sewn on. An edge or a strip that has binding opens it to change.";
 HINT.select_binding = "Click a binding on the garment to select it and change it in its box; Delete removes the selected one.";
+
+/* ================================================================
+   PIPE-1: PIPING AND BINDING MADE AS PATTERNS (Round PIPE-1, run 17; the round's spec, guesses pipe1/1-12)
+   A binding (bindingMake()) is the standard fold-over (pipe1/1): folded over the raw edge, Width on each face. Its two strip patterns,
+   Outside and Inside, are each the band of the garment it covers, between the edge and a line Width in (bandPlan(): the edge's own
+   curve, sampled every TRIM_STEP mm into curve points; the inner line mitred at the edge's corners, an end at a point of the outline cut
+   along the line that meets the edge there; round the whole outline a ring with the inner line a hole), Inside the mirror image, so a
+   strip is as long as the garment under it along both its lines and a curve cannot bunch (pipe1/2). Two seams sew each strip's edge to
+   the garment's edge, folded flat onto its front and back (BIND_FOLD); the strips of two bindings meeting at a seam are sewn end to end
+   (bindEnds()). The record names them (pat, sew) and the edge they were cut to (at). The strips lie right of every pattern in 2D and
+   are archived in 3D: a strip Width wide is one row of the cloth's particles, and as cloth it lay in the garment rather than on its
+   faces (run 17, measured), so the binding is simulated as before, a rod along the edge drawn folded over it (pipe1/2b). A piping
+   (pipingMake()) is one strip, the bias the cord is wrapped in (π d + 2 PIPE_FLANGE wide, a fold line along its middle), archived too:
+   the cord stays a rod in the seam. trimSync() in commit(): the strips of a binding whose garment or edge went go with it, a binding
+   whose strip was deleted ends, and strips are cut again when their edge changed.
+   ================================================================ */
+const BIND_FOLD = [360, 0], BIND_OWN = 2, PIPE_FLANGE = 10, TRIM_STEP = 20, TRIM_SPACE = 60;
+/* (Round PIPE-1b, the maintainer's answers to PIPE-1, run 18) A BINDING IS ONE STRIP TO CUT by default (stripMake()): the fold-over strip
+   2 × Width wide between its two seam lines with its own seam allowance (sa, the document's by default) all round, a fold line along its
+   middle, on the bias (woven) or cross-grain (knit, grain "cross": the grainline across the strip); as long as the edge less the Reduction
+   (red, % of the edge: BIND_RED by the grain, guess pipe1b/3), notches at its quarters on both seam lines and at the edge's quarters on the
+   garment (bind: true, bindNotches()), so the difference is eased in evenly. Its two long seam lines are sewn to the edge folded onto the
+   front and back as the two-piece strips are; round the whole outline its two ends are sewn together. PIPE-1's two strips cut to the curve
+   are the option Two-piece. A piping's strip follows the same rules since PIPE-1b: π d between its seam lines, sa all round, bias or cross. */
+const BIND_RED = { bias: 0, cross: 10 }, BIND_GRAINS = [["bias", "Bias (woven)"], ["cross", "Cross-grain (knit)"]], BIND_NOTCH = [0.25, 0.5, 0.75];
+const trimPat = (t) => ((t && t.pat) || []).map(byId).filter(Boolean);
+const bindingOfPiece = (id) => (S.bindings || []).find(b => (b.pat || []).includes(id)) || null;
+const pipingOfPiece = (id) => (S.pipings || []).find(t => (t.pat || []).includes(id)) || null;
+// what a binding is made of: "rod" (no strips: an older file's), "two" (PIPE-1's Outside and Inside), "strip" (one strip, PIPE-1b: it has
+// its own seam allowance), "file" (an imported binding's own strip)
+function bindKind(t) { return !t || !t.pat ? "rod" : t.pat.length === 2 ? "two" : Number.isFinite(t.sa) ? "strip" : "file"; }
+// an edge that runs all round its outline (no ends)
+const edgeClosed = (X, part) => !part.shape && X.ix.length === X.sh.segs.length && !(part.t0 > 0) && !(part.t1 < 1);
+// a trim's strip patterns and its seams out of the document; its record keeps neither
+function trimDrop(t) {
+  if (t.part) bindNotchesOff(t);
+  const sew = new Set(t.sew || []);
+  removePieces(trimPat(t));
+  if (sew.size) S.seams = S.seams.filter(sm => !sew.has(sm.id));
+  delete t.pat; delete t.sew; delete t.at;
+}
+// the edge a part runs along, as text: when it changes the strips cut to it are cut again
+function trimEdgeSig(part, extra) {
+  const X = seamSide(part, S.pieces);
+  if (!X) return "";
+  const sh = X.sh, n = sh.pts.length, g = (i) => { const s = sh.segs[i], a = sh.pts[i], b = sh.pts[(i + 1) % n]; return [a.x, a.y, b.x, b.y, s.curved ? [s.c1, s.c2, s.cps, s.e0, s.e1] : 0]; };
+  return hash32(JSON.stringify([extra, part.t0, part.t1, X.ix.map(g)]));
+}
+/* The band between a part's edge and a line w beyond it (outside the pattern): { closed, outline: { pts, segs }, hole, eIx, fIx, ends, L }
+   or null (no edge, or a curve tighter than w on the side the band lies: its outer line would turn back). segs: { curved, cps }. eIx:
+   the outline's (or the hole's) segments along the edge, in the part's order; fIx: the outer line's; ends: the two square ends. */
+function bandPlan(part, w) {
+  const X = seamSide(part, S.pieces);
+  if (!X || !(w > 0)) return null;
+  const sh = X.sh, wind = signedArea(flatten(sh, 8)) > 0 ? 1 : -1;
+  const closed = edgeClosed(X, part);
+  const sp = partSpans(X, part).map(s => {
+    const seg = sh.segs[s.i], L = segLenT(sh, s.i, s.u, s.v), k = seg.curved ? Math.max(2, Math.round(L/TRIM_STEP)) : 1;
+    const SL = segLen(sh, s.i) || 1, fu = s.u > 0 ? lenTo(sh, s.i, s.u)/SL : 0, fv = s.v < 1 ? lenTo(sh, s.i, s.v)/SL : 1, E = [], F = [], T = [];
+    for (let j = 0; j <= k; j++) {
+      const t = j === 0 ? s.u : j === k ? s.v : tAtFrac(sh, s.i, fu + (fv - fu)*j/k), q = segPt(sh, s.i, t), tn = segTan(sh, s.i, t);
+      E.push(V(q.x, q.y)); T.push(tn); F.push(V(q.x - wind*tn.y*w, q.y + wind*tn.x*w));
+    }
+    return { curved: !!seg.curved && k > 1, E, F, T, L };
+  });
+  if (!sp.length || sp.some(s => !(s.L > 1e-6))) return null;
+  for (const s of sp) for (let j = 0; j + 1 < s.F.length; j++) if (dot(sub(s.F[j + 1], s.F[j]), s.T[j]) <= 0) return null;
+  // the outer line at a corner of the edge: where the two offset lines meet (mitred); an inside corner's samples past it dropped
+  for (let k = closed ? 0 : 1; k < sp.length; k++) {
+    const A = sp[(k - 1 + sp.length) % sp.length], B = sp[k], a = A.F[A.F.length - 1], b = B.F[0];
+    if (dist(a, b) < 1e-6) continue;
+    const ta = A.T[A.T.length - 1], tb = B.T[0], M = lineX(a, add(a, ta), b, add(b, tb));
+    if (!M || dist(M, B.E[0]) > 4*w) continue;
+    while (A.F.length > 2 && dot(sub(A.F[A.F.length - 2], M), ta) >= 0) A.F.splice(A.F.length - 2, 1);
+    while (B.F.length > 2 && dot(sub(B.F[1], M), tb) <= 0) B.F.splice(1, 1);
+    A.F[A.F.length - 1] = V(M.x, M.y); B.F[0] = V(M.x, M.y);
+  }
+  // (pipe1/4) an end at a point of the outline follows the line that meets the edge there (as the strip covers the garment beside its
+  // edge, cut off where the garment's next line runs): F's end slid along the offset line onto that line; a partial end stays square
+  if (!closed && !part.shape) {
+    const n = sh.segs.length, cutTo = (s, atEnd) => {
+      const j = atEnd ? s.F.length - 1 : 0, E0 = atEnd ? s.E[s.E.length - 1] : s.E[0], tn = s.T[j];
+      const nb = atEnd ? (X.ix[X.ix.length - 1] + 1) % n : (X.ix[0] - 1 + n) % n, d = atEnd ? segTan(sh, nb, 0) : mul(segTan(sh, nb, 1), -1);
+      const M = lineX(s.F[j], add(s.F[j], tn), E0, add(E0, d));
+      if (!M || dist(M, E0) > 3*w || dot(sub(M, E0), d) <= 0) return;
+      if (atEnd) { while (s.F.length > 2 && dot(sub(s.F[s.F.length - 2], M), tn) >= 0) s.F.splice(s.F.length - 2, 1); s.F[s.F.length - 1] = V(M.x, M.y); }
+      else { while (s.F.length > 2 && dot(sub(s.F[1], M), tn) <= 0) s.F.splice(1, 1); s.F[0] = V(M.x, M.y); }
+    };
+    if (!(part.t0 > 0)) cutTo(sp[0], false);
+    if (!(part.t1 < 1)) cutTo(sp[sp.length - 1], true);
+  }
+  const seg = (curved, P) => ({ curved: !!curved && P.length > 2, cps: curved && P.length > 2 ? P.slice(1, -1).map(q => V(q.x, q.y)) : null });
+  const L = sp.reduce((s, x) => s + x.L, 0);
+  if (closed) {
+    // round the whole outline: a ring, the edge its outline, the inner line a hole
+    const pts = [], segs = [];
+    sp.forEach((s, k) => {
+      pts.push(s.F[0]); segs.push(seg(s.curved, s.F));
+      const end = s.F[s.F.length - 1];
+      if (dist(end, sp[(k + 1) % sp.length].F[0]) > 1e-6) { pts.push(end); segs.push(seg(false, [])); }
+    });
+    return { closed: true, outline: { pts: sp.map(s => s.E[0]), segs: sp.map(s => seg(s.curved, s.E)) }, hole: { pts, segs }, eIx: sp.map((_, k) => k), fIx: [], ends: [], L };
+  }
+  const pts = [], segs = [], eIx = [], fIx = [];
+  sp.forEach(s => { pts.push(s.E[0]); eIx.push(segs.length); segs.push(seg(s.curved, s.E)); });
+  const last = sp[sp.length - 1], endIx = segs.length;
+  pts.push(last.E[last.E.length - 1]); segs.push(seg(false, []));            // the end, square across
+  for (let k = sp.length - 1; k >= 0; k--) {
+    const R = sp[k].F.slice().reverse();
+    pts.push(R[0]); fIx.push(segs.length); segs.push(seg(sp[k].curved, R));
+    if (k > 0) { const pe = sp[k - 1].F[sp[k - 1].F.length - 1]; if (dist(R[R.length - 1], pe) > 1e-6) { pts.push(R[R.length - 1]); fIx.push(segs.length); segs.push(seg(false, [])); } }
+  }
+  const startIx = segs.length;
+  pts.push(sp[0].F[0]); segs.push(seg(false, []));                          // the start, square across
+  return { closed: false, outline: { pts, segs }, hole: null, eIx, fIx, ends: [startIx, endIx], L };
+}
+// a shape of a plan's outline or hole; an old shape of as many lines keeps its lines' ids and what is on them (notches, allowance)
+function planShape(o, old) {
+  const sh = mkShape(o.pts.map(q => V(q.x, q.y)), true), same = old && old.segs && old.segs.length === sh.segs.length;
+  sh.segs = sh.segs.map((g, k) => {
+    const d = o.segs[k], s = same ? { ...old.segs[k] } : g;
+    s.curved = !!d.curved; s.c1 = null; s.c2 = null;
+    if (d.curved) s.cps = d.cps.map(q => V(q.x, q.y)); else delete s.cps;
+    delete s.e0; delete s.e1;
+    return s;
+  });
+  return sh;
+}
+// every point and curve point of a shape through f
+function shapeMap(sh, f) {
+  sh.pts = sh.pts.map(f);
+  for (const s of sh.segs) { if (s.cps) s.cps = s.cps.map(f); if (s.c1) s.c1 = f(s.c1); if (s.c2) s.c2 = f(s.c2); }
+}
+// a strip's grainline: on the bias, 45° to the line from its edge's start to its end, through its middle (grainsInside() fits it)
+function biasGrain(sh, a, b) {
+  const bx = bboxOf([sh]), c = V((bx.x0 + bx.x1)/2, (bx.y0 + bx.y1)/2), d = sub(b, a), L = vlen(d) || 1, u = V((d.x - d.y)/L/Math.SQRT2, (d.x + d.y)/L/Math.SQRT2), h = Math.max(10, Math.min(80, L*0.15));
+  return { a: sub(c, mul(u, h)), b: add(c, mul(u, h)) };
+}
+// right of every pattern but these, at the height y0: where a new strip's box goes
+function trimSpot(skip, y0) {
+  const others = S.pieces.filter(p => !skip.includes(p));
+  return V(others.length ? bboxOf(others).x1 + TRIM_SPACE : 0, y0);
+}
+/* (Round PIPE-1) make (or cut again) a binding's two strips and its two seams, and every binding's end joins. false if the edge can't
+   take it (a curve tighter than Width on the garment's side). */
+function bindingMake(t) {
+  const G = byId(t.part.piece), plan = G && bandPlan(t.part, t.w);
+  if (!plan) return false;
+  let [A, B] = t.pat && t.pat.length === 2 ? t.pat.map(byId) : [null, null];
+  if (!A || !B) A = B = null;
+  const holeOf = (P) => P && (P.internals || []).find(it => it.hole && it.closed);
+  const cut = (P, mirror) => {
+    const sh = planShape(plan.outline, P), hole = plan.hole ? planShape(plan.hole, holeOf(P)) : null;
+    if (mirror) { shapeMap(sh, q => V(-q.x, q.y)); if (hole) shapeMap(hole, q => V(-q.x, q.y)); }
+    return { sh, hole };
+  };
+  const a = cut(A, false), b = cut(B, true), ba = bboxOf([a.sh]), bb = bboxOf([b.sh]);
+  // where they lie in 2D: where they lay, or right of every pattern at the garment's height, Inside beside Outside (pipe1/7)
+  let pa, pb;
+  if (A && B) { const oa = bboxOf([A]), ob = bboxOf([B]); pa = V(oa.x0, oa.y0); pb = V(ob.x0, ob.y0); }
+  else { pa = trimSpot([], bboxOf([G]).y0); pb = V(pa.x + (ba.x1 - ba.x0) + TRIM_SPACE/2, pa.y); }
+  const da = sub(pa, V(ba.x0, ba.y0)), db = sub(pb, V(bb.x0, bb.y0));
+  for (const s of [a.sh, a.hole]) if (s) shapeMap(s, q => add(q, da));
+  for (const s of [b.sh, b.hole]) if (s) shapeMap(s, q => add(q, db));
+  const fresh = !A;
+  const put = (P, name, c) => {
+    if (!P) { P = mkPiece(name, c.sh); S.pieces.push(P); P.arch3 = true; }      // out of the 3D garment: the rod is the binding there (pipe1/2b)
+    else { P.pts = c.sh.pts; P.segs = c.sh.segs; }
+    const old = holeOf(P);
+    if (c.hole) { if (old) { old.pts = c.hole.pts; old.segs = c.hole.segs; } else addChild(P, "internals", Object.assign(c.hole, { hole: true, closed: true })); }
+    else if (old) P.internals = P.internals.filter(it => it !== old);
+    if (Number.isInteger(t.fabric)) P.fabric = t.fabric; else delete P.fabric;
+    if (!P.grain || fresh) { const e = c.hole || c.sh; P.grain = biasGrain(c.sh, e.pts[plan.eIx[0]], e.pts[plan.closed ? Math.floor(e.pts.length/2) : plan.ends[1]]); }
+    return P;
+  };
+  A = put(A, t.name + " Outside", a); B = put(B, t.name + " Inside", b);
+  // its seams: each strip's edge to the garment's edge (both running its way), folded flat onto the garment's front face (Outside)
+  // and its back face (Inside): the garment's edge is the binding's fold
+  const ids = (t.sew || []).slice(), made = [];
+  const part = (P, sids) => ({ piece: P.id, shape: 0, sids, t0: 0, t1: 1, rev: false });
+  const gp = () => ({ ...clone(t.part), rev: false });
+  [[A, BIND_FOLD[0]], [B, BIND_FOLD[1]]].forEach(([P, fa], k) => {
+    const a = [part(P, plan.eIx.map(j => P.segs[j].id))], b = [gp()];
+    let sm = S.seams.find(x => x.id === ids[k]);
+    if (sm) { sm.a = a; sm.b = b; }
+    else { sm = { id: S.seams.reduce((m, x) => Math.max(m, x.id), 0) + 1, a, b, foldAngle: fa }; S.seams.push(sm); }
+    made.push(sm.id);
+  });
+  t.pat = [A.id, B.id]; t.sew = made.concat((t.sew || []).slice(BIND_OWN)); t.at = trimEdgeSig(t.part, t.w);
+  bindEnds();
+  return true;
+}
+/* (Round PIPE-1, pipe1/5) two bindings whose ends meet at a seam (a T-shirt's front and back necklines at a shoulder seam): their strips'
+   ends sewn to each other, Outside to Outside and Inside to Inside, so the binding runs on across the seam. Made again from scratch after
+   every binding is made or goes; each join is kept in the sew of the binding with the lower id (after its own BIND_OWN). */
+function bindEnds() {
+  const L = (S.bindings || []).filter(t => t.pat && t.pat.length === 2 && trimPat(t).length === 2);
+  for (const t of L) if (t.sew && t.sew.length > BIND_OWN) { const gone = new Set(t.sew.slice(BIND_OWN)); S.seams = S.seams.filter(sm => !gone.has(sm.id)); t.sew = t.sew.slice(0, BIND_OWN); }
+  // (PIPE-1b: every binding's own seams, a one-strip or an imported one's too, are none of the seams their ends meet at)
+  const own = new Set((S.bindings || []).flatMap(t => t.sew || []));
+  // each binding's two ends on its garment (2D), and the strips' end lines there (the start line runs from the outer line back to the edge)
+  const info = new Map();
+  for (const t of L) {
+    const X = seamSide(t.part, S.pieces), [A, B] = trimPat(t);
+    if (!X || (A.internals || []).some(it => it.hole && it.closed)) continue;      // all round: no ends
+    const n = X.ix.length, at = partEnds(X, { ...t.part, rev: false }), line = (P, w) => (w === 0 ? { sid: P.segs[P.segs.length - 1].id, rev: true } : { sid: P.segs[n].id, rev: false });
+    info.set(t, { piece: X.p.id, at, line });
+  }
+  const near = (a, b) => dist(a, b) < 0.5;
+  const sideEnds = (parts) => { const f = seamSide(parts[0], S.pieces), l = seamSide(parts[parts.length - 1], S.pieces); return f && l ? [partEnds(f, parts[0])[0], partEnds(l, parts[parts.length - 1])[1], parts[0].piece, parts[parts.length - 1].piece] : null; };
+  const done = new Set();
+  for (const sm of S.seams.slice()) {
+    if (own.has(sm.id) || sm.zip) continue;
+    const ea = sideEnds(sm.a), eb = sideEnds(sm.b);
+    if (!ea || !eb) continue;
+    for (const k of [0, 1]) {
+      const pa = ea[2 + k], pb = eb[2 + k];
+      for (const [t, it] of info) for (const [u, iu] of info) {
+        if (t === u || it.piece !== pa || iu.piece !== pb) continue;
+        const wt = [0, 1].find(w => near(it.at[w], ea[k])), wu = [0, 1].find(w => near(iu.at[w], eb[k]));
+        if (wt === undefined || wu === undefined || done.has(t.id + ":" + wt) || done.has(u.id + ":" + wu)) continue;
+        done.add(t.id + ":" + wt); done.add(u.id + ":" + wu);
+        const lo = t.id < u.id ? t : u, [At, Bt] = trimPat(t), [Au, Bu] = trimPat(u);
+        // (the two ends as long as each other within a fifth: else the edges meet the seam at such different angles that one strip
+        // can't run on into the other, and each end stays its own)
+        const endLen = (P, l) => segLen(P, P.segs.findIndex(s => s.id === l.sid)), la = endLen(At, it.line(At, wt)), lb = endLen(Au, iu.line(Au, wu));
+        if (!(Math.min(la, lb) >= 0.8*Math.max(la, lb))) continue;
+        for (const [P, Q] of [[At, Au], [Bt, Bu]]) {
+          const a = it.line(P, wt), b = iu.line(Q, wu), sm2 = { id: S.seams.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+            a: [{ piece: P.id, shape: 0, sids: [a.sid], t0: 0, t1: 1, rev: a.rev }], b: [{ piece: Q.id, shape: 0, sids: [b.sid], t0: 0, t1: 1, rev: b.rev }] };
+          S.seams.push(sm2); lo.sew.push(sm2.id);
+        }
+      }
+    }
+  }
+}
+// (Round PIPE-1b) a strip's grainline cross-grain: across the line a → b (the warp runs across, so the strip stretches along its length)
+function crossGrain(sh, a, b) {
+  const bx = bboxOf([sh]), c = V((bx.x0 + bx.x1)/2, (bx.y0 + bx.y1)/2), d = sub(b, a), L = vlen(d) || 1, u = V(-d.y/L, d.x/L), h = Math.max(4, Math.min(80, 0.4*Math.min(bx.x1 - bx.x0, bx.y1 - bx.y0)));
+  return { a: sub(c, mul(u, h)), b: add(c, mul(u, h)) };
+}
+const stripGrain = (t, sh, a, b) => (t.grain === "cross" ? crossGrain(sh, a, b) : biasGrain(sh, a, b));
+// what a one-strip binding is cut for: when it changes, the strip is cut again (trimSync())
+const stripSig = (t) => trimEdgeSig(t.part, ["strip", t.w, t.sa, t.red, t.grain || "bias"]);
+// the Reduction a binding's strip is cut with: its own, else the grain's (guess pipe1b/3)
+const bindRed = (t) => (Number.isFinite(t.red) ? t.red : BIND_RED[t.grain === "cross" ? "cross" : "bias"]);
+// (Round PIPE-1b) the quarter notches a one-strip binding puts on the garment's edge: taken off its lines, and put on at the edge's quarters
+function bindNotchesOff(t) {
+  const X = seamSide(t.part, S.pieces);
+  if (!X) return;
+  for (const i of X.ix) { const s = X.sh.segs[i]; if (s.notches && s.notches.some(n => n && n.bind)) s.notches = s.notches.filter(n => !(n && n.bind)); }
+}
+function bindNotches(t) {
+  bindNotchesOff(t);
+  const X = seamSide(t.part, S.pieces);
+  if (!X) return;
+  const sp = partSpans(X, t.part), lens = sp.map(s => segLenT(X.sh, s.i, s.u, s.v)), E = lens.reduce((a, b) => a + b, 0);
+  if (!(E > 0)) return;
+  for (const f of BIND_NOTCH) {
+    let d = f*E, k = 0;
+    while (k < sp.length - 1 && d > lens[k]) { d -= lens[k]; k++; }
+    const s = sp[k], sh = X.sh, SL = segLen(sh, s.i) || 1, seg = sh.segs[s.i];
+    const tt = seg.curved ? tAtFrac(sh, s.i, (lenTo(sh, s.i, s.u) + d)/SL) : s.u + d/SL;
+    (seg.notches || (seg.notches = [])).push({ t: Math.min(1, Math.max(0, tt)), bind: true });
+    seg.notches.sort((a, b) => nT(a) - nT(b));
+  }
+}
+/* (Round PIPE-1b) make (or cut again) a binding's one strip and its seams: the strip 2 w between its seam lines, as long as the edge less the
+   Reduction, its own seam allowance all round, a fold line along its middle, notches at its quarters on both seam lines (and at the edge's
+   on the garment), the grain bias or across; its top seam line sewn to the edge folded onto the front (360), its bottom one onto the back
+   (0), and round the whole outline its two ends sewn together. The same pattern and seams when cut again; false if there is no edge. */
+function stripMake(t) {
+  const G = byId(t.part.piece), X = G && seamSide(t.part, S.pieces);
+  if (!X) return false;
+  const E = partLen(X, t.part);
+  if (!(E > 1)) return false;
+  const L = E*(1 - bindRed(t)/100), H = 2*t.w, sa = Number.isFinite(t.sa) ? t.sa : S.saValue, closed = edgeClosed(X, t.part);
+  let P = trimPat(t)[0] || null;
+  // where it lay, or right of every pattern at the garment's height (pipe1/7)
+  const at = P ? (() => { const b = bboxOf([P]); return V(b.x0, b.y0); })() : trimSpot([], bboxOf([G]).y0);
+  const sh = planShape({ pts: [V(0, 0), V(L, 0), V(L, H), V(0, H)], segs: [0, 1, 2, 3].map(() => ({ curved: false })) }, P);
+  shapeMap(sh, q => add(q, at));
+  sh.segs.forEach((s, k) => { s.sa = sa; s.notches = k === 0 || k === 2 ? BIND_NOTCH.slice() : []; });
+  const mid = [V(at.x, at.y + t.w), V(at.x + L, at.y + t.w)];
+  if (!P) {
+    P = mkPiece(t.name + " Strip", sh); S.pieces.push(P);
+    P.arch3 = true;                                          // out of the 3D garment: the rod is the binding there (pipe1/2b)
+  } else { P.pts = sh.pts; P.segs = sh.segs; }
+  const fl = (P.internals || []).find(it => !it.closed && it.fold);
+  if (fl) fl.pts = mid; else addChild(P, "internals", Object.assign(mkShape(mid, false), { fold: "valley" }));
+  if (Number.isInteger(t.fabric)) P.fabric = t.fabric; else delete P.fabric;
+  P.grain = stripGrain(t, P, sh.pts[0], sh.pts[1]);
+  // its seams: the top seam line to the edge (onto the front), the bottom one, run the same way, to the edge (onto the back), the ends
+  const ids = (t.sew || []).slice(), made = [];
+  const sp = (k, rev) => ({ piece: P.id, shape: 0, sids: [P.segs[k].id], t0: 0, t1: 1, rev });
+  const gp = () => ({ ...clone(t.part), rev: false });
+  const want = [[[sp(0, false)], [gp()], BIND_FOLD[0]], [[sp(2, true)], [gp()], BIND_FOLD[1]]];
+  if (closed) want.push([[sp(1, false)], [sp(3, true)], null]);
+  want.forEach(([a, b, fa], k) => {
+    let sm = S.seams.find(x => x.id === ids[k]);
+    if (sm) { sm.a = a; sm.b = b; }
+    else { sm = { id: S.seams.reduce((m, x) => Math.max(m, x.id), 0) + 1, a, b, ...(fa !== null ? { foldAngle: fa } : {}) }; S.seams.push(sm); }
+    made.push(sm.id);
+  });
+  const gone = new Set(ids.slice(want.length));
+  if (gone.size) S.seams = S.seams.filter(sm => !gone.has(sm.id));
+  t.pat = [P.id]; t.sew = made; t.at = stripSig(t);
+  bindNotches(t);
+  return true;
+}
+// (Round PIPE-1) a piping's strip: as long as its run of the seam's first side, π d + 2 flanges wide, a fold line along its middle.
+// (PIPE-1b) one with its own seam allowance (sa) is π d between its seam lines, sa all round, bias or cross-grain
+function pipingSig(t) {
+  const sm = S.seams.find(x => x.id === t.seam);
+  return sm ? hash32(JSON.stringify([t.d, t.t0, t.t1, sm.a.map(x => trimEdgeSig(x, 0))].concat(Number.isFinite(t.sa) ? [t.sa, t.grain || "bias"] : []))) : "";
+}
+function pipingLen(t) {
+  const sm = S.seams.find(x => x.id === t.seam);
+  if (!sm) return 0;
+  let L = 0;
+  for (const x of sm.a) { const X = seamSide(x, S.pieces); if (X) L += partLen(X, x); }
+  return L*(t.t1 - t.t0);
+}
+function pipingMake(t) {
+  const own = Number.isFinite(t.sa), sm = S.seams.find(x => x.id === t.seam), L = pipingLen(t), W = Math.PI*t.d + (own ? 0 : 2*PIPE_FLANGE);
+  if (!sm || !(L > 1)) return false;
+  let P = trimPat(t)[0] || null;
+  const host = byId(sm.a[0].piece), at = P ? (() => { const b = bboxOf([P]); return V(b.x0, b.y0); })() : trimSpot([], host ? bboxOf([host]).y0 : 0);
+  const sh = planShape({ pts: [V(0, 0), V(L, 0), V(L, W), V(0, W)], segs: [0, 1, 2, 3].map(() => ({ curved: false })) }, P);
+  shapeMap(sh, q => add(q, at));
+  if (own) for (const s of sh.segs) s.sa = t.sa;             // (PIPE-1b) its own allowance all round, outside its seam lines
+  const mid = [V(at.x, at.y + W/2), V(at.x + L, at.y + W/2)];
+  if (!P) {
+    P = mkPiece(t.name + " Strip", sh); S.pieces.push(P);
+    P.arch3 = true;                                          // out of the 3D garment: the cord is the rod (pipe1/10)
+    addChild(P, "internals", Object.assign(mkShape(mid, false), { fold: "valley" }));
+  } else {
+    P.pts = sh.pts; P.segs = sh.segs;
+    const f = (P.internals || []).find(it => !it.closed && it.fold);
+    if (f) f.pts = mid.map(q => V(q.x, q.y));
+  }
+  if (Number.isInteger(t.fabric)) P.fabric = t.fabric; else delete P.fabric;
+  P.grain = stripGrain(t, P, sh.pts[0], sh.pts[1]);
+  t.pat = [P.id]; t.at = pipingSig(t);
+  return true;
+}
+/* (Round PIPE-1) in commit(): the strips follow what they were cut for. A binding whose garment or edge went takes its strips and seams
+   with it; one whose strip was deleted ends (the other strip stays an ordinary pattern, pipe1/9); a piping whose seam went takes its strip,
+   one whose strip was deleted stays a cord. A strip whose edge (its seam's length, its width) changed is cut again in the same step. */
+function trimSync() {
+  if (!(S.bindings || []).some(t => t.pat) && !(S.pipings || []).some(t => t.pat)) return;
+  const end = new Set();
+  for (const t of S.bindings || []) {
+    if (!t.pat) continue;
+    if (!seamSide(t.part, S.pieces)) { trimDrop(t); end.add(t); continue; }
+    if (t.pat.some(id => !byId(id))) { bindNotchesOff(t); delete t.pat; delete t.sew; delete t.at; end.add(t); continue; }
+    const k = bindKind(t);
+    if (k === "two" && trimEdgeSig(t.part, t.w) !== t.at) bindingMake(t);
+    else if (k === "strip" && stripSig(t) !== t.at) stripMake(t);
+  }
+  if (end.size) { S.bindings = S.bindings.filter(t => !end.has(t)); bindEnds(); }
+  for (const t of S.pipings || []) {
+    if (!t.pat) continue;
+    if (!S.seams.some(sm => sm.id === t.seam)) { trimDrop(t); continue; }
+    if (!byId(t.pat[0])) { delete t.pat; delete t.at; continue; }
+    if (pipingSig(t) !== t.at) pipingMake(t);
+  }
+}
 
 /* ---- Gluing (Round r11 / 5) ----
    Glue area: a box dragged over the garment where two layers lie face to face. The pattern pressed on is the one glued (a);
@@ -34111,6 +39713,7 @@ function simTacks(order) {
     const P = tackAvPoint(t.av), f = avatarField(S.av), g = [0, 0, 0], d = SIM3D.sdfSample(f, P[0], P[1], P[2], g), th = fabricPhys(fabricOf(byId(t.a.piece))).thick;
     holds.push({ a: A, to: [P[0] + g[0]*(th - d), P[1] + g[1]*(th - d), P[2] + g[2]*(th - d)], ...(t.len > 0 ? { len: t.len } : {}) });
   }
+  if (S.av && typeof attachHolds === "function") for (const h of attachHolds(order)) holds.push(h);      // (run 14c, 3.A16) lines attached to an avatar tape or measurement
   return { seams, holds };
 }
 // a pattern place where it is now in 3D (its cloth as it hangs): [x, y, z] or null
@@ -34524,7 +40127,7 @@ function zipList(order) {
     const A = sidePath(sm.a, order), B = sidePath(sm.b, order);
     if (!A || !B || !(A.len > 0) || !(B.len > 0)) continue;
     const ty = zipType(sm), len = (A.len + B.len)/2;
-    out.push({ id: sm.id, name: sm.zip.name, w: ty && ty.tapeW > 0 ? ty.tapeW : 11, col: (ty && ty.color) || "#333333", n: Math.max(2, Math.ceil(len/Math.max(8, clothRes()/2))), len, A, B });
+    out.push({ id: sm.id, name: sm.zip.name, w: ty && ty.tapeW > 0 ? ty.tapeW : 11, col: (ty && ty.color) || "#333333", n: Math.max(2, Math.ceil(len/Math.max(8, clothRes()/2))), len, A, B, mesh: (ty && ty.mesh) || null });
   }
   return out;
 }
@@ -34547,7 +40150,7 @@ function zipBuild(order) {
   const g = view3d.group("zippers");
   if (!g) return [];
   g.visible = (S.ui.show3d || {}).zippers !== false && (S.ui.show3d || {}).garment !== false;
-  const list = zipList(order), key = JSON.stringify(list.map(z => [z.id, z.n, z.w, z.col]));
+  const list = zipList(order), key = JSON.stringify(list.map(z => [z.id, z.n, z.w, z.col, z.mesh ? z.mesh.pos.length + ":" + z.mesh.pos.slice(0, 32) : ""]));
   if (key !== G3.zipKey) {
     G3.zipKey = key;
     for (const c of g.children.slice()) { g.remove(c); if (c.geometry) c.geometry.dispose(); }
@@ -34560,7 +40163,8 @@ function zipBuild(order) {
       });
       const cg = new THREE.BufferGeometry(); cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3*(z.n + 1)), 3));
       const chain = new THREE.Line(cg, new THREE.LineBasicMaterial({ color: 0x111111 })); chain.frustumCulled = false; chain.renderOrder = 4; g.add(chain);
-      const pull = new THREE.Mesh(new THREE.BoxGeometry(7, 11, 5), new THREE.MeshLambertMaterial({ color: 0x8c8c90 })); g.add(pull);
+      // (Round LIB-1 / E) the slider and puller: the type's registered mesh (Register OBJ), else a small box
+      const pull = new THREE.Mesh(trimGeometry(z.mesh) || new THREE.BoxGeometry(7, 11, 5), new THREE.MeshLambertMaterial({ color: 0x8c8c90, side: THREE.DoubleSide })); g.add(pull);
       return { id: z.id, tapes, chain, pull };
     });
   }
@@ -34958,6 +40562,908 @@ HINT.height_measure = "Click a place on the avatar: its height above the floor."
 HINT.tape_surface = "Click a place on the avatar, then another: the length between them along the skin, as a tape laid on the body.";
 HINT.circ_surface = "Click three places round the avatar: the girth through them, following the skin into its hollows (Basic Circumference Measure gives the tape's, bridging them).";
 HINT.edit_measure_avatar = "Click an avatar measurement to select it; drag it to measure again where you let go; Delete or a right-click deletes it.";
+/* ---- (run 14c, roadmap 1.T45) 3D PEN (AVATAR), EDIT 3D PEN (AVATAR) ----
+   Lines drawn on the avatar's skin (the manual's Create 3D Pen, M:115008920368): the document's, S.avedit.pens = [{ id, name, closed?,
+   pts: [{ v: [three vertices], w: [their weights], c?: true }] }] (normAvPens(); kept only when there are some), each point a place on
+   the skin as an avatar measurement's is, so a line follows the avatar's pose, size, blend shapes and place. c: a curve point (Ctrl while
+   clicking): the line passes through it smoothly; else a segment point, a corner. Between two segment points the line runs taut over the
+   skin (skinPath()); a span touching a curve point is a Hermite curve through its neighbours laid onto the skin. Drawn PEN_LIFT off the
+   skin, dark and solid, an open line's ends as small squares, the selected line's points as large squares and its name and length beside
+   it (shape and words, not colour alone). While a pen is in hand the garment is see-through (penSee(), as the reference turns it
+   translucent) and a dot follows the pointer on the skin. Show 3D Pen (Avatar) (Settings ▸ Display ▸ Avatar, S.ui.pen3, view state, on
+   by default as the reference ticks it) shows them while no pen is in hand. The "In 3D space" mode (P, D) is not built (guess t45/3). */
+const PEN_TOOLS = ["pen_avatar", "edit_pen_avatar", "pencil_avatar", "flatten", "avatar_tape_linear", "avatar_tape_circ", "edit_avatar_tape", "attach_to_measure"];
+const PEN_DRAW = ["pen_avatar", "avatar_tape_linear", "avatar_tape_circ"];      // (the tools that draw a line point by point)
+const PEN_LIFT = 1, PEN_CLOSE_PX = 10, PEN_HIT_PX = 10, PEN_CURVE_STEPS = 12, PEN_MAX = 500;
+const penTool = () => PEN_TOOLS.includes(S.tool3);
+const penSee = () => penTool() && !!S.av;
+const penList = () => (S.avedit && S.avedit.pens) || [];
+const penById = (id) => penList().find(l => l.id === id) || null;
+const penAnchor = (a) => a && Array.isArray(a.v) && a.v.length === 3 && a.v.every(i => Number.isInteger(i) && i >= 0) && Array.isArray(a.w) && a.w.length === 3 && a.w.every(Number.isFinite);
+function normAvPens(list) {
+  const out = [], seen = new Set();
+  for (const x of Array.isArray(list) ? list : []) {
+    if (!x || typeof x !== "object" || !Number.isInteger(x.id) || x.id < 1 || seen.has(x.id) || !Array.isArray(x.pts)) continue;
+    const pts = x.pts.filter(penAnchor).map(a => ({ v: a.v.slice(), w: a.w.map(v => Math.round(v*1e6)/1e6), ...(a.c === true ? { c: true } : {}) }));
+    if (pts.length < 2) continue;
+    // (3.A16) an avatar tape: "line" (open, through its points) or "circ" (the skin's loop through its three places)
+    const tape = x.tape === "line" || x.tape === "circ" ? x.tape : null;
+    if (tape === "circ" && pts.length !== 3) continue;
+    seen.add(x.id);
+    out.push({ id: x.id, name: typeof x.name === "string" && x.name.trim() ? x.name.trim().slice(0, 80) : (tape ? "Avatar Tape " : "Avatar Line ") + x.id, pts, ...(x.closed === true && pts.length >= 3 && !tape ? { closed: true } : {}), ...(tape ? { tape } : {}) });
+  }
+  return out.slice(0, PEN_MAX);
+}
+// what the lines' shapes depend on, of the avatar as it stands: a new one and every line is laid on the skin again
+const penAvSig = (av) => JSON.stringify([av.scale, av.pose, av.baseQ ? Object.keys(av.baseQ).length : 0, av.jsig || "", av.ssig || "", av.psig || "", av.bsig || "", av.place || null]);
+// a point brought onto the skin, then `lift` off it (the body's field: its gradient points out)
+function penOnSkin(q, f, g, lift) {
+  for (let it = 0; it < 6; it++) { const d = SIM3D.sdfSample(f, q[0], q[1], q[2], g) - lift; if (Math.abs(d) < 0.05) break; for (let c = 0; c < 3; c++) q[c] -= g[c]*d; }
+  return q;
+}
+/* a line on the avatar as it stands (P: avPos()): { pts (lifted off the skin), len (along the skin), mid } or null when its places are not
+   on this avatar. A draft's points (`extra`: places in the scene, not yet on a line) are laid the same way. */
+function penBuild(ln, P) {
+  const nv = P.length/3;
+  if (ln.pts.some(a => a.v.some(i => i >= nv))) return null;
+  if (ln.tape === "circ") {                                             // (3.A16) the skin's loop through the three places, as a fitting suit line
+    const loop = suitLoop(ln.pts, P);
+    if (!loop || loop.length < 3) return null;
+    const f = avatarField(S.av), g = [0, 0, 0], pts = loop.map(p => p.slice());
+    let len = 0;
+    for (let k = 0; k < pts.length; k++) len += measLen(pts[k], pts[(k + 1) % pts.length]);
+    const mid = pts[0].slice();
+    for (const p of pts) penOnSkin(p, f, g, PEN_LIFT);
+    return { pts, len, mid, ends: ln.pts.map(a => skinAt(a, P)), ix: [], loop: true };
+  }
+  const q = ln.pts.map(a => skinAt(a, P)), n = q.length, cl = !!ln.closed && n >= 3, f = avatarField(S.av), g = [0, 0, 0];
+  const at = (k) => q[((k % n) + n) % n], cv = (k) => !!ln.pts[((k % n) + n) % n].c;
+  const out = [q[0].slice()], ix = [0];                                  // ix: where each of the line's own points is in out
+  for (let s = 0; s < (cl ? n : n - 1); s++) {
+    if (s > 0) ix.push(out.length - 1);
+    const a = at(s), b = at(s + 1);
+    let run;
+    if (!cv(s) && !cv(s + 1)) run = skinPath(a, b, Math.max(4, Math.min(48, Math.round(measLen(a, b)/8)))).pts.slice(1);
+    else {
+      // Hermite through a and b: at a curve point the tangent runs from its neighbour before to the one after, at a corner along the span
+      const pa = cl || s > 0 ? at(s - 1) : a, nb = cl || s + 1 < n - 1 ? at(s + 2) : b;
+      const ma = cv(s) ? sub3(b, pa).map(v => v/2) : sub3(b, a), mb = cv(s + 1) ? sub3(nb, a).map(v => v/2) : sub3(b, a);
+      run = [];
+      for (let k = 1; k <= PEN_CURVE_STEPS; k++) {
+        const t = k/PEN_CURVE_STEPS, t2 = t*t, t3 = t2*t, h00 = 2*t3 - 3*t2 + 1, h10 = t3 - 2*t2 + t, h01 = -2*t3 + 3*t2, h11 = t3 - t2;
+        run.push(penOnSkin([0, 1, 2].map(c => h00*a[c] + h10*ma[c] + h01*b[c] + h11*mb[c]), f, g, 0));
+      }
+    }
+    for (const p of run) out.push(p);
+  }
+  let len = 0;
+  for (let k = 1; k < out.length; k++) len += measLen(out[k-1], out[k]);
+  const mid = out[out.length >> 1].slice();
+  for (const p of out) penOnSkin(p, f, g, PEN_LIFT);
+  if (cl) out.pop();                                                    // (a loop's last point is its first)
+  else ix.push(out.length - 1);
+  return { pts: out, len, mid, ends: q, ix };
+}
+// a line's shape, kept until the line or the avatar changes
+function penGeom(ln) {
+  const av = S.av;
+  if (!av) return null;
+  const sig = penAvSig(av);
+  if (!G3.penCache || G3.penCache.sig !== sig) G3.penCache = { sig, m: new Map(), P: null };
+  const C = G3.penCache, key = JSON.stringify(ln);
+  if (C.m.has(key)) return C.m.get(key);
+  if (!C.P) C.P = avPos(av, false);
+  let r = null;
+  try { r = penBuild(ln, C.P); } catch (e) { r = null; }
+  if (C.m.size > 4*PEN_MAX) C.m.clear();
+  C.m.set(key, r);
+  return r;
+}
+const penLenText = (r) => fmt(r.len) + " " + S.unit;
+function penShow() {
+  const g = view3d.group && view3d.group("pens");
+  if (!g) return;
+  while (g.children.length) { const o = g.children[0]; g.remove(o); if (o.geometry) o.geometry.dispose(); if (o.material && o.userData.own) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } }
+  const av = S.av;
+  if (!av || !av.root.visible) { view3d.ask(); return; }
+  if (!G3.penMat) G3.penMat = { line: new THREE.LineBasicMaterial({ color: 0x1c1c1e }), draft: new THREE.LineDashedMaterial({ color: 0x1c1c1e, dashSize: 6, gapSize: 4, depthTest: false }),
+    end: new THREE.PointsMaterial({ color: 0x1c1c1e, size: 6, sizeAttenuation: false }), sel: new THREE.PointsMaterial({ color: 0xffffff, size: 11, sizeAttenuation: false, depthTest: false }),
+    selIn: new THREE.PointsMaterial({ color: 0x1c1c1e, size: 6, sizeAttenuation: false, depthTest: false }), pick: new THREE.PointsMaterial({ color: 0xe69f00, size: 10, sizeAttenuation: false, depthTest: false }),
+    dot: new THREE.PointsMaterial({ color: 0x000000, size: 8, sizeAttenuation: false, depthTest: false }) };
+  const M = G3.penMat, add = (o, ord) => { o.renderOrder = ord || 8; o.frustumCulled = false; g.add(o); return o; };
+  const geo = (pts) => { const b = new THREE.BufferGeometry(); b.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts.flat()), 3)); return b; };
+  if (!M.tape) M.tape = new THREE.LineDashedMaterial({ color: 0xd55e00, dashSize: 9, gapSize: 4 });
+  for (const ln of penList()) {
+    // (3.A16) the avatar tapes dashed, shown with the avatar measurements (Show Avatar Measures); the lines with Show 3D Pen (Avatar)
+    if (!penTool() && (ln.tape ? S.ui.meas3 === false : S.ui.pen3 === false)) continue;
+    const r = penGeom(ln);
+    if (!r || r.pts.length < 2) continue;
+    const lo = add(new (ln.closed || r.loop ? THREE.LineLoop : THREE.Line)(geo(r.pts), ln.tape ? M.tape : M.line));
+    lo.userData.pen = ln.id; if (ln.tape) lo.computeLineDistances();
+    const sel = (G3.penSel && G3.penSel.id === ln.id && penTool()) || (S.tool3 === "flatten" && !!G3.flatSel && G3.flatSel.has(ln.id));
+    if (!ln.closed && !r.loop && !sel) add(new THREE.Points(geo([r.pts[0], r.pts[r.pts.length - 1]]), M.end));
+    if (sel) {
+      add(new THREE.Points(geo(r.ends), M.sel), 9); add(new THREE.Points(geo(r.ends), M.selIn), 10);
+      const k = G3.penSel && G3.penSel.id === ln.id ? G3.penSel.k : null;
+      if (Number.isInteger(k) && r.ends[k]) add(new THREE.Points(geo([r.ends[k]]), M.pick), 11);
+      const sp = label3d("▶ " + penLenText(r)); sp.userData.own = true; sp.position.set(...r.mid); add(sp, 10);      // (the length only: a label holds about 17 characters; the name is the menu's header)
+    }
+  }
+  // the line being drawn: its points, the line so far, a dashed line on to the pointer; the dot on the skin under the pointer
+  const d = G3.penDraft;
+  if (d && d.pts.length && PEN_DRAW.includes(S.tool3)) {
+    const P = avPos(av, false), r = d.pts.length > 1 && S.tool3 !== "avatar_tape_circ" ? penBuild({ pts: d.pts.map(x => ({ ...x.at, ...(x.c ? { c: true } : {}) })) }, P) : null;
+    if (r) { const o = add(new THREE.Line(geo(r.pts), S.tool3 === "pen_avatar" ? M.line : M.tape)); o.computeLineDistances(); }
+    add(new THREE.Points(geo(d.pts.map(x => v3a(x.p))), M.pick), 9);
+    if (G3.penHover) { const o = add(new THREE.Line(geo([v3a(d.pts[d.pts.length - 1].p), v3a(G3.penHover.p)]), M.draft), 9); o.computeLineDistances(); }
+  }
+  if (G3.penHover && penTool()) add(new THREE.Points(geo([v3a(G3.penHover.p)]), M.dot), 12);
+  if (S.tool3 === "pencil_avatar") pencilDraw(add, geo);
+  // (3.A16) with a tape tool in hand, each attached line's links to where it goes
+  if (TAPE_TOOLS.includes(S.tool3)) for (const a of attachPairs()) { const pts = []; a.now.forEach((q, k) => pts.push(q, a.to[k])); const o = add(new THREE.LineSegments(geo(pts), M.draft), 9); o.computeLineDistances(); }
+  view3d.ask();
+}
+// the garment see-through while a pen is in hand (state3Look() reads penSee()): when a pen tool comes into the hand or leaves it
+function penToolChanged(id) {
+  const was = !!G3.penWas, now = PEN_TOOLS.includes(id);
+  G3.penWas = now;
+  if (!now) { G3.penDraft = null; G3.penHover = null; }
+  if (was !== now && view3d.ready()) { garmentSync(); penShow(); }
+}
+// a line made (one step), selected
+function penAdd(pts, closed, tape) {
+  const list = penList(), id = list.reduce((m, l) => Math.max(m, l.id), 0) + 1, name = (tape ? "Avatar Tape " : "Avatar Line ") + id;
+  if (list.length >= PEN_MAX) return toast("At most " + PEN_MAX + " lines on the avatar");
+  push(tape === "circ" ? "Circumference Avatar Tape" : tape ? "Linear Avatar Tape" : "3D Pen (Avatar)");
+  S.avedit = normAvEdit({ ...S.avedit, pens: [...list, { id, name, pts, ...(closed && !tape ? { closed: true } : {}), ...(tape ? { tape } : {}) }] });
+  commit();
+  G3.penSel = { id }; penShow();
+  const r = penGeom(penById(id));
+  if (r) toast(name + (closed ? " (closed)" : "") + ": " + penLenText(r) + (tape ? ". Attach to Measure holds a pattern's line to it." : ". Edit 3D Pen (Avatar) moves its points."));
+}
+// the lines changed (one step `name`); the selection kept where it still is
+function penPut(list, name, undo) {
+  if (undo) pushState(undo, name); else push(name);
+  S.avedit = normAvEdit({ ...S.avedit, pens: list });
+  if (!S.avedit.pens) { const e = { ...S.avedit }; delete e.pens; S.avedit = e; }
+  commit();
+  if (G3.penSel && !penById(G3.penSel.id)) G3.penSel = null;
+  penShow();
+}
+function penFinish(close) {
+  const d = G3.penDraft;
+  if (!d) return false;
+  const need = close ? 3 : 2;
+  if (d.pts.length < need) { toast(close ? "A closed line needs three points or more" : "A line needs two points or more"); return true; }
+  G3.penDraft = null;
+  penAdd(d.pts.map(x => ({ ...x.at, ...(x.c ? { c: true } : {}) })), close, S.tool3 === "avatar_tape_linear" ? "line" : S.tool3 === "avatar_tape_circ" ? "circ" : null);
+  return true;
+}
+// Enter, Delete / Backspace and Esc with a pen in hand: true when taken
+function penKey(k) {
+  if (!penTool()) return false;
+  const d = G3.penDraft;
+  if (k === "enter") { if (S.tool3 === "flatten") { flattenRun(); return true; } return (S.tool3 === "pen_avatar" || S.tool3 === "avatar_tape_linear") && !!d && penFinish(false); }
+  if (k === "escape") { if (G3.attachFrom) { G3.attachFrom = null; note3d(); penShow(); return true; } if (d) { G3.penDraft = null; penShow(); note3d(); return true; } if (G3.penSel) { G3.penSel = null; penShow(); return true; } return false; }
+  if (k === "delete") {
+    if (d) { d.pts.pop(); if (!d.pts.length) G3.penDraft = null; penShow(); return true; }
+    if ((S.tool3 === "edit_pen_avatar" || S.tool3 === "edit_avatar_tape") && G3.penSel && S.over3d && penById(G3.penSel.id)) { if (Number.isInteger(G3.penSel.k) && !penById(G3.penSel.id).tape) penDeletePoint(G3.penSel.id, G3.penSel.k); else penDelete(G3.penSel.id); return true; }
+  }
+  return false;
+}
+// the line (and its point) under the pointer: { id, k (a point within PEN_HIT_PX, else null), seg (the span nearest), u } or null
+// (3.A16) the tape tools see only the avatar tapes, the pens only the lines
+const TAPE_TOOLS = ["avatar_tape_linear", "avatar_tape_circ", "edit_avatar_tape", "attach_to_measure"];
+const penKind = (ln) => !!ln.tape === TAPE_TOOLS.includes(S.tool3);
+const penOwn = () => penList().filter(penKind);
+function penAt3(e) {
+  const pr = view3d.projector();
+  if (!pr || !S.av) return null;
+  let best = null, bd = PEN_HIT_PX;
+  for (const ln of penOwn()) {
+    const r = penGeom(ln);
+    if (!r) continue;
+    r.ends.forEach((p, k) => { const s = pr(...p); if (s.z > 1) return; const dd = Math.hypot(s.x - e.clientX, s.y - e.clientY); if (dd < bd + 3) { bd = dd - 3; best = { id: ln.id, k, d: dd }; } });
+  }
+  if (best) return best;
+  bd = PEN_HIT_PX;
+  for (const ln of penOwn()) {
+    const r = penGeom(ln);
+    if (!r) continue;
+    const pts = ln.closed || r.loop ? [...r.pts, r.pts[0]] : r.pts;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pr(...pts[i-1]), b = pr(...pts[i]);
+      if (a.z > 1 || b.z > 1) continue;
+      const ex = b.x - a.x, ey = b.y - a.y, L2 = ex*ex + ey*ey, u = L2 > 0 ? Math.max(0, Math.min(1, ((e.clientX - a.x)*ex + (e.clientY - a.y)*ey)/L2)) : 0, dd = Math.hypot(a.x + ex*u - e.clientX, a.y + ey*u - e.clientY);
+      if (dd < bd) { bd = dd; best = { id: ln.id, k: null, i, d: dd }; }
+    }
+  }
+  if (!best) return null;
+  if (penById(best.id).tape === "circ") return { ...best, seg: 0 };
+  // the span of the line's own points the place lies on: the one whose skin points are nearest the place
+  const ln = penById(best.id), r = penGeom(ln), Pp = r.pts[Math.min(best.i, r.pts.length - 1)], n = ln.pts.length;
+  let seg = 0, sd = Infinity;
+  for (let s = 0; s < (ln.closed ? n : n - 1); s++) { const a = r.ends[s], b = r.ends[(s + 1) % n], ab = sub3(b, a), L = ab[0]*ab[0] + ab[1]*ab[1] + ab[2]*ab[2], t = L > 0 ? Math.max(0, Math.min(1, (sub3(Pp, a)[0]*ab[0] + sub3(Pp, a)[1]*ab[1] + sub3(Pp, a)[2]*ab[2])/L)) : 0, dd = measLen(Pp, [a[0] + ab[0]*t, a[1] + ab[1]*t, a[2] + ab[2]*t]); if (dd < sd) { sd = dd; seg = s; } }
+  return { ...best, seg };
+}
+function penDelete(id) { const ln = penById(id); if (!ln) return; if (G3.penSel && G3.penSel.id === id) G3.penSel = null; penPut(penList().filter(l => l.id !== id), ln.tape ? "Delete Avatar Tape" : "Delete Avatar Line"); }
+function penDeleteAll() { if (!penOwn().length) return; G3.penSel = null; const tape = TAPE_TOOLS.includes(S.tool3); penPut(penList().filter(l => !penKind(l)), tape ? "Delete All Avatar Tapes" : "Delete All Avatar Lines"); }
+// a point taken out of a line; a line left with one point (two on a closed one: opened) goes
+function penDeletePoint(id, k) {
+  const ln = penById(id);
+  if (!ln || !ln.pts[k]) return;
+  const pts = ln.pts.filter((_, i) => i !== k);
+  if (pts.length < 2) return penDelete(id);
+  G3.penSel = { id };
+  penPut(penList().map(l => (l.id === id ? { ...l, pts, ...(l.closed && pts.length < 3 ? { closed: false } : {}) } : l)), "Delete Avatar Line Point");
+}
+// a point put into a line at the place clicked on it (a curve point with curve)
+function penInsertPoint(e, hit, curve) {
+  const ln = penById(hit.id), h = skinClick(e);
+  if (!ln || !h) return;
+  const pts = ln.pts.slice();
+  pts.splice(hit.seg + 1, 0, { ...h.at, ...(curve ? { c: true } : {}) });
+  G3.penSel = { id: ln.id, k: hit.seg + 1 };
+  penPut(penList().map(l => (l.id === ln.id ? { ...l, pts } : l)), curve ? "Add Avatar Line Curve Point" : "Add Avatar Line Point");
+}
+function penPointKind(id, k) {
+  const ln = penById(id);
+  if (!ln || !ln.pts[k]) return;
+  const c = !ln.pts[k].c;
+  penPut(penList().map(l => (l.id === id ? { ...l, pts: l.pts.map((p, i) => (i === k ? (c ? { ...p, c: true } : { v: p.v, w: p.w }) : p)) } : l)), c ? "Convert to Curve Point" : "Convert to Segment Point");
+}
+function penSetClosed(id, closed) {
+  const ln = penById(id);
+  if (!ln || (closed && ln.pts.length < 3)) return;
+  penPut(penList().map(l => (l.id === id ? { ...l, closed } : l)), closed ? "Close Avatar Line" : "Open Avatar Line");
+}
+function penRename(id) {
+  const ln = penById(id);
+  if (!ln) return;
+  askText("Name of the line", ln.name, (v) => { v = (v || "").trim(); if (!v || v === ln.name) return; penPut(penList().map(l => (l.id === id ? { ...l, name: v.slice(0, 80) } : l)), "Rename Avatar Line"); });
+}
+function penHover(e) {
+  if (!S.av) return;
+  G3.penHover = skinClick(e);
+  penShow();
+}
+TOOL3.pen_avatar = {
+  cursor: "crosshair",
+  down(e) {
+    if (!S.av) { toast("Drawing on the avatar needs an avatar: Avatar → Load Avatar…"); return true; }
+    const h = skinClick(e);
+    if (!h) return false;
+    const d = G3.penDraft || (G3.penDraft = { pts: [] }), pr = view3d.projector(), pen = S.tool3 === "pen_avatar", circ = S.tool3 === "avatar_tape_circ";
+    // a click on the first point (three or more): the line closes; a second click where the last point is (a double-click's): nothing
+    if (pr && d.pts.length) {
+      const sx = (p) => { const s = pr(p.x, p.y, p.z); return Math.hypot(s.x - e.clientX, s.y - e.clientY); };
+      if (pen && d.pts.length >= 3 && sx(d.pts[0].p) <= PEN_CLOSE_PX) { penFinish(true); return true; }
+      if (sx(d.pts[d.pts.length - 1].p) <= 4) return true;
+    }
+    // (3.E4) a click on a point of a line already drawn takes that very place, so two shapes share a corner (Flatten sews them there)
+    const snap = pen && pr && penSnap(e, pr);
+    if (snap) { h.p = snap.p; h.at = snap.at; }
+    d.pts.push({ p: h.p, at: h.at, ...(pen && (e.ctrlKey || e.metaKey) ? { c: true } : {}) });
+    // (3.A16) Circumference Avatar Tape: three places round the body, then the tape is the skin's loop through them
+    if (circ) { if (d.pts.length === 3) { penFinish(false); return true; } note3d(d.pts.length === 1 ? "Click a second place round the body" : "Click a third place: the tape goes round the body through all three"); penShow(); return true; }
+    note3d(!pen ? "Click the next point; double-click or Enter ends the tape" : d.pts.length < 2 ? "Click the next point (Ctrl: a curve point)" : "Click the first point to close the line, or double-click / Enter to end it; Delete takes the last point back, Esc gives it up");
+    penShow();
+    return true;
+  },
+  hover(e) { penHover(e); },
+  dbl() { if (!G3.penDraft) return false; penFinish(false); return true; },
+  menu(e) {
+    const d = G3.penDraft;
+    if (d && d.pts.length) return listMenu([{ n: "End Line", k: keyOf("enter"), f: () => penFinish(false) }, ...(S.tool3 === "pen_avatar" ? [{ n: "Close Line", off: d.pts.length < 3, f: () => penFinish(true) }] : []), { n: "Delete Last Point", k: keyOf("delete"), f: () => penKey("delete") }, { n: "Cancel Line", k: keyOf("escape"), f: () => penKey("escape") }], e.clientX, e.clientY);
+    penMenu(e);
+  },
+  off() { G3.penDraft = null; G3.penHover = null; note3d(); penShow(); },
+};
+/* Edit 3D Pen (Avatar) (M:115008890367): a click selects a line (no step), or a point of it; a point dragged moves over the skin (one
+   step at release); the right-click: Delete, Add Point, Add Curve Point (where clicked); More ▸ the point's kind, Close / Open, Rename,
+   Delete All (guess t45/2: the rows the 3D Pen (Garment)'s edit menu has, B1 p.24) */
+TOOL3.edit_pen_avatar = {
+  cursor: "default",
+  down(e) {
+    const h = penAt3(e);
+    G3.penSel = h ? { id: h.id, ...(h.k != null ? { k: h.k } : {}) } : null; penShow();
+    if (!h) return false;
+    if (h.k == null) return true;
+    this.d = { id: h.id, k: h.k, moved: false, undo: histState(), was: S.avedit.pens };
+    return true;
+  },
+  move(e) {
+    const d = this.d;
+    if (!d || !S.av) return;
+    const h = skinClick(e);
+    if (!h) return;
+    d.moved = true;
+    S.avedit = { ...S.avedit, pens: penList().map(l => (l.id === d.id ? { ...l, pts: l.pts.map((p, i) => (i === d.k ? { ...h.at, ...(p.c ? { c: true } : {}) } : p)) } : l)) };
+    penShow();
+  },
+  up() {
+    const d = this.d; this.d = null;
+    if (!d || !d.moved) return;
+    const list = S.avedit.pens;
+    S.avedit = { ...S.avedit, pens: d.was };
+    penPut(list, "Edit 3D Pen (Avatar)", d.undo);
+    G3.penSel = { id: d.id, k: d.k }; penShow();
+  },
+  hover(e) { penHover(e); },
+  menu(e) { penMenu(e); },
+  cancel() { const d = this.d; this.d = null; if (d && d.moved) { S.avedit = { ...S.avedit, pens: d.was }; penShow(); } },
+  off() { G3.penSel = null; G3.penHover = null; penShow(); },
+};
+function penMenu(e) {
+  const h = penAt3(e), n = penOwn().length, tp = TAPE_TOOLS.includes(S.tool3), word = tp ? ["tape", "tapes", "Tapes"] : ["line", "lines", "Lines"];
+  if (!h) return listMenu([{ hd: n ? n + " " + word[n === 1 ? 0 : 1] + " on the avatar" : "No " + word[1] + " on the avatar" }, ...(n ? [{ n: "More", menu: () => [{ n: "Delete All " + word[2] + " on the Avatar", f: penDeleteAll }] }] : [])], e.clientX, e.clientY);
+  const ln = penById(h.id), r = penGeom(ln);
+  G3.penSel = { id: h.id, ...(h.k != null ? { k: h.k } : {}) }; penShow();
+  // (3.A16) an avatar tape: Delete; More ▸ Rename…, Delete All
+  if (ln.tape) return listMenu([{ hd: ln.name + (r ? ": " + penLenText(r) : "") }, { n: "Delete", k: keyOf("delete"), f: () => penDelete(h.id) },
+    { n: "More", menu: () => [{ n: "Rename…", f: () => penRename(h.id) }, { n: "Delete All Tapes on the Avatar", f: penDeleteAll }] }], e.clientX, e.clientY);
+  const pt = h.k != null ? ln.pts[h.k] : null;
+  listMenu([{ hd: ln.name + (r ? ": " + penLenText(r) : "") },
+    { n: "Delete", k: keyOf("delete"), f: () => (pt ? penDeletePoint(h.id, h.k) : penDelete(h.id)) },
+    ...(pt ? [] : [{ n: "Add Point", f: () => penInsertPoint(e, h, false) }, { n: "Add Curve Point", f: () => penInsertPoint(e, h, true) }]),
+    { n: "More", menu: () => [...(pt ? [{ n: pt.c ? "Convert to Segment Point" : "Convert to Curve Point", f: () => penPointKind(h.id, h.k) }] : []),
+      ln.closed ? { n: "Open Line", f: () => penSetClosed(h.id, false) } : { n: "Close Line", off: ln.pts.length < 3, f: () => penSetClosed(h.id, true) },
+      { n: "Rename…", f: () => penRename(h.id) }, { n: "Delete Line", f: () => penDelete(h.id) }, { n: "Delete All Lines on the Avatar", f: penDeleteAll }] }], e.clientX, e.clientY);
+}
+HINT.pen_avatar = "Click on the avatar to draw a line on its skin (Ctrl: a curve point). Click the first point to close it, double-click or Enter to end it; Delete takes the last point back, Esc gives it up. The line follows the avatar's pose and size.";
+HINT.edit_pen_avatar = "Click a line drawn on the avatar to select it; drag one of its points over the skin. Right-click: Delete, Add Point, Add Curve Point; More ▸ for the rest.";
+/* ---- (run 14c, roadmap 3.A16) AVATAR TAPES and ATTACH TO MEASURE (the manual's WW p.8–10) ----
+   An avatar tape is an avatar line of its own kind (S.avedit.pens, `tape`): Linear Avatar Tape clicks places on the skin (double-click /
+   Enter ends it), Circumference Avatar Tape three places round the body (the skin's loop through them, as a fitting suit line); Edit Avatar
+   Tape selects, moves a place over the skin, deletes. Drawn dashed, with the avatar measurements (Show Avatar Measures). The 3D Pen's tools
+   do not see them, nor these tools the 3D Pen's lines. Attach to Measure: click a pattern's line on the garment (its outline or an internal
+   line), then an avatar tape or an avatar measurement: the line's segment keeps which (`atape`: "t<id>" a tape, "m<id>" a measurement;
+   kept only when set), one step. While simulating the line is held onto it: ATTACH_STEP mm apart a place of the line is a hold (as an
+   avatar tack's) to the place on the tape as far along it as along the line, from the tape's place nearest the line's start, the way that
+   fits best; a cloth's thickness off the skin. With a tape tool in hand each attached line shows dashed links to where it goes. */
+const ATTACH_STEP = 20;
+TOOL3.avatar_tape_linear = Object.assign({}, TOOL3.pen_avatar);
+TOOL3.avatar_tape_circ = Object.assign({}, TOOL3.pen_avatar, { dbl() { return !!G3.penDraft; } });
+TOOL3.edit_avatar_tape = Object.assign({}, TOOL3.edit_pen_avatar);
+// what a line is attached to, as it stands: { pts, loop } or null
+function attachTarget(key) {
+  if (typeof key !== "string" || !S.av) return null;
+  const id = +key.slice(1);
+  if (key[0] === "t") { const ln = penById(id), r = ln && ln.tape && penGeom(ln); return r ? { pts: r.pts, loop: !!r.loop, name: ln.name } : null; }
+  if (key[0] === "m") {
+    const m = (S.avMeas || []).find(x => x.id === id);
+    if (!m || m.kind === "lost") return null;
+    const name = measName(m);
+    return m.kind === "circ" ? { pts: m.pts, loop: true, name } : m.kind === "stape" ? { pts: m.pts, loop: false, name } : m.kind === "height" ? { pts: [m.a, [m.a[0], 0, m.a[2]]], loop: false, name } : { pts: [m.a, m.b], loop: false, name };
+  }
+  return null;
+}
+// a polyline's length to each point; the place at length s; the length along it of the place nearest q
+function polyCum(T) { const c = [0]; for (let k = 1; k < T.pts.length; k++) c.push(c[k-1] + measLen(T.pts[k-1], T.pts[k])); if (T.loop) c.push(c[c.length - 1] + measLen(T.pts[T.pts.length - 1], T.pts[0])); return c; }
+function polyAt(T, c, s) {
+  const tot = c[c.length - 1], n = T.pts.length;
+  s = T.loop ? ((s % tot) + tot) % tot : Math.max(0, Math.min(tot, s));
+  let k = 1; while (k < c.length - 1 && c[k] < s) k++;
+  const a = T.pts[(k - 1) % n], b = T.pts[k % n], f = c[k] > c[k-1] ? (s - c[k-1])/(c[k] - c[k-1]) : 0;
+  return [0, 1, 2].map(i => a[i] + (b[i] - a[i])*f);
+}
+function polyNear(T, c, q) {
+  let best = 0, bd = Infinity;
+  const n = T.pts.length, m = T.loop ? n : n - 1;
+  for (let k = 0; k < m; k++) {
+    const a = T.pts[k], b = T.pts[(k + 1) % n], ab = sub3(b, a), L = ab[0]*ab[0] + ab[1]*ab[1] + ab[2]*ab[2], aq = sub3(q, a), t = L > 0 ? Math.max(0, Math.min(1, (aq[0]*ab[0] + aq[1]*ab[1] + aq[2]*ab[2])/L)) : 0, d = measLen(q, [a[0] + ab[0]*t, a[1] + ab[1]*t, a[2] + ab[2]*t]);
+    if (d < bd) { bd = d; best = c[k] + (c[k+1] - c[k])*t; }
+  }
+  return best;
+}
+// every attached line: [{ p, places (on the pattern), now (where they hang), to (where they go) }]
+function attachPairs() {
+  const out = [];
+  if (!S.av) return out;
+  for (const p of S.pieces) for (const sh of [p, ...(p.internals || [])]) (sh.segs || []).forEach((sg, i) => {
+    if (!sg.atape) return;
+    const T = attachTarget(sg.atape);
+    if (!T || T.pts.length < 2) return;
+    const L = segLen(sh, i), n = Math.max(2, Math.min(60, Math.round(L/ATTACH_STEP) + 1)), places = [];
+    for (let k = 0; k < n; k++) { const q = segPt(sh, i, tAtFrac(sh, i, k/(n - 1))); places.push({ piece: p.id, x: q.x, y: q.y }); }
+    const now = places.map(tackPos);
+    if (now.some(x => !x)) return;
+    const c = polyCum(T), s0 = polyNear(T, c, now[0]), step = L/(n - 1);
+    const way = (dir) => places.map((_, k) => polyAt(T, c, s0 + dir*k*step)), cost = (to) => to.reduce((s, q, k) => s + measLen(q, now[k]), 0);
+    const fw = way(1), bw = way(-1);
+    out.push({ p, places, now, to: cost(fw) <= cost(bw) ? fw : bw });
+  });
+  return out;
+}
+// the solver's holds for them (simTacks())
+function attachHolds(order) {
+  const out = [], f = S.av && avatarField(S.av), g = [0, 0, 0];
+  for (const a of attachPairs()) {
+    const th = fabricPhys(fabricOf(a.p)).thick;
+    a.places.forEach((q, k) => { const A = tackAnchor(q, order); if (!A) return; const P = a.to[k], d = SIM3D.sdfSample(f, P[0], P[1], P[2], g); out.push({ a: A, to: [P[0] + g[0]*(th - d), P[1] + g[1]*(th - d), P[2] + g[2]*(th - d)] }); });
+  }
+  return out;
+}
+// the pattern line nearest the place clicked on the garment (its outline or an internal line, within 12 px): { piece, shape, sid, sh, i } or null
+function attachLineAt(e) {
+  const pk = pick3(e);
+  if (!pk || pk.piece == null) return null;
+  const p = byId(pk.piece), lim = 12/(pk.s || 1);
+  if (!p) return null;
+  let best = null, bd = lim;
+  for (const sh of [p, ...(p.internals || [])]) (sh.segs || []).forEach((sg, i) => {
+    for (let k = 0; k <= 24; k++) { const q = segPt(sh, i, k/24), d = Math.hypot(q.x - pk.x, q.y - pk.y); if (d < bd) { bd = d; best = { piece: p.id, shape: sh === p ? 0 : sh.id, sid: sg.id, sh, i }; } }
+  });
+  return best;
+}
+const attachSeg = (L) => { const p = byId(L.piece), sh = p && (L.shape ? (p.internals || []).find(x => x.id === L.shape) : p); return sh ? (sh.segs || []).find(s => s.id === L.sid) || null : null; };
+function attachSet(L, key) {
+  if (!attachSeg(L)) return;
+  push(key ? "Attach to Measure" : "Detach from Measure");
+  const sg = attachSeg(L);
+  if (key) sg.atape = key; else delete sg.atape;
+  commit(); penShow();
+}
+TOOL3.attach_to_measure = {
+  cursor: "crosshair",
+  down(e) {
+    if (!S.av) { toast("Attach to Measure needs an avatar: Avatar → Load Avatar…"); return true; }
+    const h = G3.attachFrom && penAt3(e), mk = G3.attachFrom && !h ? measAt3(e) : null;
+    if (G3.attachFrom && (h || mk != null)) {
+      const key = h ? "t" + h.id : "m" + S.avMeas[mk].id, L = G3.attachFrom;
+      G3.attachFrom = null; note3d();
+      attachSet(L, key);
+      toast("Attached: the line is held onto " + (attachTarget(key) || { name: "it" }).name + " while simulating");
+      return true;
+    }
+    const L = attachLineAt(e);
+    if (!L) { if (G3.attachFrom) toast("Click an avatar tape or an avatar measurement (Esc gives it up)"); return false; }
+    G3.attachFrom = L; penShow();
+    note3d("Now click an avatar tape or an avatar measurement to attach the line to");
+    return true;
+  },
+  hover(e) { penHover(e); },
+  menu(e) {
+    const L = attachLineAt(e), sg = L && attachSeg(L);
+    if (!sg || !sg.atape) return listMenu([{ hd: "Click a pattern's line, then an avatar tape or measurement" }], e.clientX, e.clientY);
+    listMenu([{ hd: "Attached to " + ((attachTarget(sg.atape) || {}).name || "a tape that is gone") }, { n: "Detach from Measure", f: () => attachSet(L, null) }], e.clientX, e.clientY);
+  },
+  off() { G3.attachFrom = null; G3.penHover = null; note3d(); penShow(); },
+};
+HINT.avatar_tape_linear = "Click places on the avatar's skin; double-click or Enter ends the tape. A pattern's line can be attached to it (Attach to Measure).";
+HINT.avatar_tape_circ = "Click three places round the avatar: the tape goes round the body through them.";
+HINT.edit_avatar_tape = "Click an avatar tape to select it; drag one of its places over the skin; Delete or a right-click deletes it.";
+/* (run 14c, roadmap 3.E4; run 14d, the maintainer's answer to run 14c's Q4) PRESS: click one layer on the garment, then the other it is
+   sewn to: every seam between the two is pressed, one step "Press". Two kinds (PRESS_KINDS), chosen in the tool's panel at the 3D
+   window's top right (pressPanel()) or its right-click, **Pressed Open by default** (PRESS.kind, this session's):
+   - Pressed Open: the seam held flat, the two layers opened out in one plane at the stitch line (Fold Angle 180 at PRESS_STRENGTH; the
+     seam's `press: "open"`, kept only when set, since a seam at 180 otherwise folds nothing; guess t45/19);
+   - Pressed to One Side: run 14c's fold, kept as this kind: the two layers folded fully back to back (Fold Angle 0 at PRESS_STRENGTH),
+     as a facing turned and pressed, both allowances to one side (guess t45/17, now this kind only).
+   Turned is taken off either way. Two patterns not sewn together: says so. The seam's Fold Angle and Strength stay editable in the
+   Property Editor with Edit Sewing (another angle, or Turned, ends Pressed Open: setSeamFold()). */
+const PRESS_ANGLE = 0, PRESS_STRENGTH = 50;
+const PRESS_KINDS = [["open", "Pressed Open"], ["side", "Pressed to One Side"]];
+const PRESS = { kind: "open" };
+function pressSeams(a, b) { const on = (sm, s, id) => sm[s].some(x => x.piece === id); return (S.seams || []).filter(sm => (on(sm, "a", a) && on(sm, "b", b)) || (on(sm, "a", b) && on(sm, "b", a))); }
+function pressPair(a, b, kind) {
+  const k = kind === "side" ? "side" : "open";
+  const L = pressSeams(a, b);
+  if (!L.length) return toast((byId(a) || {}).name + " and " + (byId(b) || {}).name + " are not sewn together: Press folds the seam between two layers");
+  push("Press");
+  for (const sm of pressSeams(a, b)) {
+    delete sm.turned; sm.foldStrength = PRESS_STRENGTH;
+    if (k === "open") { delete sm.foldAngle; sm.press = "open"; } else { sm.foldAngle = PRESS_ANGLE; delete sm.press; }
+  }
+  commit();
+  const n = L.length + (L.length === 1 ? " seam" : " seams");
+  toast(k === "open" ? "Pressed open " + n + ": the two layers lie flat, opened out at the seam, when simulating (Edit Sewing's Fold Angle changes it)"
+    : "Pressed " + n + " to one side: the two layers fold flat against each other there when simulating (Edit Sewing's Fold Angle changes it)");
+}
+function pressPanel(on) {
+  const st = document.getElementById("stage3d");
+  if (!st) return;
+  let el = document.getElementById("press3d");
+  if (!on) { if (el) el.style.display = "none"; return; }
+  if (!el) { el = document.createElement("div"); el.id = "press3d"; st.appendChild && st.appendChild(el); }
+  el.className = "brush3d foldg"; el.style.display = "block";
+  el.innerHTML = '<div class="hd">Press</div>' + PRESS_KINDS.map(([v, t]) => '<div class="row"><label><input type="radio" name="press-kind" value="' + v + '"' + (PRESS.kind === v ? " checked" : "") + '> ' + t + '</label></div>').join("") +
+    '<div class="note">Click one layer, then the layer it is sewn to.</div>';
+  for (const r of el.querySelectorAll ? el.querySelectorAll('input[name="press-kind"]') : []) r.onchange = (e) => { PRESS.kind = e.target.value === "side" ? "side" : "open"; };
+}
+TOOL3.press = {
+  cursor: "crosshair",
+  down(e) {
+    const pk = pick3(e);
+    if (!pk || pk.piece == null) return false;
+    if (G3.pressFrom == null || G3.pressFrom === pk.piece) { G3.pressFrom = pk.piece; note3d("Now click the layer " + (byId(pk.piece) || {}).name + " is sewn to"); return true; }
+    const a = G3.pressFrom;
+    G3.pressFrom = null; note3d();
+    pressPair(a, pk.piece, PRESS.kind);
+    return true;
+  },
+  menu(e) { listMenu(PRESS_KINDS.map(([v, t]) => ({ n: t, on: PRESS.kind === v, f: () => { PRESS.kind = v; pressPanel(true); } })), e.clientX, e.clientY); },
+  off() { G3.pressFrom = null; note3d(); pressPanel(false); },
+};
+/* (run 14c, roadmap 3.E4) SEAM TAPING, the toolbar tool: a click on a line of the garment tapes it (Seam Taping, the line's own row,
+   setTape()); a click on a taped line takes the tape away; one step each. A hole's outline and a base line cannot be taped. */
+TOOL3.seam_taping = {
+  cursor: "crosshair",
+  down(e) {
+    const L = attachLineAt(e);
+    if (!L) return false;
+    tapeToggle(L);
+    return true;
+  },
+  menu(e) { garmentMenu(e); },
+};
+// a line ({ piece, shape, sid, sh }) taped, or its tape taken away (one step)
+function tapeToggle(L) {
+  const p = byId(L.piece), sg = attachSeg(L);
+  if (!p || !sg) return;
+  if (!elasticLine({ kind: L.shape ? "internal" : "outline", sh: L.sh })) return toast("This line cannot be taped");
+  if (isLocked(p)) return toast(p.name + " is locked");
+  const on = !sg.tape;
+  push("Seam Taping");
+  const s2 = attachSeg(L);
+  if (on) { s2.tape = true; delete s2.elastic; delete s2.shirr; } else delete s2.tape;
+  commit();
+  toast(on ? "Taped: the line keeps its length when simulating (click it again to take the tape away)" : "The tape is taken away");
+}
+HINT.press = "Click one layer on the garment, then the layer it is sewn to: the seam between them is pressed, open (flat) or to one side (the two folded against each other), as the panel says.";
+HINT.seam_taping = "Click a line on the garment to tape it, so it keeps its length when simulating; click a taped line to take the tape away.";
+HINT.attach_to_measure ="Click a pattern's line on the garment, then an avatar tape or an avatar measurement: while simulating, the line is held onto it. Right-click an attached line to detach it.";
+/* ---- (run 14c, roadmap 1.T45) 3D PENCIL (AVATAR) (the manual's 3D Pencil, M:55461410696345) ----
+   A drag on the avatar sketches a stroke on its skin; the panel at the top right of the 3D window (pencilPanel()): Draw / Erase (a drag
+   rubs out the strokes' parts within Size px of the pointer), Symmetry (each stroke also drawn mirrored across the avatar's middle),
+   Conversion Guide (where the segment points will be: the stroke's corners and ends, as squares), Convert to 3D Pen (every stroke a
+   3D Pen (Avatar) line, one step; then Edit 3D Pen (Avatar) is in hand), Clear. The strokes are held in G3.pencil, no undo steps; since
+   run 14d (the maintainer's answer to run 14c's Q5, replacing guess t45/7) **they are saved with the project**: document.json's `pencil`,
+   each stroke its places on the skin ({ v, w }, as a measurement's), kept only when there are some, not in undo (as the garment
+   measurements); opened, they are laid on the avatar as it stands again (pencilStrokes(): a sample's `p` worked out when missing) and are
+   still convertible. A change marks unsaved work (pencilChanged()). The view is not fixed to front or back (guess t45/8). A stroke becomes a line of segment
+   points at its corners (a turn of PENCIL_CORNER° or more over PENCIL_WIN mm either side) and ends, and curve points every PENCIL_STEP mm
+   along it between them where it bends; a stroke whose end comes back within PENCIL_CLOSE mm of its start (and is longer than three times
+   that) is a closed line. */
+const PENCIL = { mode: "draw", size: 20, sym: false, guide: true };
+const PENCIL_PX = 5, PENCIL_CORNER = 45, PENCIL_WIN = 15, PENCIL_STEP = 40, PENCIL_CLOSE = 15, PENCIL_MAX = 200;
+// the strokes; a sample read from a file has only its place on the skin: where it lies is worked out once there is an avatar (a sample
+// whose place is not on this avatar goes, and a stroke left shorter than two samples with it)
+function pencilStrokes() {
+  const pc = G3.pencil || (G3.pencil = { strokes: [] });
+  if (S.av && pc.strokes.some(st => st.some(s => !s.p))) {
+    const P = avPos(S.av, false), nv = P.length/3, f = avatarField(S.av), g = [0, 0, 0];
+    pc.strokes = pc.strokes.map(st => st.filter(s => s.p || s.at.v.every(i => i < nv)).map(s => (s.p ? s : { p: penOnSkin(skinAt(s.at, P), f, g, PEN_LIFT), at: s.at }))).filter(st => st.length > 1);
+  }
+  return pc.strokes;
+}
+// (run 14d) the strokes as the file keeps them: each sample's place on the skin, the weights to 1e-6 (so a file saved again is the same bytes)
+const pencilOut = () => ((G3.pencil && G3.pencil.strokes) || []).filter(st => st.length > 1).map(st => st.map(s => ({ v: s.at.v.slice(), w: s.at.w.map(x => Math.round(x*1e6)/1e6) })));
+// a file's strokes: lists of { v: [3 vertex indices], w: [3 weights] }; anything else left out
+function normPencil(d) {
+  if (!Array.isArray(d)) return [];
+  const ok = (a) => a && Array.isArray(a.v) && Array.isArray(a.w) && a.v.length === 3 && a.w.length === 3 && a.v.every(i => Number.isInteger(i) && i >= 0) && a.w.every(Number.isFinite);
+  return d.filter(Array.isArray).map(st => st.filter(ok).map(a => ({ at: { v: a.v.slice(), w: a.w.slice() } }))).filter(st => st.length > 1).slice(-PENCIL_MAX);
+}
+const pencilChanged = () => { if (typeof store === "function") store(); };
+// the avatar's middle across (x), as it stands: Symmetry mirrors there
+const pencilMid = () => { const b = S.av && avatarBox(S.av); return b ? (b.x0 + b.x1)/2 : 0; };
+// a stroke's samples as places on the skin with where they are: [{ p: [x, y, z], at }]; the corners and ends it would keep (indices)
+function pencilPlan(st) {
+  const P = st.map(s => s.p), n = P.length, cum = [0];
+  for (let k = 1; k < n; k++) cum.push(cum[k-1] + measLen(P[k-1], P[k]));
+  const L = cum[n - 1], closed = n > 3 && L > 3*PENCIL_CLOSE && measLen(P[0], P[n - 1]) <= PENCIL_CLOSE;
+  const back = (k) => { let j = k; while (j > 0 && cum[k] - cum[j] < PENCIL_WIN) j--; return j; }, fwd = (k) => { let j = k; while (j < n - 1 && cum[j] - cum[k] < PENCIL_WIN) j++; return j; };
+  const turn = (k) => { const a = P[back(k)], b = P[k], c = P[fwd(k)], u = unit3(sub3(b, a)), w = unit3(sub3(c, b)); return Math.acos(Math.max(-1, Math.min(1, u[0]*w[0] + u[1]*w[1] + u[2]*w[2])))*180/Math.PI; };
+  const tk = P.map((_, k) => (k > 0 && k < n - 1 && cum[k] > PENCIL_WIN/2 && L - cum[k] > PENCIL_WIN/2 ? turn(k) : 0));
+  const corners = [];
+  for (let k = 1; k < n - 1; k++) if (tk[k] >= PENCIL_CORNER && tk[k] >= tk[k-1] && tk[k] > tk[k+1] && (!corners.length || cum[k] - cum[corners[corners.length - 1]] > PENCIL_WIN)) corners.push(k);
+  const keep = [0, ...corners, ...(closed ? [] : [n - 1])], out = [];
+  for (let s = 0; s < keep.length; s++) {
+    const i = keep[s], j = s + 1 < keep.length ? keep[s + 1] : (closed ? n - 1 : -1);
+    out.push({ k: i, c: false });
+    if (j < 0) continue;
+    // between two kept points: curve points every PENCIL_STEP where the stroke bends off the straight line between them
+    const a = P[i], b = P[j], ab = sub3(b, a), l2 = ab[0]*ab[0] + ab[1]*ab[1] + ab[2]*ab[2];
+    let bend = 0;
+    for (let k = i; k <= j; k++) { const t = l2 > 0 ? Math.max(0, Math.min(1, (sub3(P[k], a)[0]*ab[0] + sub3(P[k], a)[1]*ab[1] + sub3(P[k], a)[2]*ab[2])/l2)) : 0; bend = Math.max(bend, measLen(P[k], [a[0] + ab[0]*t, a[1] + ab[1]*t, a[2] + ab[2]*t])); }
+    if (bend < 3) continue;
+    const m = Math.max(1, Math.round((cum[j] - cum[i])/PENCIL_STEP) - 1);
+    for (let q = 1; q <= m; q++) { const want = cum[i] + (cum[j] - cum[i])*q/(m + 1); let k = i; while (k < j && cum[k] < want) k++; out.push({ k, c: true }); }
+  }
+  return { pts: out, closed };
+}
+// the strokes, while the pencil is in hand: dashed (the 3D Pen's lines are solid); the guide's segment points as squares
+function pencilDraw(add, geo) {
+  if (!G3.penMat.pencil) { G3.penMat.pencil = new THREE.LineDashedMaterial({ color: 0x0072b2, dashSize: 4, gapSize: 3 }); G3.penMat.guide = new THREE.PointsMaterial({ color: 0x0072b2, size: 8, sizeAttenuation: false, depthTest: false }); }
+  const all = [...pencilStrokes(), ...(G3.pencilCur && G3.pencilCur.length > 1 ? [G3.pencilCur] : [])];
+  for (const st of all) {
+    if (st.length < 2) continue;
+    const o = add(new THREE.Line(geo(st.map(s => s.p)), G3.penMat.pencil), 9); o.computeLineDistances();
+    if (PENCIL.guide && st !== G3.pencilCur) { const pl = pencilPlan(st), segs = pl.pts.filter(x => !x.c).map(x => st[x.k].p); if (segs.length) add(new THREE.Points(geo(segs), G3.penMat.guide), 10); }
+  }
+}
+// a sample on the skin under the pointer, lifted as the lines are
+function pencilSample(e) {
+  const h = skinClick(e);
+  if (!h) return null;
+  return { p: penOnSkin(v3a(h.p), avatarField(S.av), [0, 0, 0], PEN_LIFT), at: h.at, sx: e.clientX, sy: e.clientY };
+}
+// a stroke mirrored across the avatar's middle: each sample the place on the skin nearest its mirror image
+function pencilMirror(st) {
+  const mx = pencilMid(), P = avPos(S.av, false), f = avatarField(S.av), g = [0, 0, 0];
+  return st.map(s => { const at = skinNear(new THREE.Vector3(2*mx - s.p[0], s.p[1], s.p[2])); return { p: penOnSkin(skinAt(at, P), f, g, PEN_LIFT), at }; });
+}
+// Erase: the parts of the strokes within Size px of the pointer go; what is left of a stroke stays as strokes of two samples or more
+function pencilErase(e) {
+  const pr = view3d.projector();
+  if (!pr) return;
+  const r = PENCIL.size, out = [];
+  let hit = false;
+  for (const st of pencilStrokes()) {
+    let run = [];
+    for (const s of st) {
+      const q = pr(...s.p), gone = q.z <= 1 && Math.hypot(q.x - e.clientX, q.y - e.clientY) <= r;
+      if (gone) { hit = true; if (run.length > 1) out.push(run); run = []; } else run.push(s);
+    }
+    if (run.length > 1) out.push(run);
+  }
+  if (hit) { G3.pencil.strokes = out; penShow(); pencilPanel(true); pencilChanged(); }
+}
+// Clear: every stroke gone (no undo step, as drawing them)
+function pencilClear() { G3.pencil = { strokes: [] }; penShow(); pencilPanel(true); pencilChanged(); }
+// Convert to 3D Pen: every stroke a line (one step), the strokes gone, Edit 3D Pen (Avatar) in hand
+function pencilConvert() {
+  const strokes = pencilStrokes().filter(st => st.length > 1);
+  if (!strokes.length) return toast("Sketch on the avatar first: drag over it with 3D Pencil (Avatar)");
+  const list = penList();
+  let id = list.reduce((m, l) => Math.max(m, l.id), 0);
+  const made = [];
+  for (const st of strokes) {
+    const pl = pencilPlan(st), pts = pl.pts.map(x => ({ ...st[x.k].at, ...(x.c ? { c: true } : {}) }));
+    if (pts.length < 2 || list.length + made.length >= PEN_MAX) continue;
+    id++; made.push({ id, name: "Avatar Line " + id, pts, ...(pl.closed && pts.length >= 3 ? { closed: true } : {}) });
+  }
+  if (!made.length) return toast("The strokes are too short to make lines of");
+  G3.pencil = { strokes: [] };
+  penPut([...list, ...made], "Convert to 3D Pen");
+  setTool3("edit_pen_avatar");
+  G3.penSel = { id: made[made.length - 1].id }; penShow();
+  toast(made.length + (made.length === 1 ? " stroke made a line" : " strokes made lines") + " on the avatar. Edit 3D Pen (Avatar) moves their points.");
+}
+function pencilPanel(on) {
+  const st = document.getElementById("stage3d");
+  if (!st) return;
+  let el = document.getElementById("pencil3d");
+  if (!on) { if (el) el.style.display = "none"; return; }
+  if (!el) { el = document.createElement("div"); el.id = "pencil3d"; st.appendChild && st.appendChild(el); }
+  el.className = "brush3d foldg"; el.style.display = "block";
+  const n = pencilStrokes().length, rb = (v, t) => '<label><input type="radio" name="pencil-mode" value="' + v + '"' + (PENCIL.mode === v ? " checked" : "") + '> ' + t + '</label>';
+  el.innerHTML = '<div class="hd">3D Pencil</div><div class="row">' + rb("draw", "Draw") + ' ' + rb("erase", "Erase") + '</div>' +
+    '<div class="row"><label for="pencil-size" title="How far round the pointer Erase rubs out, in screen pixels">Size (px)</label><input type="text" inputmode="decimal" data-num="1" class="s" id="pencil-size" value="' + PENCIL.size + '"></div>' +
+    '<div class="row"><label><input type="checkbox" id="pencil-sym"' + (PENCIL.sym ? " checked" : "") + '> Symmetry</label></div>' +
+    '<div class="row"><label title="Squares where the lines will have their segment points (corners and ends); between them the line is a curve"><input type="checkbox" id="pencil-guide"' + (PENCIL.guide ? " checked" : "") + '> Conversion Guide</label></div>' +
+    '<div class="row wrap"><button id="pencil-conv"' + (n ? "" : " disabled") + '>Convert to 3D Pen</button> <button id="pencil-clear"' + (n ? "" : " disabled") + '>Clear</button></div>' +
+    '<div class="note">' + (n ? n + (n === 1 ? " stroke" : " strokes") + " (saved with the project; Convert to 3D Pen makes lines of them)" : "Drag over the avatar to sketch.") + '</div>';
+  const q = (id) => document.getElementById(id);
+  for (const r of el.querySelectorAll ? el.querySelectorAll('input[name="pencil-mode"]') : []) r.onchange = (e) => { PENCIL.mode = e.target.value; };
+  if (q("pencil-size")) q("pencil-size").onchange = (e) => { const v = numOf(e.target.value); if (Number.isFinite(v) && v > 0) PENCIL.size = Math.max(2, Math.min(200, Math.round(v))); e.target.value = PENCIL.size; };
+  if (q("pencil-sym")) q("pencil-sym").onchange = (e) => { PENCIL.sym = !!e.target.checked; };
+  if (q("pencil-guide")) q("pencil-guide").onchange = (e) => { PENCIL.guide = !!e.target.checked; penShow(); };
+  if (q("pencil-conv")) q("pencil-conv").onclick = () => pencilConvert();
+  if (q("pencil-clear")) q("pencil-clear").onclick = pencilClear;
+}
+TOOL3.pencil_avatar = {
+  cursor: "crosshair",
+  down(e) {
+    if (!S.av) { toast("Drawing on the avatar needs an avatar: Avatar → Load Avatar…"); return true; }
+    if (PENCIL.mode === "erase") { if (!skinClick(e) && !pencilStrokes().length) return false; this.erase = true; pencilErase(e); return true; }
+    const s = pencilSample(e);
+    if (!s) return false;
+    G3.pencilCur = [s];
+    return true;
+  },
+  move(e) {
+    if (this.erase) return pencilErase(e);
+    const c = G3.pencilCur;
+    if (!c) return;
+    const l = c[c.length - 1];
+    if (Math.hypot(e.clientX - l.sx, e.clientY - l.sy) < PENCIL_PX) return;
+    const s = pencilSample(e);
+    if (!s) return;
+    c.push(s); penShow();
+  },
+  up() {
+    if (this.erase) { this.erase = false; return; }
+    const c = G3.pencilCur; G3.pencilCur = null;
+    if (c && c.length > 1) {
+      const strokes = pencilStrokes();
+      strokes.push(c.map(s => ({ p: s.p, at: s.at })));
+      if (PENCIL.sym) strokes.push(pencilMirror(c));
+      if (strokes.length > PENCIL_MAX) strokes.splice(0, strokes.length - PENCIL_MAX);
+      pencilChanged();
+    }
+    penShow(); pencilPanel(true);
+  },
+  hover(e) { penHover(e); },
+  menu(e) { const n = pencilStrokes().length; listMenu([{ hd: n ? n + (n === 1 ? " stroke" : " strokes") : "No strokes" }, { n: "Convert to 3D Pen", off: !n, f: pencilConvert }, { n: "Clear", off: !n, f: pencilClear }], e.clientX, e.clientY); },
+  cancel() { G3.pencilCur = null; this.erase = false; penShow(); },
+  off() { G3.pencilCur = null; this.erase = false; pencilPanel(false); penShow(); },
+};
+/* ---- (run 14c, roadmap 3.E4) FLATTEN (the manual's Flatten, M:115008890627) ----
+   Closed lines drawn on the avatar become patterns: click one (Shift+click for more), Enter (or the right-click's Flatten). Each shape's
+   skin is meshed (its outline laid on the plane that fits it best, Newell's normal turned outward, filled with even triangles FLAT_RES
+   apart, every inside point put back on the skin) and the mesh is laid flat keeping its edges' lengths on the skin (FLAT_ITERS passes
+   that set each edge to its length). The flat outline is the pattern: a segment point at each of the line's own points, the stretch
+   between a straight line, or a curve through curve points every FLAT_CP mm where it bends. The pattern comes in at the right of the
+   2D window at the height it was drawn, is arranged in 3D where it was drawn (a rigid fit, as an import is) and its cloth draped there
+   FLAT_LIFT off the skin, so it is on the body before simulating. Two shapes that share two corners (a click on a line's point takes
+   that very place, penSnap()) are sewn there (the stretches between the same two points). One step "Flatten"; the lines stay.
+   Not built: Shift+Enter (the shapes' common area as one pattern, guess t45/11). */
+const FLAT_RES = 15, FLAT_ITERS = 400, FLAT_CP = 25, FLAT_LIFT = SKIN_OFFSET + 2;
+// a point of a line already drawn under the pointer: { p, at } (that very place on the skin), or null
+function penSnap(e, pr) {
+  let best = null, bd = PEN_CLOSE_PX;
+  for (const ln of penList().filter(l => !l.tape)) {
+    const r = penGeom(ln);
+    if (!r) continue;
+    r.ends.forEach((q, k) => { const s = pr(...q); if (s.z > 1) return; const d = Math.hypot(s.x - e.clientX, s.y - e.clientY); if (d < bd) { bd = d; best = { p: new THREE.Vector3(...q), at: { v: ln.pts[k].v.slice(), w: ln.pts[k].w.slice() } }; } });
+  }
+  return best;
+}
+// whether a closed outline (points [x, y]) crosses itself
+function loopCrosses(L) {
+  const m = L.length, cr = (a, b, c) => (b[0] - a[0])*(c[1] - a[1]) - (b[1] - a[1])*(c[0] - a[0]);
+  for (let i = 0; i < m; i++) for (let j = i + 2; j < m; j++) {
+    if (i === 0 && j === m - 1) continue;
+    const a = L[i], b = L[(i + 1) % m], c = L[j], d = L[(j + 1) % m];
+    if (cr(a, b, c)*cr(a, b, d) < 0 && cr(c, d, a)*cr(c, d, b) < 0) return true;
+  }
+  return false;
+}
+// a closed line's skin, meshed and laid flat: { F (flat, x along u, y along v: up), P (on the skin), tri, nb (outline points first),
+// corner (the outline point of each of the line's own points), c, dev (the largest share an edge's flat length is off its skin length) } or { err }
+function flattenPlan(ln) {
+  if (!ln || !ln.closed) return { err: "is not closed: only a closed line can be flattened" };
+  const r = penGeom(ln);
+  if (!r || r.pts.length < 3) return { err: "is not on this avatar" };
+  const B = r.pts, m = B.length, f = avatarField(S.av), g = [0, 0, 0], dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  let n = [0, 0, 0];
+  const c = [0, 0, 0];
+  for (let i = 0; i < m; i++) { const a = B[i], b = B[(i + 1) % m]; n[0] += (a[1] - b[1])*(a[2] + b[2]); n[1] += (a[2] - b[2])*(a[0] + b[0]); n[2] += (a[0] - b[0])*(a[1] + b[1]); for (let k = 0; k < 3; k++) c[k] += a[k]/m; }
+  n = unit3(n);
+  let out = 0;
+  for (const p of B) { SIM3D.sdfSample(f, p[0], p[1], p[2], g); out += dot(g, n); }
+  if (out < 0) n = n.map(x => -x);
+  let v = [-n[0]*n[1], 1 - n[1]*n[1], -n[2]*n[1]];                       // up, in the plane
+  if (len3(v) < 0.3) v = [-n[0]*n[2], -n[1]*n[2], 1 - n[2]*n[2]];         // (a level shape: the depth axis)
+  v = unit3(v);
+  const u = unit3([v[1]*n[2] - v[2]*n[1], v[2]*n[0] - v[0]*n[2], v[0]*n[1] - v[1]*n[0]]);      // u × v = n: the pattern's front faces out
+  const L = B.map(p => { const q = sub3(p, c); return [dot(q, u), dot(q, v)]; });
+  if (loopCrosses(L)) return { err: "goes too far round the body to lie flat: draw it as two shapes" };
+  const M = SIM3D.meshPolygon(L, FLAT_RES);
+  if (!M || !M.tri.length) return { err: "could not be meshed" };
+  const nv = M.xy.length/2, nb = M.loop.length, P = new Float64Array(3*nv);
+  for (let i = 0; i < nv; i++) {
+    const x = M.xy[2*i], y = M.xy[2*i+1], s = i < nb ? M.src[i] : -1;
+    const p = s >= 0 && Math.abs(s - Math.round(s)) < 1e-9 ? B[Math.round(s) % m].slice() : penOnSkin([0, 1, 2].map(k => c[k] + u[k]*x + v[k]*y), f, g, PEN_LIFT);
+    P[3*i] = p[0]; P[3*i+1] = p[1]; P[3*i+2] = p[2];
+  }
+  const F = Float64Array.from(M.xy), seen = new Set(), ed = [];
+  for (let t = 0; t < M.tri.length; t += 3) for (let e = 0; e < 3; e++) {
+    const a = Math.min(M.tri[t+e], M.tri[t + (e + 1) % 3]), b = Math.max(M.tri[t+e], M.tri[t + (e + 1) % 3]), k = a*nv + b;
+    if (seen.has(k)) continue;
+    seen.add(k); ed.push([a, b, Math.hypot(P[3*a] - P[3*b], P[3*a+1] - P[3*b+1], P[3*a+2] - P[3*b+2])]);
+  }
+  for (let it = 0; it < FLAT_ITERS; it++) for (const [a, b, l] of ed) {
+    const dx = F[2*b] - F[2*a], dy = F[2*b+1] - F[2*a+1], d = Math.hypot(dx, dy) || 1e-9, k = (d - l)/d*0.5;
+    F[2*a] += dx*k; F[2*a+1] += dy*k; F[2*b] -= dx*k; F[2*b+1] -= dy*k;
+  }
+  let dev = 0;
+  for (const [a, b, l] of ed) if (l > 1e-6) dev = Math.max(dev, Math.abs(Math.hypot(F[2*b] - F[2*a], F[2*b+1] - F[2*a+1]) - l)/l);
+  const corner = r.ix.map(j => { let best = 0, bd = Infinity; for (let i = 0; i < nb; i++) { const d = Math.abs(M.src[i] - j); if (d < bd) { bd = d; best = i; } } return best; });
+  return { F, P, tri: M.tri, nb, corner, c, dev };
+}
+// the pattern of a plan, its outline's left edge at x0 in 2D and at the height it was drawn (2D y down: -(height)); not yet in the document
+function flattenPiece(ln, pl, x0) {
+  const nv = pl.F.length/2;
+  let fx = Infinity;
+  for (let i = 0; i < nv; i++) fx = Math.min(fx, pl.F[2*i]);
+  const at2 = (i) => V(x0 + pl.F[2*i] - fx, -(pl.c[1] + pl.F[2*i+1]));
+  const cs = pl.corner, n = cs.length;
+  if (n < 3 || new Set(cs).size < n) return null;
+  const sh = mkShape(cs.map(at2), true);
+  for (let s = 0; s < n; s++) {
+    const i0 = cs[s], i1 = cs[(s + 1) % n], run = [];
+    for (let i = (i0 + 1) % pl.nb; i !== i1; i = (i + 1) % pl.nb) run.push(at2(i));
+    if (!run.length) continue;
+    const a = at2(i0), b = at2(i1), ab = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    if (Math.max(...run.map(q => Math.abs((b.x - a.x)*(a.y - q.y) - (a.x - q.x)*(b.y - a.y))/ab)) < 0.5) continue;
+    let along = 0, last = a, next = FLAT_CP;
+    const cps = [];
+    for (const q of run) { along += Math.hypot(q.x - last.x, q.y - last.y); last = q; if (along >= next) { cps.push(V(q.x, q.y)); next += FLAT_CP; } }
+    if (!cps.length) cps.push(V(run[run.length >> 1].x, run[run.length >> 1].y));
+    Object.assign(sh.segs[s], { curved: true, c1: null, c2: null, cps });
+  }
+  const p = mkPiece(ln.name, sh);
+  p._flat = { keys: ln.pts.map(a => JSON.stringify([a.v, a.w])), rest: Float32Array.from({ length: 2*nv }, (_, k) => (k & 1 ? at2(k >> 1).y : at2(k >> 1).x)) };
+  return p;
+}
+// the pattern arranged where it was drawn and its cloth draped there (as an import's: zprj3D())
+function flattenPlace(p, pl) {
+  const res = particleOf(p), m = pieceMesh3(p, res);
+  if (!m) return;
+  const nv = pl.F.length/2, rest = p._flat.rest, C = m.c.slice(), A = new Float32Array(3*nv), B = new Float32Array(3*nv), f = avatarField(S.av), g = [0, 0, 0];
+  for (let i = 0; i < nv; i++) {
+    const q = penOnSkin([pl.P[3*i], pl.P[3*i+1], pl.P[3*i+2]], f, g, FLAT_LIFT);
+    B[3*i] = q[0]; B[3*i+1] = q[1]; B[3*i+2] = q[2];
+    A[3*i] = rest[2*i] - C[0]; A[3*i+1] = -(rest[2*i+1] - C[1]);
+  }
+  const rf = rigidFit(A, B), r6 = (x) => Math.round(x*1e6)/1e6;
+  p.p3 = { pos: rf.t.map(x => Math.round(x*1000)/1000), q: rf.q.map(r6), r: 0, o: C };
+  const k = m.xy.length/2, out = new Float32Array(3*k);
+  for (let v = 0; v < k; v++) {
+    const a = SIM3D.triAnchor(rest, pl.tri, m.xy[2*v], m.xy[2*v+1], 0);
+    for (let c = 0; c < 3; c++) out[3*v + c] = a.w[0]*B[3*a.i[0] + c] + a.w[1]*B[3*a.i[1] + c] + a.w[2]*B[3*a.i[2] + c];
+  }
+  (S.drapeIn = S.drapeIn || {})[p.id] = { k: hash32(pieceSig(p, res)), n: k, f: out };
+}
+function flattenRun() {
+  const lines = [...(G3.flatSel || [])].map(penById).filter(Boolean);
+  if (!lines.length) return toast("Click closed lines on the avatar first (Shift+click for more), then press Enter");
+  if (!S.av) return;
+  const plans = [];
+  for (const ln of lines) { const pl = flattenPlan(ln); if (pl.err) return toast(ln.name + " " + pl.err); plans.push([ln, pl]); }
+  push("Flatten");
+  let x = S.pieces.length ? Math.max(...S.pieces.flatMap(p => p.pts.map(q => q.x))) + 100 : 0;
+  const made = [];
+  for (const [ln, pl] of plans) {
+    const p = flattenPiece(ln, pl, x);
+    if (!p) continue;
+    S.pieces.push(p); flattenPlace(p, pl); made.push(p);
+    x = Math.max(...p.pts.map(q => q.x)) + 60;
+  }
+  if (!made.length) { unpush(); return toast("Nothing could be flattened"); }
+  // shapes sharing two corners: the stretches between them sewn (the other's run the other way round: reversed)
+  let sewn = 0;
+  const ends = (p, s) => [p._flat.keys[s], p._flat.keys[(s + 1) % p._flat.keys.length]];
+  for (let i = 0; i < made.length; i++) for (let j = i + 1; j < made.length; j++) {
+    const A = made[i], Bp = made[j];
+    A.segs.forEach((sa, s) => {
+      const [a0, a1] = ends(A, s);
+      Bp.segs.forEach((sb, t) => {
+        const [b0, b1] = ends(Bp, t);
+        if (!((a0 === b0 && a1 === b1) || (a0 === b1 && a1 === b0))) return;
+        const sm = makeSeam(S.seams, { piece: A.id, shape: 0, sids: [sa.id] }, { piece: Bp.id, shape: 0, sids: [sb.id] }, a0 === b1);
+        if (sm) { S.seams.push(sm); sewn++; }
+      });
+    });
+  }
+  for (const p of made) delete p._flat;
+  S.sel = made.map(p => p.id);
+  commit();
+  G3.flatSel = null; penShow();
+  const worst = Math.max(...plans.map(([, pl]) => pl.dev));
+  toast("Flattened " + made.length + (made.length === 1 ? " pattern" : " patterns") + (sewn ? ", " + sewn + (sewn === 1 ? " seam" : " seams") + " sewn" : "") + ". They lie on the avatar where they were drawn: simulate to let them settle." + (worst > 0.03 ? " The skin there is too curved to lie quite flat (lengths off by up to " + Math.round(worst*100) + " %)." : ""), 8000);
+}
+TOOL3.flatten = {
+  cursor: "default", shift: true,
+  down(e) {
+    const h = penAt3(e), ln = h && penById(h.id);
+    if (!ln) { if (!e.shiftKey && G3.flatSel && G3.flatSel.size) { G3.flatSel = null; penShow(); } return false; }
+    if (!ln.closed) { toast("Only a closed line can be flattened: Edit 3D Pen (Avatar) ▸ More ▸ Close Line closes it"); return true; }
+    const s = e.shiftKey ? new Set(G3.flatSel || []) : new Set();
+    if (e.shiftKey && s.has(ln.id)) s.delete(ln.id); else s.add(ln.id);
+    G3.flatSel = s; penShow();
+    note3d(s.size + (s.size === 1 ? " shape" : " shapes") + " picked (Shift+click for more): Enter flattens");
+    return true;
+  },
+  hover(e) { penHover(e); },
+  menu(e) { const n = (G3.flatSel || new Set()).size; listMenu([{ hd: n ? n + (n === 1 ? " shape picked" : " shapes picked") : "Click closed lines on the avatar" }, { n: "Flatten", k: keyOf("enter"), off: !n, f: flattenRun }], e.clientX, e.clientY); },
+  off() { G3.flatSel = null; note3d(); penShow(); },
+};
+HINT.flatten = "Click a closed line drawn on the avatar (Shift+click for more), then Enter: each becomes a pattern, laid flat, arranged and draped where it was drawn, sewn to the others where they share two corners.";
+HINT.pencil_avatar ="Drag over the avatar to sketch on its skin (Erase in the panel rubs out). Convert to 3D Pen turns the strokes into lines: segment points at the corners (the Conversion Guide's squares), curves between them. The strokes are not saved until converted.";
 /* ---- the garment's measurements ---- */
 S.garMeas = S.garMeas || [];
 // the level cut at height y through the cloth of the given patterns: the points where it crosses their triangles' edges
@@ -35546,6 +42052,280 @@ TOOL3.steam = {
   cancel() { const d = this.d; this.d = null; meshSelSet([], "set"); if (d && d.pushed) { commit(); } },
   menu(e) { garmentMenu(e); },
 };
+/* (Round POST8 / FIX-5 E, roadmap 1.T36 3.C6) FOLD 3D GARMENT: the finished garment laid flat on the floor and folded, for showing it
+   (the reference's panel, W12: Mode Auto / Manual; 3d_tools 01:06-01:21, nothing in it pressed; the manual's few lines). Every action
+   moves the cloth only (its drape, never the patterns' places: Reset 3D Arrangement puts the garment back on the avatar), without
+   simulating, one step between two drape snapshots, as Fold Arrangement and Roll Up are; a running simulation is stopped first.
+   Auto ▸ Lay Flat (guess post8/13): every pattern's cloth turned face up (a quarter turn about the x axis, the collar away from the
+     front view) and pressed onto the floor in two layers, the cloth whose outward side (outwardSign()) faced the front on top, the
+     rest under it, SUPERIMPOSE_GAP apart, its x and z kept (curved cloth comes out narrower: Simulate lets it settle); laid on the
+     floor's middle line in front of where it hung, clear of the avatar. ↩ Back on the Avatar: the drape from before the last Lay Flat
+     (while the session keeps it).
+   Manual (guess post8/14): Rotate X-Axis (a quarter turn about the x axis through the garment's middle; the manual: one hanging in the
+     air is put on the floor, in front of the avatar here), Flip Horizontally (turned over: half round about the z axis, onto the floor),
+     Fold and Fold (Selected) (guess post8/15): a line dragged over the laid garment (on the plane of its top); every cloth point beyond
+     it on the side with fewer points (Fold (Selected): the selected patterns' cloth on the side holding most of it) mirrored across
+     the line and laid over the rest, its layers reversed, SUPERIMPOSE_GAP above the top. Optimize-Res Garment and Set Physical Property
+     for Spreading / Folding are not built (what they set is not known): shown greyed only with Show Tools That Are Not Built Yet. */
+const FOLDG = { mode: "auto", arm: null, back: null, line: null };
+const FOLDG_NOTE = "For best results, drape your garment on a T-pose avatar with the arms extended before clicking Lay Flat.";
+// the garment's cloth: every pattern in the 3D window that is shown and not archived
+const foldgItems = () => S.pieces.filter(p => p.on !== false && !p.arch3 && G3.items.has(p.id)).map(p => [p, G3.items.get(p.id)]);
+function foldgBox(list) {
+  const b = { x0: Infinity, y0: Infinity, z0: Infinity, x1: -Infinity, y1: -Infinity, z1: -Infinity };
+  for (const [, it] of list) for (let i = 0; i < it.X.length; i += 3) { b.x0 = Math.min(b.x0, it.X[i]); b.x1 = Math.max(b.x1, it.X[i]); b.y0 = Math.min(b.y0, it.X[i+1]); b.y1 = Math.max(b.y1, it.X[i+1]); b.z0 = Math.min(b.z0, it.X[i+2]); b.z1 = Math.max(b.z1, it.X[i+2]); }
+  return b.x0 <= b.x1 ? b : null;
+}
+// one step around fn (the cloth before and after named by drape snapshots); false when there is no garment
+function foldgStep(name, fn) {
+  const list = foldgItems();
+  if (!list.length) return toast(name + ": there is no garment in the 3D window"), false;
+  simHalt();
+  const before = drapeCapture(); push(name);
+  if (fn(list, before) === false) { unpush(); return false; }
+  for (const [, it] of list) { it.draped = true; itemMoved(it); }
+  if (typeof garmentLines === "function") garmentLines();
+  commit(); drapeCapture(); view3d.ask();
+  return true;
+}
+// every point of the list turned by quaternion q about c
+function foldgTurn(list, q, c) {
+  for (const [, it] of list) for (let i = 0; i < it.X.length; i += 3) { const w = SIM3D.qRot(q, it.X[i] - c[0], it.X[i+1] - c[1], it.X[i+2] - c[2], [0, 0, 0]); it.X[i] = w[0] + c[0]; it.X[i+1] = w[1] + c[1]; it.X[i+2] = w[2] + c[2]; }
+}
+// the lowest point onto the floor (one gap above it); when it hung in the air (on the avatar), also in front of where it hung
+function foldgFloor(list, hung) {
+  const b = foldgBox(list), by = SUPERIMPOSE_GAP - b.y0, bx = hung ? -(b.x0 + b.x1)/2 : 0, bz = hung ? hung - b.z0 : 0;
+  for (const [, it] of list) for (let i = 0; i < it.X.length; i += 3) { it.X[i] += bx; it.X[i+1] += by; it.X[i+2] += bz; }
+}
+const FOLDG_CLEAR = 300;            // mm left between where the garment hung and where it is laid down
+/* (POST8 batch 0e, the maintainer's brief; guess post8/16) After Lay Flat, an avatar whose arms are not out (each upper arm less than
+   TPOSE_MIN from straight down: armsOut()) gets a held hint in Roll Up's style naming the menu row, and a button that puts it in the
+   T-pose, re-drapes and lays the garment flat again as one undo step (batch 0f: tPoseLayFlat()); the pose is kept in the document's avatar
+   edits (S.avedit.joints, poseJointsTo()), as Avatar ▸ T-Pose's is since batch 0f. */
+const TPOSE_MIN = 70;               // degrees out from straight down that count as arms out
+const TPOSE_HINT = "Sleeves lie flatter if the avatar is in a T-pose: Avatar ▸ T-Pose, then Re-drape before Lay Flat.";
+const TPOSE_NEXT = "T-Pose set (Ctrl+Z takes it back). Next: Re-drape (3D ▸ Arrangement), then Lay Flat again.";
+// the smaller of the two upper arms' angles from straight down, in the avatar's own frame; null without both arm bones
+function armsOut(av) {
+  const R = av && av.roles;
+  if (!R || !R.armL || !R.armR || !R.forearmL || !R.forearmR) return null;
+  av.root.updateMatrixWorld(true);
+  const inv = av.root.getWorldQuaternion(new THREE.Quaternion()).invert(), at = (b) => b.getWorldPosition(new THREE.Vector3());
+  const ang = (up, low) => { const d = at(low).sub(at(up)).applyQuaternion(inv).normalize(); return Math.acos(Math.max(-1, Math.min(1, -d.y)))*180/Math.PI; };
+  return Math.min(ang(R.armL, R.forearmL), ang(R.armR, R.forearmR));
+}
+/* The joints that put the avatar in a pose from the pose it has (this machine's sliders and pose file, which a document's avatar record
+   stands it in for that document): the turn of every bone from where it is now to where the target puts it. A preset (POSE_PRESETS' a / t / i)
+   keeps the document's other joints; As Loaded ("file": no sliders, no pose file) takes every joint away but those turns. */
+function poseJointsTo(av, k) {
+  const keepP = av.pose, keepJ = av.joints, keepB = av.baseQ, read = () => { const m = new Map(); for (const [n, b] of av.bones) m.set(n, b.quaternion.clone()); return m; };
+  const ang = { a: [45, 8], t: [90, 8], i: [12, 4] }[k], pre = ang ? posePreset(av, ang[0], ang[1]) : {};
+  av.joints = null; poseApply(av); const cur = read();
+  av.pose = pre; if (!ang) av.baseQ = null; poseApply(av); const tgt = read();
+  av.pose = keepP; av.joints = keepJ; av.baseQ = keepB; poseApply(av);
+  const J = ang ? { ...((S.avedit && S.avedit.joints) || {}) } : {};
+  for (const [n, q] of tgt) { const c = cur.get(n); if (c && c.angleTo(q) > 1e-6) J[n] = c.clone().invert().multiply(q).toArray(); else if (!ang) delete J[n]; }
+  return J;
+}
+const tPoseJoints = (av) => poseJointsTo(av, "t");
+/* (POST8 batch 0f, the maintainer's brief) Avatar ▸ A-Pose / T-Pose / Arms Down / As Loaded and the pose panel's presets are document edits: one undo
+   step each, kept in the document's avatar edits (S.avedit.joints), so the same file on a fresh profile stands the same (the full-restore rule).
+   Before, they were this machine's pose sliders. The sliders themselves and a pose file chosen stay this machine's (roadmap FIX-8). */
+const POSE_STEP_NAMES = { file: "Pose As Loaded", a: "A-Pose", t: "T-Pose", i: "Arms Down" };
+function posePresetStep(k) {
+  const av = S.av;
+  if (!av) return toast("Load an avatar first (Avatar → Load Avatar…)"), false;
+  if (k !== "file" && armsOut(av) === null) return toast("This avatar's arm bones are not known by name, so the pose can't be worked out"), false;
+  simHalt();
+  push(POSE_STEP_NAMES[k] || "Pose");
+  S.avedit = normAvEdit({ ...S.avedit, joints: poseJointsTo(av, k) });
+  commit();
+  return true;
+}
+const tPoseStep = () => posePresetStep("t");
+/* (POST8 batch 0f) The hint's button: T-pose, Re-drape and Lay Flat as ONE undo step. The drape from before Lay Flat put back, the T-pose set, the
+   cloth carried with the body (redrapeCarry(), as Re-drape does) and simulated until it settles (TPCHAIN_SETTLE mm/s after TPCHAIN_MIN frames, at
+   most TPCHAIN_MAX), a note in the 3D window meanwhile; then laid flat. Stopped early (Space, a press in 2D), it lays the garment flat from
+   where it got to. Undo puts back the laid A-pose garment, redo the new one. */
+const TPCHAIN = { on: null }, TPCHAIN_MIN = 60, TPCHAIN_MAX = 900, TPCHAIN_SETTLE = 20;
+const TPCHAIN_NAME = "T-Pose, Re-drape and Lay Flat";
+function tPoseLayFlat() {
+  const av = S.av;
+  if (!av) return toast("Load an avatar first (Avatar → Load Avatar…)"), false;
+  if (armsOut(av) === null) return toast("This avatar's arm bones are not known by name, so the pose can't be worked out"), false;
+  if (!view3d.ready()) return toast("The 3D window is not up"), false;
+  if (!FOLDG.back || !poolHas(FOLDG.back)) return tPoseStep() && (toast(TPOSE_NEXT, 8000), true);
+  simHalt();
+  if (!G3.drapeNow || !G3.pool.has(G3.drapeNow)) drapeCapture();
+  push(TPCHAIN_NAME); histFit();
+  drapeApply(FOLDG.back); FOLDG.back = null;
+  S.avedit = normAvEdit({ ...S.avedit, joints: tPoseJoints(av) });
+  commit();
+  if (G3.dirty) garmentSync();
+  redrapeCarry();
+  simBuild();
+  SIM.on = true; SIM.ms = 0; SIM.tick = 0; TPCHAIN.on = { n: 0 };
+  view3d.loop(tpChainFrame); refreshRail(); simNote();      // (its note says what runs: "T-pose set: re-draping on the avatar, then Lay Flat · Simulating …")
+  return true;
+}
+function tpChainFrame() {
+  simFrame();
+  const c = TPCHAIN.on; if (!c) return;
+  c.n++;
+  if (c.n >= TPCHAIN_MAX || (c.n >= TPCHAIN_MIN && simSpeed() < TPCHAIN_SETTLE)) simStop();
+}
+// called by simStop() while the chain runs: the settled cloth laid flat, in the same step
+function tpChainEnd() {
+  if (!TPCHAIN.on) return;
+  TPCHAIN.on = null;
+  const list = foldgItems();
+  if (!list.length) return;
+  const before = G3.drapeNow && G3.pool.has(G3.drapeNow) ? G3.drapeNow : drapeCapture();
+  layFlatApply(list, before);
+  for (const [, it] of list) { it.draped = true; itemMoved(it); }
+  if (typeof garmentLines === "function") garmentLines();
+  commit(); drapeCapture(); note3d(); view3d.ask();
+  if (typeof foldgPanel === "function" && S.tool3 === "fold_garment") foldgPanel(true);
+  toast("T-pose set, re-draped and laid flat: one step (Ctrl+Z takes it all back)", 6000);
+}
+function tPoseHint() {
+  const a = armsOut(S.av);
+  if (a === null || a >= TPOSE_MIN) return false;
+  holdToast(TPOSE_HINT, { label: "T-Pose, Re-drape, Lay Flat", f: tPoseLayFlat });
+  return true;
+}
+function layFlat() {
+  const ok = layFlatRun();
+  if (ok) tPoseHint();
+  return ok;
+}
+function layFlatRun() { return foldgStep("Lay Flat", layFlatApply); }
+function layFlatApply(list, before) {
+  {
+    const b0 = foldgBox(list), c = [(b0.x0 + b0.x1)/2, (b0.y0 + b0.y1)/2, (b0.z0 + b0.z1)/2];
+    // each point's layer from its own cloth's outward side, before turning: facing the front (+z) on top
+    const top = list.map(([p, it]) => { const B = it.X.slice(), Nn = clothNormals(B, it.mesh.tri), sg = outwardSign(p, it, B, Nn), T = new Uint8Array(B.length/3); for (let v = 0; v < T.length; v++) T[v] = sg*Nn[3*v+2] >= 0 ? 1 : 0; return T; });
+    foldgTurn(list, SIM3D.qAxis([1, 0, 0], -90), c);
+    list.forEach(([, it], k) => { for (let v = 0; v < top[k].length; v++) it.X[3*v+1] = (top[k][v] ? 2 : 1)*SUPERIMPOSE_GAP; });
+    const b1 = foldgBox(list), bx = -(b1.x0 + b1.x1)/2, bz = b0.z1 + FOLDG_CLEAR - b1.z0;
+    for (const [, it] of list) for (let i = 0; i < it.X.length; i += 3) { it.X[i] += bx; it.X[i+2] += bz; }
+    FOLDG.back = before;
+  }
+}
+function foldgBack() {
+  const id = FOLDG.back;
+  if (!id || !poolHas(id)) return toast("Back on the Avatar: the drape from before Lay Flat is not kept any more (Reset 3D Arrangement puts the garment back)"), false;
+  simHalt();
+  drapeCapture(); push("Back on the Avatar");
+  drapeApply(id); FOLDG.back = null;
+  commit(); drapeCapture(); view3d.ask();
+  return true;
+}
+function foldgRotateX() {
+  return foldgStep("Rotate X-Axis", (list) => {
+    const b = foldgBox(list), air = b.y0 > 50;
+    foldgTurn(list, SIM3D.qAxis([1, 0, 0], -90), [(b.x0 + b.x1)/2, (b.y0 + b.y1)/2, (b.z0 + b.z1)/2]);
+    foldgFloor(list, air ? b.z1 + FOLDG_CLEAR : 0);
+  });
+}
+function foldgFlip() {
+  return foldgStep("Flip Horizontally", (list) => {
+    const b = foldgBox(list), air = b.y0 > 50;
+    foldgTurn(list, SIM3D.qAxis([0, 0, 1], 180), [(b.x0 + b.x1)/2, (b.y0 + b.y1)/2, (b.z0 + b.z1)/2]);
+    foldgFloor(list, air ? b.z1 + FOLDG_CLEAR : 0);
+  });
+}
+// the fold along the line a -> b (points on the floor's plane, x and z read), all the garment or the selected patterns' cloth
+function foldgFold(a, b, sel) {
+  const lx = b[0] - a[0], lz = b[2] - a[2], L = Math.hypot(lx, lz);
+  if (!(L > 1)) return toast("Fold: drag a longer line over the garment"), false;
+  const nx = -lz/L, nz = lx/L, side = (x, z) => (x - a[0])*nx + (z - a[2])*nz;
+  const ids = sel ? new Set(sel3(true).map(p => p.id)) : null;
+  if (sel && !ids.size) return toast("Fold (Selected): select the patterns to fold first"), false;
+  const name = sel ? "Fold (Selected)" : "Fold";
+  // which side folds: the side with fewer points (all), the side holding most of the selected cloth (Selected)
+  let pos = 0, neg = 0;
+  for (const [p, it] of foldgItems()) { if (ids && !ids.has(p.id)) continue; for (let i = 0; i < it.X.length; i += 3) { const d = side(it.X[i], it.X[i+2]); if (d > 1e-6) pos++; else if (d < -1e-6) neg++; } }
+  if (!pos && !neg) return toast(name + ": no cloth there"), false;
+  // the whole garment folds only where the line runs across it (cloth on both sides); the selected cloth may lie wholly on one side
+  if (!sel && (!pos || !neg)) return toast(name + ": the line does not cross the garment"), false;
+  const sg = sel ? (pos >= neg ? 1 : -1) : (pos <= neg ? 1 : -1);
+  return foldgStep(name, (list) => {
+    let top = -Infinity, topF = -Infinity;
+    for (const [p, it] of list) for (let i = 0; i < it.X.length; i += 3) { const f = sg*side(it.X[i], it.X[i+2]) > 1e-6 && (!ids || ids.has(p.id)); if (f) topF = Math.max(topF, it.X[i+1]); else top = Math.max(top, it.X[i+1]); }
+    if (!Number.isFinite(top)) top = 0;
+    for (const [p, it] of list) {
+      if (ids && !ids.has(p.id)) continue;
+      for (let i = 0; i < it.X.length; i += 3) {
+        const d = side(it.X[i], it.X[i+2]);
+        if (sg*d <= 1e-6) continue;
+        it.X[i] -= 2*d*nx; it.X[i+2] -= 2*d*nz; it.X[i+1] = top + SUPERIMPOSE_GAP + (topF - it.X[i+1]);
+      }
+    }
+  });
+}
+function foldgArm(how) {
+  FOLDG.arm = how; FOLDG.line = null;
+  note3d(how ? "Drag a line over the garment to fold " + (how === "sel" ? "the selected patterns" : "it") + " along it · Esc gives it up" : "");
+  foldgPanel(true);
+}
+function foldgPanel(on) {
+  const st = document.getElementById("stage3d");
+  if (!st) return;
+  let el = document.getElementById("foldg3d");
+  if (!on) { if (el) el.style.display = "none"; FOLDG.arm = null; FOLDG.line = null; return; }
+  if (!el) { el = document.createElement("div"); el.id = "foldg3d"; st.appendChild && st.appendChild(el); }
+  el.className = "brush3d foldg"; el.style.display = "block";
+  const nb = S.ui && S.ui.unbuilt, btn = (id, label, title, off) => '<button type="button" data-fg="' + id + '"' + (off ? ' disabled' : '') + ' title="' + title + '">' + label + '</button>';
+  const mode = '<div class="row"><label>Mode</label><span class="seg">' + ["auto", "manual"].map(m => '<button type="button" data-fgm="' + m + '" aria-pressed="' + (FOLDG.mode === m) + '"' + (FOLDG.mode === m ? ' class="on"' : '') + '>' + (m === "auto" ? "Auto" : "Manual") + (FOLDG.mode === m ? " ✓" : "") + '</button>').join("") + '</span></div>';
+  let body;
+  if (FOLDG.mode === "auto") body = '<div class="note">ⓘ ' + FOLDG_NOTE + '</div><div class="row">' + btn("flat", "Lay Flat", "Lay the garment flat on the floor in front of the avatar, face up") + btn("back", "↩", "Back on the Avatar: the drape from before Lay Flat", !(FOLDG.back && poolHas(FOLDG.back))) + '</div>';
+  else body = '<div class="row wrap">' + btn("rotx", "Rotate X-Axis", "A quarter turn about the x axis, onto the floor") + btn("flip", "Flip Horizontally", "Turn the garment over") + '</div>' +
+    (nb ? '<div class="row wrap">' + ["Optimize-Res Garment", "Set Physical Property for Spreading", "Set Physical Property for Folding"].map(n => btn("nb", n + " (not built yet)", n + " is not built yet", true)).join("") + '</div>' : '') +
+    '<div class="row wrap">' + btn("fold", "Fold" + (FOLDG.arm === "all" ? " …" : ""), "Drag a line over the garment: the smaller part folds over") + btn("folds", "Fold (Selected)" + (FOLDG.arm === "sel" ? " …" : ""), "Drag a line: the selected patterns' cloth folds over") + '</div>';
+  el.innerHTML = '<div class="hd">Fold 3D Garment</div>' + mode + body;
+  for (const b of el.querySelectorAll ? el.querySelectorAll("[data-fgm]") : []) b.onclick = () => { FOLDG.mode = b.dataset.fgm; foldgArm(null); };
+  const act = { flat: () => { layFlat(); foldgPanel(true); }, back: () => { foldgBack(); foldgPanel(true); }, rotx: foldgRotateX, flip: foldgFlip, fold: () => foldgArm(FOLDG.arm === "all" ? null : "all"), folds: () => foldgArm(FOLDG.arm === "sel" ? null : "sel") };
+  for (const b of el.querySelectorAll ? el.querySelectorAll("[data-fg]") : []) if (act[b.dataset.fg]) b.onclick = act[b.dataset.fg];
+}
+// where a pointer's ray meets the level plane at height y
+function foldgAt(e, y) {
+  const r = view3d.ray(e);
+  if (!r || Math.abs(r.d.y) < 1e-9) return null;
+  const t = (y - r.o.y)/r.d.y;
+  return t > 0 ? [r.o.x + t*r.d.x, y, r.o.z + t*r.d.z] : null;
+}
+// the line being dragged, drawn over everything, dashed
+function foldgLineFrame() {
+  const g = view3d.group && view3d.group("foldgline"), L = FOLDG.line;
+  if (!g) return;
+  if (!L || !L.b) { g.visible = false; return; }
+  if (!g.children.length) { const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3)); const ln = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 12, gapSize: 8, depthTest: false })); ln.renderOrder = 20; g.add(ln); }
+  const ln = g.children[0], P = ln.geometry.attributes.position.array;
+  P.set([L.a[0], L.a[1] + 1, L.a[2], L.b[0], L.b[1] + 1, L.b[2]]); ln.geometry.attributes.position.needsUpdate = true; ln.computeLineDistances();
+  g.visible = true;
+}
+if (typeof view3d !== "undefined" && view3d.before) view3d.before(foldgLineFrame);
+TOOL3.fold_garment = {
+  cursor: "crosshair",
+  down(e) {
+    if (!FOLDG.arm) return false;
+    const b = foldgBox(foldgItems()), a = b && foldgAt(e, b.y1);
+    if (!a) return false;
+    FOLDG.line = { a, b: null, y: b.y1 };
+    return true;
+  },
+  move(e) { const L = FOLDG.line; if (L) { L.b = foldgAt(e, L.y) || L.b; view3d.ask(); } },
+  up() {
+    const L = FOLDG.line, how = FOLDG.arm;
+    FOLDG.line = null;
+    if (L && L.b) foldgFold(L.a, L.b, how === "sel");
+    foldgArm(null); view3d.ask();
+  },
+  cancel() { FOLDG.line = null; foldgArm(null); view3d.ask(); },
+  menu(e) { garmentMenu(e); },
+};
+HINT.fold_garment = "Lay the finished garment flat on the floor (Auto ▸ Lay Flat), then turn and fold it (Manual: Rotate X-Axis, Flip Horizontally, Fold: drag a line over it).";
 HINT.steam = "Brush over the cloth to steam it: a Strength above 0 shrinks it there, below 0 relaxes it (Size and Strength in the Brush panel); Materials/UV ▸ Steam ▸ Remove All Steam takes it away.";
 const steamCount = () => S.pieces.reduce((n, p) => n + ((normSteam(p.steam) || []).length ? 1 : 0), 0);
 function removeAllSteam() {
@@ -35758,6 +42538,7 @@ function showDoc() {
 (() => {
   S.show = loadView(); S.sewCheck = loadSewCheck(); S.ui = loadUI(); S.prefs = loadPrefs(); applyPrefs();
   S.av = null; S.avSet = loadAvatarSet(); S.poses = loadPoses(); avatarStatus();
+  libStore();      // (Round LIB-1 / C) a browser reads the library's own store from IndexedDB now, so it is there when the panel opens
   S.cloth = normCloth(null); S.avMeas = []; S.garMeas = []; S.docPose = null; S.tool3 = "select_move"; view3d.tool(TOOL3.select_move);
   buildRail(); buildSelectors(); buildMenubar(); buildLayoutPane(); histWire(); applyUI();
   S.print = loadPrint();

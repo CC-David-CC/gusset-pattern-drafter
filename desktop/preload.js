@@ -38,8 +38,18 @@ contextBridge.exposeInMainWorld("desktop", {
   // bugReport: the text and, if given, the open document's bytes beside it. Each resolves to { path, name } or null if cancelled.
   exportFile: (suggested, data) => ipcRenderer.invoke("file:export", suggested, data),
   showSaved: () => ipcRenderer.invoke("file:show-saved"),
+  // (POST8, 2.F1) the Render workspace's File Path, kept by the shell: folder() { name } or null, choose() asks for a folder, clear() asks
+  // each time again; save(name, data) writes a render there without asking: { path, name }, or null when no folder is set
+  renderFolder: { get: () => ipcRenderer.invoke("render:folder"), choose: () => ipcRenderer.invoke("render:folder-choose"), clear: () => ipcRenderer.invoke("render:folder-clear"),
+    save: (name, data) => ipcRenderer.invoke("render:save", name, data) },
   // (Round BETA8-1 / K) the library's Show in Explorer: a .pdraft file that is there, shown in its folder; resolves to whether it was
   showFile: (p) => ipcRenderer.invoke("file:show", p),
+  // (Round LIB-1 / C) the library's folders on disk: list() [{ id, name, there }], add() asks for one, remove(id), files(id) [{ name, kind, date }],
+  // read(id, name) a file's bytes, show(id, name) in its folder; the paths stay in the shell
+  libFolders: { list: () => ipcRenderer.invoke("lib:folders"), add: () => ipcRenderer.invoke("lib:folder-add"), remove: (id) => ipcRenderer.invoke("lib:folder-remove", id),
+    files: (id) => ipcRenderer.invoke("lib:folder-files", id), read: (id, name) => ipcRenderer.invoke("lib:folder-read", id, name), show: (id, name) => ipcRenderer.invoke("lib:folder-show", id, name) },
+  // (Round LIB-1 / C) <name>.png beside a .pdraft just saved
+  pngBeside: (file, data) => ipcRenderer.invoke("file:png-beside", file, data),
   pdf: (suggested, html) => ipcRenderer.invoke("file:pdf", suggested, html),
   bugReport: (suggested, text, doc) => ipcRenderer.invoke("file:bug-report", suggested, text, doc || null),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),

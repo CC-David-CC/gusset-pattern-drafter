@@ -526,7 +526,8 @@ test("BETA8-1 / H 2.C33: every library item in the Object Browser has a “…�
   ` });
   assert.deepStrictEqual(o.dots, ["dots", "dots"], "a “…” on each fabric");
   assert.ok(o.menu, "it opens the item's menu");
-  assert.deepStrictEqual(o.rows, ["Duplicate", "Rename…", "Export…", "Import…", "Delete"]);
+  // (Round LIB-1 / C, on purpose: Add to Library keeps the item in the library panel, spec 4.3)
+  assert.deepStrictEqual(o.rows, ["Duplicate", "Rename…", "Export…", "Import…", "Add to Library", "Delete"]);
   assert.deepStrictEqual(o.file, ["library-item", "fabric", 222, "#123456", true, false], "the item without its id, its picture inside");
   assert.strictEqual(o.why, "");
   assert.deepStrictEqual(o.imported, [222, "#123456", true, JSON.stringify({ stretchWeft: 150 }), true, 200, true, 1], "the file's properties, the id kept, one step");
@@ -611,7 +612,8 @@ test("BETA8-1 / K 1.T34 3.C3 3.C4: a library item's right-click menu (Add to Wor
     rows.find(r => r.n === "Copy the Path").f(); out.clip = app.desk.clip;
     rows.find(r => r.n === "Show in Explorer").f(); out.shown = app.desk.calls.filter(c => c[0] === "showFile");
     // the library row's right-click opens the menu
-    app.ev("libraryDialog")(); out.dlgRows = /lb-row/.test(app.el("dlg").innerHTML); app.ev("hideDlg")();
+    // (Round LIB-1 / B: the library is the panel now, its items tiles (lb-tile) in Garment ▸ My Garments, where the right-click is wired)
+    app.ev("libraryDialog")(); app.ev("(p) => { LIBUI.path = p; LIBUI.q = ''; }")(["garment", "mine"]); out.dlgRows = /class="lb-tile[^"]*" data-k="garment[/]mine[/]/.test(app.ev("libDraw")().html); app.ev("hideDlg")();
     // Add with no Translation: where saved; then again 1 m right, 20 cm up, 50 mm forward (in m)
     const n0 = S.pieces.length;
     let seen = null; app.answer = (t, f, opts) => { seen = [t, f.map(x => x.k), opts.reset]; return { load: "add", x: 0, y: 0, z: 0, unit: "mm" }; };
@@ -710,10 +712,15 @@ test("BETA8-PREP / A: the right-click menus' not-built rows (ctxNb()) follow Sho
   const nb = (m) => [...m.p2, ...m.bg, ...m.pat].filter(r => r[1]).map(r => r[0]);
   assert.deepStrictEqual(nb(o.off), [], "none with the switch off: " + JSON.stringify(nb(o.off)));
   for (const n of ["Show/Hide Color"]) assert.ok(!o.off.bg.some(r => r[0] === n), n);
-  for (const n of ["Convert", "Mesh Type", "Reverse-Arrange", "Export To USD Layer", "Symmetric Arrangement"]) assert.ok(!o.off.pat.some(r => r[0] === n), n + " (an empty submenu goes too)");
+  for (const n of ["Export To USD Layer"]) assert.ok(!o.off.pat.some(r => r[0] === n), n + " (an empty submenu goes too)");
+  // (POST8 FIX-8 / C2, changed on purpose) Convert ▸ to Avatar Accessory is built: Convert stays with the switch off, holding only that row
+  assert.ok(o.off.pat.some(r => r[0] === "Convert > to Avatar Accessory" && !r[1]) && !o.off.pat.some(r => r[0] === "Convert > to Trim"), "Convert: to Avatar Accessory built, to Trim hidden");
+  // (Round POST8 / FIX-5 A) Reverse-Arrange and Symmetric Arrangement are built: shown with the switch off, not greyed;
+  // (POST8 / FIX-5 C) Mesh Type and its Quad too; (POST8 third session, changed on purpose) Smart Arrangement too
+  for (const n of ["Reverse-Arrange", "Symmetric Arrangement", "Mesh Type", "Mesh Type > Quad", "Smart Arrangement"]) assert.ok(o.off.pat.some(r => r[0] === n && !r[1]), n + " built");
   assert.ok(o.off.pat.some(r => r[0] === "Superimpose"), "the built rows stay");
   assert.ok(o.on.bg.some(r => r[0] === "Show/Hide Color" && r[1] && r[2]), "with the switch on: greyed, not built");
-  assert.ok(o.on.pat.some(r => r[0] === "Mesh Type > Quad" && r[2]));
+  assert.ok(o.on.pat.some(r => r[0] === "Convert > to Trim" && r[2]), "(POST8 / FIX-5 C: Mesh Type > Quad is built; Convert's rows stand for a greyed submenu row)");
   assert.ok(o.on.p2.some(r => r[0] === "Export To USD Layer" && r[2]));
 });
 

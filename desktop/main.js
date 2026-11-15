@@ -54,7 +54,7 @@ const RECENT = path.join(DATA, "recent.json");
 const MAC = process.platform === "darwin";
 // pattern files are .pdraft (since version 12 a ZIP container, before that JSON text); the .json files of earlier versions still open;
 // a DXF goes to the DXF import and a project file (.zprj, .zpac) to the project import
-const FILTERS = [{ name: "Pattern files", extensions: ["pdraft", "json", "dxf", "zprj", "zpac"] }, { name: "All files", extensions: ["*"] }];
+const FILTERS = [{ name: "Pattern files", extensions: ["pdraft", "json", "dxf", "zprj", "zpac", "zip"] },{ name: "All files", extensions: ["*"] }];
 const BINARY = /\.(zprj|zpac)$/i;
 let win = null;
 
@@ -232,6 +232,96 @@ ipcMain.handle("file:export", async (e, suggested, data) => {
 });
 // (Round r29) the Render workspace's Show in Saved Folder: the file an export last wrote, no other path
 ipcMain.handle("file:show-saved", () => { if (lastExport) shell.showItemInFolder(lastExport); return !!lastExport; });
+/* (POST8, roadmap 2.F1) the Render workspace's File Path: a folder chosen here, where Save writes a render without asking. The shell keeps it
+   (render-folder.json in this app's data folder, beside store/), never the page: a path names the user's own folders, and the page sees only
+   the folder's last name. A folder that is gone is no folder: Save asks again. */
+const renderDirFile = () => path.join(app.getPath("userData"), "render-folder.json");
+function renderDir() {
+  try {
+    const p = JSON.parse(fs.readFileSync(renderDirFile(), "utf8")).path;
+    return typeof p === "string" && path.isAbsolute(p) && fs.statSync(p).isDirectory() ? p : null;
+  } catch (e) { return null; }
+}
+const renderDirInfo = () => { const p = renderDir(); return p ? { name: path.basename(p) || p } : null; };
+ipcMain.handle("render:folder", () => renderDirInfo());
+ipcMain.handle("render:folder-choose", async () => {
+  const r = await dialog.showOpenDialog(win, { title: "Where renders are saved", properties: ["openDirectory", "createDirectory"] });
+  if (r.canceled || !r.filePaths || !r.filePaths[0]) return renderDirInfo();
+  writeAtomic(renderDirFile(), JSON.stringify({ path: r.filePaths[0] }));
+  return renderDirInfo();
+});
+ipcMain.handle("render:folder-clear", () => { writeAtomic(renderDirFile(), JSON.stringify({ path: null })); return null; });
+// a render written into that folder under its own name (no folder of its own in it), "-2", "-3" … when one of that name is there; null without a folder
+ipcMain.handle("render:save", (e, name, data) => {
+  const dir = renderDir();
+  if (!dir) return null;
+  const clean = path.basename(String(name || "render.png")).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_") || "render.png", ext = path.extname(clean), stem = clean.slice(0, clean.length - ext.length);
+  let file = path.join(dir, clean);
+  for (let k = 2; fs.existsSync(file) && k < 10000; k++) file = path.join(dir, stem + "-" + k + ext);
+  writeAtomic(file, typeof data === "string" ? data : Buffer.from(data));
+  lastExport = file;
+  return { path: file, name: path.basename(file) };
+});
+/* (Round LIB-1 / C, the library's + ▸ Add Folder…) folders on disk the library reads: their paths kept here (library-folders.json in this app's
+   data folder), never the page's: it sees each folder's id (a hash of its path) and name, and its files' names and kinds, and reads a file by
+   its folder's id and its name. Only files lying in the folder itself, of the kinds the library takes; nothing is ever written into it. */
+const libDirsFile = () => path.join(app.getPath("userData"), "library-folders.json");
+const LIB_FILE_EXT = /\.(pdraft|json|glb|gltf|fbx|obj)$/i, LIB_FILE_MAX = 512 * 1024 * 1024;
+const libDirId = (p) => require("crypto").createHash("sha1").update(p).digest("hex").slice(0, 12);
+function libDirs() {
+  try { const l = JSON.parse(fs.readFileSync(libDirsFile(), "utf8")); return Array.isArray(l) ? l.filter(p => typeof p === "string" && path.isAbsolute(p)) : []; } catch (e) { return []; }
+}
+const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } };
+const libDirInfo = () => libDirs().map(p => ({ id: libDirId(p), name: path.basename(p) || p, there: isDir(p) }));
+const libDirOf = (id) => libDirs().find(p => libDirId(p) === id) || null;
+// what a file is, as the page's libFileKind() reads it: by its extension, a .json by its first bytes
+function libFileKind(file) {
+  const ext = path.extname(file).slice(1).toLowerCase();
+  if (ext === "pdraft") return "garment";
+  if (ext === "glb" || ext === "gltf" || ext === "fbx") return "avatar";
+  if (ext === "obj") return "accessory";
+  let head = "";
+  try { const fd = fs.openSync(file, "r"), b = Buffer.alloc(4096), n = fs.readSync(fd, b, 0, 4096, 0); fs.closeSync(fd); head = b.toString("utf8", 0, n); } catch (e) { return ""; }
+  const g = /"gusset"\s*:\s*"([a-z-]+)"/.exec(head), k = /"kind"\s*:\s*"([a-z]+)"/.exec(head);
+  if (g && g[1] === "pose") return "pose";
+  if (g && g[1] === "library-item") return k && ["fabric", "button", "buttonhole", "topstitch", "puckering", "trim", "zipper"].includes(k[1]) ? k[1] : "";
+  return /"pieces"\s*:/.test(head) || !g ? "garment" : "";
+}
+ipcMain.handle("lib:folders", () => libDirInfo());
+ipcMain.handle("lib:folder-add", async () => {
+  const r = await dialog.showOpenDialog(win, { title: "A folder for the library", properties: ["openDirectory"] });
+  if (r.canceled || !r.filePaths || !r.filePaths[0]) return libDirInfo();
+  const p = r.filePaths[0];
+  writeAtomic(libDirsFile(), JSON.stringify([...libDirs().filter(x => x !== p), p]));
+  return libDirInfo();
+});
+ipcMain.handle("lib:folder-remove", (e, id) => { writeAtomic(libDirsFile(), JSON.stringify(libDirs().filter(p => libDirId(p) !== id))); return libDirInfo(); });
+ipcMain.handle("lib:folder-files", (e, id) => {
+  const dir = libDirOf(id);
+  if (!dir || !isDir(dir)) return [];
+  const out = [];
+  for (const n of fs.readdirSync(dir)) {
+    if (!LIB_FILE_EXT.test(n)) continue;
+    const f = path.join(dir, n);
+    let s = null; try { s = fs.statSync(f); } catch (err) { continue; }
+    if (!s.isFile() || s.size > LIB_FILE_MAX) continue;
+    const kind = libFileKind(f);
+    if (kind) out.push({ name: n, kind, date: s.mtime.toISOString().slice(0, 10) });
+  }
+  return out;
+});
+// a file of a library folder: by its folder's id and its own name only (no path from the page reaches the disk)
+const libFileOf = (id, name) => { const dir = libDirOf(id), n = path.basename(String(name || "")); return dir && n && LIB_FILE_EXT.test(n) ? path.join(dir, n) : null; };
+ipcMain.handle("lib:folder-read", (e, id, name) => { const f = libFileOf(id, name); if (!f || !fs.statSync(f).isFile()) throw new Error("not a file of a library folder"); return fs.readFileSync(f); });
+ipcMain.handle("lib:folder-show", (e, id, name) => { const f = libFileOf(id, name); if (!f || !fs.existsSync(f)) return false; shell.showItemInFolder(f); return true; });
+// (Round LIB-1 / C, Default Files ▸ the picture beside a saved project) <name>.png beside a .pdraft this shell has just written (Save, Save As,
+// or an export such as Save to Library's file): no other place
+ipcMain.handle("file:png-beside", (e, file, data) => {
+  if (typeof file !== "string" || !/\.pdraft$/i.test(file) || !(granted.has(file) || file === lastExport)) throw new Error("only beside a file just saved");
+  const png = file.replace(/\.pdraft$/i, ".png");
+  writeAtomic(png, Buffer.from(data));
+  return { path: png, name: path.basename(png) };
+});
 // (Round BETA8-1 / K) the library's Show in Explorer: only an absolute path to a .pdraft file that is there; nothing is read or opened
 ipcMain.handle("file:show", (e, p) => {
   if (typeof p !== "string" || !path.isAbsolute(p) || !/\.pdraft$/i.test(p)) return false;
@@ -297,7 +387,7 @@ ipcMain.on("edit", (e, what) => { if (EDITS.includes(what)) e.sender[what](); })
 const fileArg = (argv) => argv.slice(1).find(a => /\.(pdraft|json|dxf|zprj|zpac)$/i.test(a) && !a.startsWith("-") && fs.existsSync(a) && fs.statSync(a).isFile());
 // (a Mac hands a double-clicked file to the app as an event, not on the command line; it can come before the window)
 let loaded = false, early = null;
-app.on("open-file", (e, file) => { e.preventDefault(); if (win && loaded) { if (win.isMinimized()) win.restore(); win.focus(); handOver(file); } else early = file; });
+app.on("open-file", (e, file) => { e.preventDefault(); if (win && loaded) { if (!TEST_WIN) { if (win.isMinimized()) win.restore(); win.focus(); } handOver(file); } else early = file; });
 function handOver(file) {
   if (!file || !win) return;
   try { win.webContents.send("open-file", readFile(path.resolve(file))); }
@@ -332,17 +422,56 @@ ipcMain.handle("print", async (e, html, pw, ph) => {
    page; under reduced motion it stands still with a thin line). SPLASH_LATE: the page's window is shown then whatever the
    page says, and the page told so ("start-late"), which says it in one line. */
 const SPLASH_MIN = 1000, SPLASH_LATE = 30000;
+/* (POST8 batch 0o, the maintainer's brief: test windows popped up every few seconds and took the focus) TEST WINDOWS. Only for a check
+   that starts the app: PDRAFT_TEST_WINDOWS, honoured only beside PDRAFT_USER_DATA (a check's temp data folder, desktop/test-data.js, which
+   sets "hidden" by default), so the app a person starts behaves exactly as before.
+     hidden    the splash is never shown; the page's window is shown without the focus (showInactive()) off every display, with no taskbar
+               entry: a real window to the page (frames, the wheel, the pointer, its worker: a window never shown gets no animation frames)
+               that no one sees. Chromium's own occlusion and background throttling are off for such a run
+     inactive  shown without taking the focus (showInactive()), on the display PDRAFT_TEST_DISPLAY names (1 the first), else the last
+               one; never brought to the front. For a check that needs a window on the screen
+   PDRAFT_TEST_SHOW=1 shows them as the app does, to watch a check. */
+const TEST_WIN = (() => {
+  // a check's run: a temp data folder (PDRAFT_USER_DATA), a temp app-data folder (PDRAFT_APP_DATA, refused above outside the temp folder), or a
+  // test build of another name (scripts/update-test.js: its own data folder); never the Gusset a person starts
+  const check = !!process.env.PDRAFT_USER_DATA || !!process.env.PDRAFT_APP_DATA || (!!PKG.dataFolder && PKG.dataFolder !== "Gusset");
+  if (!check || process.env.PDRAFT_TEST_SHOW === "1") return null;
+  const m = process.env.PDRAFT_TEST_WINDOWS;
+  return m === "hidden" || m === "inactive" ? m : null;
+})();
+const TEST_WEB = TEST_WIN ? { backgroundThrottling: false } : {};
+if (TEST_WIN) {
+  // (0o) a test run only: a window off the screens or behind others still draws and runs its timers
+  app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+  for (const s of ["disable-renderer-backgrounding", "disable-background-timer-throttling", "disable-backgrounding-occluded-windows"]) app.commandLine.appendSwitch(s);
+}
+// a test window shown without the focus: "inactive" on the chosen display (its work area's top left, inset), "hidden" off every display
+function testShowInactive(w) {
+  if (!w || w.isDestroyed()) return;
+  try {
+    const { screen } = require("electron"), all = screen.getAllDisplays(), b = w.getBounds();
+    if (TEST_WIN === "hidden") {
+      const left = Math.min(...all.map(d => d.bounds.x)), top = Math.min(...all.map(d => d.bounds.y));
+      w.setSkipTaskbar(true);
+      w.setBounds({ x: left - b.width - 400, y: top, width: b.width, height: b.height });
+    } else {
+      const n = Math.round(+process.env.PDRAFT_TEST_DISPLAY), d = all[n >= 1 && n <= all.length ? n - 1 : all.length - 1];
+      if (d) { const a = d.workArea; w.setBounds({ x: a.x + 20, y: a.y + 20, width: Math.min(b.width, a.width - 40), height: Math.min(b.height, a.height - 40) }); }
+    }
+  } catch (e) {}
+  w.showInactive();
+}
 let splash = null, splashAt = 0;
 function showSplash() {
-  splashAt = Date.now();
+  splashAt = Date.now(); mark("splashAsked");      // (POST8 batch 0r) where SPLASH_MIN counts from (startup-time.js, startup-built.js)
   splash = new BrowserWindow({
     width: 260, height: 240, center: true, frame: false, resizable: false, maximizable: false, minimizable: false, fullscreenable: false,
-    skipTaskbar: true, alwaysOnTop: true, show: true, backgroundColor: "#1F1F1F", title: APP_NAME,
+    skipTaskbar: true, alwaysOnTop: !TEST_WIN, show: !TEST_WIN, focusable: !TEST_WIN, backgroundColor: "#1F1F1F", title: APP_NAME,      // (0o: a check's never shown)
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: false },
   });
   splash.webContents.on("will-navigate", (e) => e.preventDefault());
   splash.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  splash.on("closed", () => { splash = null; mark("splashGone"); });
+  splash.on("closed", () => { splash = null; mark("splashGone"); startLog(); });      // (POST8 batch 0r) written: the log was last written as the page's window showed, a moment before
   splash.once("show", () => mark("splashShown"));
   splash.webContents.once("did-finish-load", () => mark("splashLoaded"));
   splash.loadFile(SPLASH).catch(() => {});
@@ -354,7 +483,8 @@ function pageUp(w, late) {
   upAsked = true;
   setTimeout(() => {
     if (w.isDestroyed()) return;
-    if (!w.isVisible()) w.show();
+    if (TEST_WIN) { if (!w.isVisible()) testShowInactive(w); }      // (0o) a check's: never in front, "hidden" off every display
+    else if (!TEST_WIN && !w.isVisible()) w.show();
     if (splash) splash.destroy();
     if (late) w.webContents.send("start-late", SPLASH_LATE/1000);
   }, splash ? Math.max(0, SPLASH_MIN - (Date.now() - splashAt)) : 0);
@@ -379,9 +509,10 @@ ipcMain.handle("serial:pick", (e, id) => { const cb = serialPick; serialPick = n
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 720, minHeight: 480, backgroundColor: "#2b2b2d", title: APP_NAME + TITLE_TAIL,
-    show: !splash,                                                   // (with the splash: shown when the page is ready, pageUp())
+    show: !splash && !TEST_WIN,                                      // (with the splash: shown when the page is ready, pageUp(); a check's: see TEST_WIN)
+    ...(TEST_WIN ? { paintWhenInitiallyHidden: true, skipTaskbar: TEST_WIN === "hidden" } : {}),
     // the developer tools only when run from source (npm start, F12); a built app has none
-    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: !app.isPackaged },
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: !app.isPackaged, ...TEST_WEB },
     // run from source, the window shows the app's icon (Electron's own otherwise); a built app has it in the executable
     ...(app.isPackaged ? {} : { icon: path.join(__dirname, "icons", process.platform === "win32" ? "icon.ico" : "png/256x256.png") }),
   });
@@ -405,6 +536,7 @@ function createWindow() {
     ipcMain.on("app:ready", ready);
   }
   win.once("show", () => { mark("mainShown"); startLog(); });
+  if (TEST_WIN && !splash) { const w = win; win.once("ready-to-show", () => testShowInactive(w)); }      // (0o) with no splash: once painted, never in front
   win.once("ready-to-show", () => mark("mainPaint"));
   win.webContents.once("did-finish-load", () => { mark("mainLoaded"); startLog(); });
   win.loadFile(PAGE);
@@ -452,8 +584,7 @@ else {
   // a second launch (double-clicking another file) hands its file to the window that is already open
   app.on("second-instance", (e, argv) => {
     if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    if (!TEST_WIN) { if (win.isMinimized()) win.restore(); win.focus(); }      // (0o) a check's window never comes to the front
     handOver(fileArg(argv));
   });
   app.whenReady().then(() => {

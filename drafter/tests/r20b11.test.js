@@ -104,7 +104,8 @@ test("77, 81: Show Light (3D) and Show Light (Render) draw the lights as named m
   assert.strictEqual(o.off, 0);
   assert.ok(o.hide, "a render leaves the marks out");
   assert.deepStrictEqual(o.shadow, [false, true]);
-  assert.deepStrictEqual(o.rows, [["Show 3D Shadow", false], ["Show Light (3D)", false], ["Show Light (Render)", false], ["Show Camera (not built yet)", true]], "Show Camera stays not built (Camera Properties is LATER): " + JSON.stringify(o.rows));
+  // (POST8 FIX-7 / B: Show Camera is built, the custom views' cameras as marks, off at first; it was not built while Camera Properties waited)
+  assert.deepStrictEqual(o.rows, [["Show 3D Shadow", false], ["Show Light (3D)", false], ["Show Light (Render)", false], ["Show Camera", false]], JSON.stringify(o.rows));
   // GridHelper(size, divisions): (divisions + 1) × 2 lines, 2 points each
   assert.deepStrictEqual(o.grid, [(40 + 1)*4, (60 + 1)*4, (6 + 1)*4]);
   assert.strictEqual(o.norm[0], null, "the default is not kept"); assert.strictEqual(o.norm[1], JSON.stringify({ step: 5, major: 20000, size: 20000 }));

@@ -9,6 +9,7 @@ Gusset – Pattern Drafter is under the GNU General Public License, version 3 or
 | three.js (classic build) | r159 | `drafter/vendor/three.min.js` | MIT |
 | three.js FBXLoader, GLTFLoader and what they import | r159 | `drafter/vendor/three-loaders.js` | MIT |
 | fflate | as bundled by three.js r159 | `drafter/vendor/three-loaders.js` | MIT |
+| three.js RGBELoader, EXRLoader and fflate | r159 | `drafter/vendor/three-hdr.js` (loaded only for a high dynamic range environment map) | MIT |
 | three-gpu-pathtracer | 0.0.17 | `drafter/vendor/three-pathtracer.js` (loaded only for the Quality render) | MIT |
 | three-mesh-bvh | 0.7.0 | `drafter/vendor/three-pathtracer.js` | MIT |
 | Electron, with Chromium and Node.js | 45.1.0 | the desktop app's runtime; not in the source tree | MIT (Electron); many licenses for Chromium's parts, see below |

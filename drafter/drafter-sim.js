@@ -348,7 +348,19 @@ function distToLoop2(loop, x, y) {
    lines (Round r14 / 2, optional): open lines inside the outline (fold lines), sampled as the outline is: their points are
    mesh points too (after the holes', before the inside's; a point too near the outline or an earlier line's point is left
    out), and no point of the honeycomb lies close to one, so the cloth has an edge from each of a line's points to the next. */
-C.meshPolygon = function (loop, res, holes, lines) {
+/* opt (Round POST8 / FIX-5 C, optional): { quad: a } the pattern's Mesh Type Quad: the inside is a square grid res apart, its
+   lines along the direction a (radians, the grainline on the 2D page) and across it, in place of the honeycomb; each square is
+   two triangles (the solver's edges along the grid take the warp's and weft's stiffness, its diagonals the bias's: dirK()).
+   -> also gij: 2 integers a point, its place (i, j) on the grid, QUAD_OFF for a point that is not on it (the outline's, holes',
+   lines'), so a square's diagonal can be told from its sides (quadDiag()). */
+C.QUAD_OFF = 0x7fffffff;
+C.quadDiag = function (m, a, b) {
+  const g = m && m.gij;
+  if (!g) return false;
+  const ia = g[2*a], ib = g[2*b];
+  return ia !== C.QUAD_OFF && ib !== C.QUAD_OFF && Math.abs(ia - ib) === 1 && Math.abs(g[2*a+1] - g[2*b+1]) === 1;
+};
+C.meshPolygon = function (loop, res, holes, lines, opt) {
   if (!loop || loop.length < 3 || !(res > 0)) return null;
   const H = (holes || []).filter(h => h && h.length >= 3).map(h => h.map(p => [p[0], p[1]]));
   const near2 = (0.3*res)*(0.3*res), lp0 = [];
@@ -366,8 +378,18 @@ C.meshPolygon = function (loop, res, holes, lines) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const p of L) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
   // the honeycomb inside: rows res·√3/2 apart, every other row shifted half a step, clear of the outline
-  const inner = [], h = res*Math.sqrt(3)/2, keep = (0.62*res)*(0.62*res);
-  for (let r = 0, y = y0 + h/2; y < y1; y += h, r++) for (let x = x0 + (r & 1 ? res/2 : 0) + res*0.25; x < x1; x += res) {
+  const inner = [], innerG = [], h = res*Math.sqrt(3)/2, keep = (0.62*res)*(0.62*res), quad = opt && Number.isFinite(opt.quad);
+  if (quad) {
+    // the square grid about the box's middle, along the grain (u) and across it (v); the same hair off it as the honeycomb's
+    const ux = Math.cos(opt.quad), uy = Math.sin(opt.quad), mx = (x0 + x1)/2, my = (y0 + y1)/2, R = Math.ceil(Math.hypot(x1 - x0, y1 - y0)/2/res) + 1;
+    for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++) {
+      const x = mx + (i*ux - j*uy)*res, y = my + (i*uy + j*ux)*res;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      const jx = x + res*1e-3*Math.sin(12.9898*j + 78.233*i), jy = y + res*1e-3*Math.sin(39.346*j + 11.135*i);
+      if (inPoly(L, jx, jy) && distToLoop2(L, jx, jy) > keep && !inHole(jx, jy) && H.every(h => distToLoop2(h, jx, jy) > keep) && !onLine(jx, jy, keep)) { inner.push(jx, jy); innerG.push(i, j); }
+    }
+  }
+  if (!quad) for (let r = 0, y = y0 + h/2; y < y1; y += h, r++) for (let x = x0 + (r & 1 ? res/2 : 0) + res*0.25; x < x1; x += res) {
     // a hair off the exact honeycomb, the same every time: four points on one circle have no single triangulation
     const jx = x + res*1e-3*Math.sin(12.9898*r + 78.233*x), jy = y + res*1e-3*Math.sin(39.346*r + 11.135*x);
     if (inPoly(L, jx, jy) && distToLoop2(L, jx, jy) > keep && !inHole(jx, jy) && H.every(h => distToLoop2(h, jx, jy) > keep) && !onLine(jx, jy, keep)) inner.push(jx, jy);
@@ -406,7 +428,13 @@ C.meshPolygon = function (loop, res, holes, lines) {
   for (let i = 0; i < nb; i++) lp[i] = i;
   const hl = []; let k0 = nb;
   for (const h of H) { hl.push(Uint32Array.from(h, (_, j) => k0 + j)); k0 += h.length; }
-  return { xy, tri, loop: lp, src: Float64Array.from(src), holes: hl };
+  const out = { xy, tri, loop: lp, src: Float64Array.from(src), holes: hl };
+  if (quad) {
+    const N = xy.length/2, g = new Int32Array(2*N).fill(C.QUAD_OFF), first = N - inner.length/2;
+    g.set(innerG, 2*first);
+    out.gij = g;
+  }
+  return out;
 };
 // the shape of a triangle: 1 for equilateral, towards 0 for a sliver (4·√3·area / sum of squared sides)
 C.triQuality = function (xy, tri) {
@@ -453,7 +481,8 @@ C.qMul = (a, b) => [a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1], a[3]*b[1] - a
 C.qAxis = (ax, deg) => { const h = deg*Math.PI/360, s = Math.sin(h), l = Math.hypot(ax[0], ax[1], ax[2]) || 1; return [ax[0]/l*s, ax[1]/l*s, ax[2]/l*s, Math.cos(h)]; };
 // one point of the pattern (x, y on the 2D page) in the world
 C.placePoint = function (x, y, c, p3, o) {
-  const u = x - c[0], v = -(y - c[1]), r = p3.r > 0 ? p3.r : 0;
+  // (Round POST8 / FIX-5 A) r below 0: the cylinder in front of the face (Reverse-Arrange: the face turned to the body, the curve kept)
+  const u = x - c[0], v = -(y - c[1]), r = Number.isFinite(p3.r) ? p3.r : 0;
   if (r) { const a = u/r; qRot(p3.q, r*Math.sin(a), v, r*Math.cos(a) - r, o); }
   else qRot(p3.q, u, v, 0, o);
   o[0] += p3.pos[0]; o[1] += p3.pos[1]; o[2] += p3.pos[2];
@@ -535,17 +564,47 @@ C.bodyReach = function (f, ax, ay, az, dx, dy, dz, max, gap) {
      opt:    { substeps 20, stretchIters 2, gravity 9810, easeIn 45 (frames), damping 2.5 (1/s), selfDist, selfMin 2.5 (mm: selfDist is never less, Round r15 / 8), self true, ground true, maxPull 6, seamSlip 3 (mm: a seam open by more slides on the body),
                seamClose 1 (mm: a seam once closed this far is held shut), seamIters 2, interleave true (a seam pass after each stretch pass), limitEach true (the strain limit after each stretch pass as well),
                dragK 2e5 (g/s², the drag spring; Round r31 / 3: 5e4 held cloth on a level body 45 mm along a 60 mm pull, which felt
-               glued), dragMax 3e6 (g·mm/s², the most it pulls, all its points together: 3 N; Round r33b / 1, was 1 N on one point,
-               where 3 N stretched a woven strip past its Max Stretch: spread over the reach it does not), dragReach 100 (mm, the cloth
-               the pull takes, Round r33b / 1; 0: one place), dragSlide 0.2 (the friction of the cloth held, as a share of its own),
-               dragPin true (REC-SHORT, the sixth check session 13:59-15:09: the place grabbed is held at the pointer exactly, a pin
-               that moves; the handful round it still follows on its springs), dragLimitIters 0 (REC-SHORT: while held the pulled
+               glued), dragMax 5e6 (g·mm/s², the most it pulls, all its points together: 5 N. Round PULL-3b, guess pull3b/2: with no
+               pin and no leash this cap is what a pull is; 5 N is a firm tug of a hand (half a kilogram's weight, some 30 times a
+               skirt's own); at 10 N and more a pull straight down took Marty's skirt down off his hips within half a second, the
+               waistband's front dragged towards the crotch so the closed band passed his pelvis on a slant inside its limit: the
+               rigid body gives nothing, as flesh does; at 3-7 N it stayed on, so 5 N leaves a factor of two. Round r33b / 1 had 3 N,
+               PULL-3 2 N behind the pin. Round PULL-3c: the program sends its own with each move, the preference Pull Strength, 5.6 N
+               by default, 8 N at most: measured in the real page, at 9 N and more a sleeve pulled sideways drew the T-shirt's neckline
+               off its neck in some runs, at 12 N Marty's skirt pulled down came to 8 mm above his hips; this 5 N is the solver's alone),
+               dragReach 100 (mm, the cloth the pull takes, Round r33b / 1; 0: one place. Round PULL-3c: 200 and 300 turned a skirt
+               less and let it drop further, measured), dragSlide 1 (the friction of the cloth held, as a share of its own, while the
+               pull is held only (Round PULL-3c); Round PULL-3b, guess pull3b/3: 1, its own, as everywhere: r33b's 0.2 made no difference
+               to a pull once nothing else was held back, so nothing is relaxed near the hand. Round PULL-3c, guess pull3c/2, measured
+               again: 0.3 on the handful changed nothing; on 200 mm round it a skirt turned some 15 mm more; on 300-400 mm a pull down
+               took Marty's skirt off and tight skirts turned as freely as loose ones; so 1), dragSlideReach 0 (mm: more cloth round
+               the place with dragSlide's friction; PULL-3 had 100, r33b 300),
+               dragPin false (REC-SHORT had it true, the sixth check session 13:59-15:09: the place grabbed held at the pointer exactly,
+               a pin that moves, and its pattern freed from its strain limit while held. Round PULL-3b: off, the maintainer's "too
+               glued": a pin goes wherever the pointer goes whatever holds the cloth back, so it needed PULL-3's leash and grip to
+               keep the garment on. Without it the place is drawn by the handful's springs, capped by dragMax, and the fabric's limit
+               holds while held: a free hem still comes to the pointer, a garment held by the body only as far as 5 N moves it),
+               dragLimitIters 0 (REC-SHORT: while held the pulled
                pattern's cloth may stretch past its Max Stretch, as the reference's spike shows; Round r33b had 12 more passes of it),
                dragRelease 120 (REC-SHORT: frames after letting go during which the cloth that was held still slides, so it springs
-               back to where it hangs; the reference's "took itself exactly back again"),
+               back to where it hangs; the reference's "took itself exactly back again". Round PULL-3b, guess pull3b/4: with dragSlide 1
+               that cloth has its own friction at once, so what was only stretched springs back and what friction holds where it was
+               slid or turned stays there, as real cloth; the frames still count, the edges meeting the body while it settles),
                dragStep 2 (mm, Round BETA8-1 / B, PULL-1: the most a pinned place moves towards the pointer in one small step when it is
                near the body; further from the body it may move as far as its clearance, so it never jumps through the body; never more
                than 0.8 of the cloth's thickness off the skin. Pinned places collide with the body as any cloth: they slide round it),
+               dragLeash 0 (mm; Round PULL-3, guess pull3/1, had 180: the pointer's move as the pull takes it never more than this from
+               where the place was grabbed. Round PULL-3b, guess pull3b/1: off, the force cap stands in its place; the physics needs
+               no distance cap for stability: a pull of two metres sideways settles), dragEdges true (Round PULL-3, guess pull3/2: while a pull is held and while the cloth still
+               slides after it, every cloth edge and triangle meets the body, not its points alone, so a stretched edge cannot cut
+               through the body with both its ends outside; Round PULL-3b: kept, it is what stops a sideways rip: to come off sideways
+               the cloth would have to pass through the body), dragGrip 1 (Round PULL-3, guess pull3/3, had 100: while a pull is held
+               and while the cloth springs back after it, the cloth outside the handful that touches the body had that many times its
+               friction, so it did not slide and the garment could not be moved. Round PULL-3b: 1, the friction it has; what moves
+               comes from the fabric, the seams, the body and its friction alone), dragBodyLast false (Round BETA8-1 / B, PULL-1,
+               had it on: while a pull is held, every point near the body pushed out once more after the last seams, for a pinned
+               place that pulled seams into the body. Round PULL-3b, guess pull3b/6: off, with no pin nothing was inside in any case
+               without it, and it was a second body pass every small step while pulling),
                bodyStatic / bodyKinetic (Round r31 / 3): the body's own friction, static and kinetic, in place of the fabric's
                one coefficient; null (the default): the fabric's for both. The reference's avatar has 0.80 / 0.05, but in this
                solver cloth still settling counts as sliding, and at 0.05 a tube on the hips sank 186 mm (cloth.test.js),
@@ -557,7 +616,8 @@ C.bodyReach = function (f, ax, ay, az, dx, dy, dz, max, gap) {
    spec.rods: [{ a: [anchor, …], m: grams a node, k: bending stiffness, ks: stretch stiffness, lim: the most it may stretch (a
              fraction, 0: no limit), S: [rest length from node j to j+1, …], L: [rest length from node j to j+2, …] }]: a cord or
              a strip lying along a line of the cloth (piping, binding: Round r11 / 3, 4). Its weight hangs on the cloth at its
-             nodes; it keeps its length (to its limit) and resists bending, node to node and over every other node. */
+             nodes; it keeps its length (to its limit) and resists bending, node to node and over every other node.
+             (POST8 FIX-4b) slack: true, a lace through eyelets: its links only pull, and only when longer than their rest. */
 /* (Round FIX-3 / D, the fabric's Detail rows) A fabric whose stiffness differs by direction: d = { warp, weft, shR, shL, bWarp, bWeft, bR, bL }
    (each a share of the fabric's own stretch or bend, 1 the fabric as it is; missing ones 1). dirOf() makes it { s: stretch, b: bend }, each
    { a: along the grain (warp), c: across it (weft), r: the right bias, l: the left bias }, or null when every share is 1. dirK() is the
@@ -578,7 +638,7 @@ function dirK(k, D, c, s) {
 }
 C.dirK = dirK; C.dirOf = dirOf;
 C.clothBuild = function (spec) {
-  const opt = Object.assign({ substeps: 20, stretchIters: 2, gravity: 9810, easeIn: 45, damping: 2.5, self: true, ground: true, maxPull: 6, seamSlip: 3, maxSpeed: 5000, seamClose: 1, seamIters: 2, interleave: true, limitEach: true, dragK: 2e5, dragMax: 2e6, dragReach: 100, dragSlide: 0.2, dragSlideReach: 300, dragLimitIters: 0, dragPin: true, dragRelease: 120, dragStep: 2, sdfSkip: true, bodyStatic: null, bodyKinetic: 0.05, seamRamp: 0, seamSoft: 1e-3, seamBend: 5 }, spec.opt || {});
+  const opt = Object.assign({ substeps: 20, stretchIters: 2, gravity: 9810, easeIn: 45, damping: 2.5, self: true, ground: true, maxPull: 6, seamSlip: 3, maxSpeed: 5000, seamClose: 1, seamIters: 2, interleave: true, limitEach: true, dragK: 2e5, dragMax: 5e6, dragReach: 100, dragSlide: 1, dragSlideReach: 0, dragLimitIters: 0, dragPin: false, dragRelease: 120, dragStep: 2, dragLeash: 0, dragEdges: true, dragGrip: 1, dragBodyLast: false, sdfSkip: true, bodyStatic: null, bodyKinetic: 0.05, seamRamp: 0, seamSoft: 1e-3, seamBend: 5 }, spec.opt || {});
   const off = [];
   let n = 0;
   for (const pc of spec.pieces) { off.push(n); n += pc.xy.length >> 1; }
@@ -651,14 +711,15 @@ C.clothBuild = function (spec) {
   // (Round r10 / 5) a weight hung on the cloth, a button's: its mass shared out on the points of its triangle by its place there
   for (const am of spec.masses || []) if (am && am.a && am.m > 0) for (let k = 0; k < am.a.i.length; k++) { const i = off[am.a.p] + am.a.i[k]; if (i < n) mass[i] += am.m*am.a.w[k]; }
   // (Round r11 / 3) rods: their nodes, their weight on the cloth, and their links (stretch j to j+1, bend j to j+2)
-  const rN = [], rW = [], rI = [], rJ = [], rL = [], rA = [], rM = [];
+  // (POST8 FIX-4b, lacing) rd.slack: a cord: its links pull only when longer than their rest (rT), never push
+  const rN = [], rW = [], rI = [], rJ = [], rL = [], rA = [], rM = [], rT = [];
   for (const rd of spec.rods || []) {
     if (!rd || !Array.isArray(rd.a) || rd.a.length < 2) continue;
     const base = rN.length/3;
     for (const an of rd.a) for (let k = 0; k < 3; k++) { rN.push(an && k < an.i.length ? off[an.p] + an.i[k] : -1); rW.push(an && k < an.i.length ? an.w[k] : 0); }
     for (const an of rd.a) if (an && rd.m > 0) for (let k = 0; k < an.i.length; k++) { const i = off[an.p] + an.i[k]; if (i < n) mass[i] += rd.m*an.w[k]; }
-    for (let j = 0; j + 1 < rd.a.length; j++) if (rd.S && rd.S[j] > 0) { rI.push(base + j); rJ.push(base + j + 1); rL.push(rd.S[j]); rA.push(1/(rd.ks > 0 ? rd.ks : 1e6)); rM.push(rd.lim > 0 ? rd.S[j]*(1 + rd.lim) : 0); }
-    for (let j = 0; j + 2 < rd.a.length; j++) if (rd.L && rd.L[j] > 0) { rI.push(base + j); rJ.push(base + j + 2); rL.push(rd.L[j]); rA.push(1/(rd.k > 0 ? rd.k : 1e3)); rM.push(0); }
+    for (let j = 0; j + 1 < rd.a.length; j++) if (rd.S && rd.S[j] > 0) { rI.push(base + j); rJ.push(base + j + 1); rL.push(rd.S[j]); rA.push(1/(rd.ks > 0 ? rd.ks : 1e6)); rM.push(rd.lim > 0 ? rd.S[j]*(1 + rd.lim) : 0); rT.push(rd.slack ? 1 : 0); }
+    for (let j = 0; j + 2 < rd.a.length; j++) if (rd.L && rd.L[j] > 0) { rI.push(base + j); rJ.push(base + j + 2); rL.push(rd.L[j]); rA.push(1/(rd.k > 0 ? rd.k : 1e3)); rM.push(0); rT.push(0); }
   }
   for (let i = 0; i < n; i++) w[i] = mass[i] > 0 ? 1/mass[i] : 0;
   res = resN ? res/resN : 20;
@@ -700,7 +761,7 @@ C.clothBuild = function (spec) {
     eI: Int32Array.from(eI), eJ: Int32Array.from(eJ), eL: Float64Array.from(eL), eA: Float64Array.from(eA), eM: Float64Array.from(eM), limit: eM.some(v => v > 0),
     sClosed: new Uint8Array(sA.length), drag: null,
     bI: Int32Array.from(bI), bJ: Int32Array.from(bJ), bL: Float64Array.from(bL), bA: Float64Array.from(bA), fQ: Int32Array.from(fQ), fB: Float64Array.from(fB), fK: Float64Array.from(fK), fSt: Int32Array.from(fSt),
-    rN: Int32Array.from(rN), rW: Float64Array.from(rW), rI: Int32Array.from(rI), rJ: Int32Array.from(rJ), rL: Float64Array.from(rL), rA: Float64Array.from(rA), rM: Float64Array.from(rM),
+    rN: Int32Array.from(rN), rW: Float64Array.from(rW), rI: Int32Array.from(rI), rJ: Int32Array.from(rJ), rL: Float64Array.from(rL), rA: Float64Array.from(rA), rM: Float64Array.from(rM), rT: rT.some(v => v) ? Uint8Array.from(rT) : null,
     xI: Int32Array.from(across.I), xJ: Int32Array.from(across.J), xL: Float64Array.from(across.L), xA: Float64Array.from(across.A), xS: Int32Array.from(across.S),
     sIdx: Int32Array.from(sIdx), sW: Float64Array.from(sW), sA: Float64Array.from(sA), sOf: Int32Array.from(sOf), noHit, sLen: sLen.some(v => v > 0) ? Float64Array.from(sLen) : null,
     field: spec.field || null, opt, pairs: new Int32Array(0), nPairs: 0, time: 0, frames: 0, g: [0, 0, 0],
@@ -877,16 +938,27 @@ C.clothPin = function (sim, i, on, to) {
    opt.dragSlide of its friction (a hand lifts what it pulls); let go, it has its whole friction again and stays where it was
    left. The reach is taken once, when the place is grabbed, and kept while the same place is pulled (each pointer move sends
    the same place again). dragReach 0: the one place alone, as before r33b. */
+/* (Round PULL-3b, the maintainer's rule: "garments behave like real clothes: you can always move, slide and turn a garment on the body
+   and stretch the fabric a lot; a tight one moves only a little, a loose one easily, stretchy fabric stretches far; cloth never passes
+   through the body, and a garment can never be pulled off") The pull is this spring alone again, as before REC-SHORT's pin: no pin, no
+   leash, no grip (dragPin, dragLeash, dragGrip off), its force capped at opt.dragMax (5 N), the fabric's limit holding, the cloth held
+   keeping its own friction. What moves is what 5 N moves through the fabric, the seams and the body's friction; the edges and triangles
+   still meet the body (bodyEdges()) while held and while settling. */
 C.clothDrag = function (sim, d) {
   const was = sim.drag;
   // (REC-SHORT) the pinned points of the last pull get their own weight back; let go, the held cloth slides a while longer
   if (was) for (const g of [was, ...(was.also || [])]) if (g.pinned) for (const i of g.pinned) { sim.w[i] = sim.w0[i]; if (sim.pinBody) sim.pinBody[i] = 0; }
   if (was && !(d && d.i && d.i.length && d.to)) sim.slideLeft = sim.opt.dragRelease > 0 ? sim.opt.dragRelease : 0;
+  // (Round PULL-3c) d.max: the pull's force cap as the page has it now (the preference Pull Strength), so a change reaches a running solver
+  if (d && Number.isFinite(d.max) && d.max > 0) sim.opt.dragMax = d.max;
   const one = (q, old) => {
     if (!(q && q.i && q.i.length && q.to)) return null;
     const g = { i: q.i.slice(), w: q.w ? q.w.slice() : q.i.map(() => 1/q.i.length), to: q.to.slice() };
     const same = old && old.i.length === g.i.length && old.i.every((v, k) => v === g.i[k]) && old.w.every((v, k) => Math.abs(v - g.w[k]) < 1e-9);
     if (same) { g.reach = old.reach; g.from = old.from; g.edges = old.edges; g.p0 = old.p0; g.same = true; } else { dragReach(sim, g); g.p0 = g.i.map(i => [sim.x[3*i], sim.x[3*i+1], sim.x[3*i+2]]); }
+    // (Round PULL-3) the leash: the pointer's move is taken no further than opt.dragLeash from where the place was grabbed
+    const L = sim.opt.dragLeash, mx = g.to[0] - g.from[0], my = g.to[1] - g.from[1], mz = g.to[2] - g.from[2], ml = Math.sqrt(mx*mx + my*my + mz*mz);
+    if (L > 0 && ml > L) { const s = L/ml; g.to = [g.from[0] + s*mx, g.from[1] + s*my, g.from[2] + s*mz]; }
     return g;
   };
   sim.drag = one(d, was);
@@ -1143,7 +1215,7 @@ function acrossStep(sim, h2) {
 /* the rods (Round r11 / 3), one pass: each link a distance between two places of the cloth (each a mix of up to three points),
    kept with its compliance; one longer than its limit is brought back to it */
 function rodStep(sim, h2, limitOnly, back) {
-  const N = sim.rN, W = sim.rW, I = sim.rI, J = sim.rJ, L = sim.rL, A = sim.rA, M = sim.rM, x = sim.x, w = sim.w, m = I.length;
+  const N = sim.rN, W = sim.rW, I = sim.rI, J = sim.rJ, L = sim.rL, A = sim.rA, M = sim.rM, T = sim.rT, x = sim.x, w = sim.w, m = I.length;
   for (let cc = 0; cc < m; cc++) {
     const c = back ? m - 1 - cc : cc;
     if (limitOnly && !(M[c] > 0)) continue;
@@ -1152,7 +1224,10 @@ function rodStep(sim, h2, limitOnly, back) {
     for (let k = 0; k < 6; k++) { const nd = k < 3 ? u + k : v + k - 3, i = N[nd]; if (i < 0) continue; const q = (k < 3 ? 1 : -1)*W[nd]; dx += q*x[3*i]; dy += q*x[3*i+1]; dz += q*x[3*i+2]; den += q*q*w[i]; }
     const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
     if (len < 1e-9 || den <= 0) continue;
-    let lam = limitOnly ? 0 : -(len - L[c])/(den + A[c]*h2);
+    // (POST8 FIX-4b) a cord's link: slack while shorter than its rest; longer, it is taken in no faster than maxPull a small step
+    const rest = T && T[c] ? (len <= L[c] ? -1 : Math.max(L[c], len - (sim.opt.maxPull || 6))) : L[c];
+    if (rest < 0) continue;
+    let lam = limitOnly ? 0 : -(len - rest)/(den + A[c]*h2);
     if (M[c] > 0 && len + lam*den > M[c]) lam = -(len - M[c])/den;        // past its limit: back to it, whatever the compliance
     for (let k = 0; k < 6; k++) { const nd = k < 3 ? u + k : v + k - 3, i = N[nd]; if (i < 0) continue; const q = (k < 3 ? 1 : -1)*W[nd]*w[i]*lam/len; x[3*i] += q*dx; x[3*i+1] += q*dy; x[3*i+2] += q*dz; }
   }
@@ -1263,6 +1338,86 @@ function sdfLip(f) {
   }
   return (f.lip = Math.sqrt(3)*m/f.cell + 1);
 }
+/* (Round PULL-3, guess pull3/2) Every cloth edge and triangle meets the body, not its points alone: the maintainer's hand test pulled
+   the skirt off Jessica sideways with every point outside her, the stretched edges between them straight through her (65 mm deep).
+   An edge is a straight line between two points; over skin curved no tighter than BODY_R (mm) it dips below the nearer of its ends by
+   at most L² / (8 BODY_R), so an edge whose nearer end lies further from the skin than that cannot reach it, and is left out (the cloth
+   at rest, its 20 mm edges 2.5 mm off the skin: every edge). It is left out too when the field's own bound says so (each end's distance
+   when the field was last looked up there, less what it moved since, times sdfLip()). Otherwise it is looked at every EDGE_STEP mm
+   along; its deepest place inside half the cloth's thickness is pushed out to it along the field's slope, shared between its two ends
+   as the place lies between them (a constraint on that place, as XPBD moves the points it is made of). A triangle the same, at its
+   middle (a dip of at most L² / (6 BODY_R) by its longest edge), and only once one of its edges is stretched past TRI_STRETCH of its
+   flat length. A pinned place (weight 0 while held) takes its own weight for this. Every EDGE_EVERY-th small step and always the
+   frame's last: +4 % a frame while pulling, nothing at rest. (Round PULL-3b: every 10th small step and the frame's last, each point near
+   the skin looked up afresh first: Jessica's skirt pulled, about +2 % a frame, within the noise; nothing at rest) */
+// (Round PULL-3b: EDGE_EVERY 10, was 4: with the pin gone a pull moves cloth a few millimetres a small step, and with no edge pass at
+// all no edge went deeper than 0.9 mm in any case; LB_FRESH mm: a point whose bound is below it is looked up afresh)
+// EDGE_SETTLE: every 5th while the cloth settles after a pull (a skirt lifted to Jessica's chest falls back fast: every 10th left a
+// triangle 1.0 mm inside, every 5th 0.6)
+// EDGE_T: an edge's or triangle's deepest place is pushed out to this share of the cloth's thickness (PULL-3 had a half: Jessica's skirt
+// pulled up over her chest drifted back 1.2 mm into her between two passes; a straight edge lying on skin curved no tighter than 100 mm
+// sags under 0.6 mm, so three quarters leaves cloth at rest alone)
+// BODY_R (Round PULL-3b, was 25): the skin's tightest curve an edge is looked at for; under Jessica's breast it is tighter than 25 mm,
+// and her skirt pulled up over it had an edge 21 mm long 0.8 mm inside with both ends outside
+const BODY_R = 15, EDGE_STEP = 4, EDGE_SHORT = 24, TRI_STRETCH = 1.15, EDGE_EVERY = 10, EDGE_SETTLE = 5, LB_FRESH = 12, EDGE_T = 0.75;
+function bodyEdges(sim) {
+  const f = sim.field;
+  if (!f) return;
+  const x = sim.x, w = sim.w, w0 = sim.w0, PB = sim.pinBody, TH = sim.thick, SD = sim.sdD, SP = sim.sdP, lip = sdfLip(f), g = [0, 0, 0], n = sim.n;
+  // each point's least distance from the skin now (the field's value where it was last looked up, less what it moved since): once a call
+  const LB = sim.edgeLB && sim.edgeLB.length === n ? sim.edgeLB : (sim.edgeLB = new Float64Array(n));
+  // (Round PULL-3b) a point whose bound is near the skin is looked up afresh: the body's pass keeps the distance from before it pushed the
+  // point out, so every point lying on the body had a bound at or below 0 and every edge of cloth at rest on the body was sampled
+  // (Jessica's skirt pulled: 1186 edges and 6000 samples a call; one lookup a point near the skin is at most n)
+  for (let i = 0, k = 0; i < n; i++, k += 3) { const ax = x[k] - SP[k], ay = x[k+1] - SP[k+1], az = x[k+2] - SP[k+2]; LB[i] = SD ? SD[i] - lip*Math.sqrt(ax*ax + ay*ay + az*az) : -Infinity;
+    if (LB[i] < LB_FRESH) LB[i] = C.sdfSample(f, x[k], x[k+1], x[k+2], null); }
+  const wt = (i) => w[i] > 0 ? w[i] : PB && PB[i] ? w0[i] : 0;
+  // each triangle's flat edge lengths, squared and times TRI_STRETCH², once a cloth
+  if (!sim.triFlat) sim.triFlat = sim.fillTri.map((T, pc) => { const o = sim.off[pc], r = sim.rest, F = new Float64Array(T.length), s2 = TRI_STRETCH*TRI_STRETCH;
+    for (let q = 0; q < T.length; q += 3) for (let e = 0; e < 3; e++) { const u = o + T[q + e], v = o + T[q + (e + 1)%3], dx = r[2*u] - r[2*v], dy = r[2*u+1] - r[2*v+1]; F[q + e] = (dx*dx + dy*dy)*s2; }
+    return F; });
+  // the place sum U[k] x[I[k]] pushed out to the thickness t
+  const push = (I, U, t) => {
+    let px = 0, py = 0, pz = 0, den = 0;
+    for (let k = 0; k < I.length; k++) { const a = 3*I[k]; px += U[k]*x[a]; py += U[k]*x[a+1]; pz += U[k]*x[a+2]; den += wt(I[k])*U[k]*U[k]; }
+    if (den <= 0) return;
+    const d = C.sdfSample(f, px, py, pz, g);
+    if (d >= t) return;
+    const s = (t - d)/den;
+    for (let k = 0; k < I.length; k++) { const a = 3*I[k], q = wt(I[k])*U[k]*s; x[a] += q*g[0]; x[a+1] += q*g[1]; x[a+2] += q*g[2]; }
+  };
+  const I2 = [0, 0], U2 = [0, 0];
+  for (let c = 0; c < sim.eI.length; c++) {
+    const i = sim.eI[c], j = sim.eJ[c], a = 3*i, b = 3*j, dx = x[b] - x[a], dy = x[b+1] - x[a+1], dz = x[b+2] - x[a+2], L = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    const t = EDGE_T*Math.max(TH[i], TH[j]), li = LB[i], lj = LB[j];
+    if (Math.min(li, lj) - L*L/(8*BODY_R) > 0 || (li + lj - lip*L)/2 > t) continue;
+    // (Round PULL-3b: an edge shorter than EDGE_SHORT is looked at its middle alone: over smooth skin a short chord dips deepest about there)
+    const k = L < EDGE_SHORT ? 2 : Math.ceil(L/EDGE_STEP);
+    let best = Infinity, bu = 0;
+    for (let s = 1; s < k; s++) { const u = s/k, v = C.sdfSample(f, x[a] + u*dx, x[a+1] + u*dy, x[a+2] + u*dz, null); if (v < best) { best = v; bu = u; } }
+    if (best >= t) continue;
+    I2[0] = i; I2[1] = j; U2[0] = 1 - bu; U2[1] = bu;
+    push(I2, U2, t);
+  }
+  const I3 = [0, 0, 0], U3 = [1/3, 1/3, 1/3];
+  sim.fillTri.forEach((T, pc) => {
+    const o = sim.off[pc], F = sim.triFlat[pc];
+    for (let q = 0; q < T.length; q += 3) {
+      const i = o + T[q], j = o + T[q+1], k = o + T[q+2], a = 3*i, b = 3*j, e = 3*k, lo = Math.min(LB[i], LB[j], LB[k]);
+      const ux = x[a] - x[b], uy = x[a+1] - x[b+1], uz = x[a+2] - x[b+2], vx = x[b] - x[e], vy = x[b+1] - x[e+1], vz = x[b+2] - x[e+2], sx = x[e] - x[a], sy = x[e+1] - x[a+1], sz = x[e+2] - x[a+2];
+      const q1 = ux*ux + uy*uy + uz*uz, q2 = vx*vx + vy*vy + vz*vz, q3 = sx*sx + sy*sy + sz*sz;
+      // a triangle no edge of which is stretched past TRI_STRETCH of its flat length lies as the cloth at rest does, over the body:
+      // its edges keep it out (above); a stretched one may be drawn across the body
+      // (Round PULL-3b: only while the pull is held. Settling after a pull that lifted the skirt to Jessica's chest, an unstretched
+      // triangle falling back over her had its middle 1.9 mm inside with all three corners outside; then the bound alone decides, below)
+      if (sim.drag && lo > 0 && q1 <= F[q] && q2 <= F[q+1] && q3 <= F[q+2]) continue;
+      const t = EDGE_T*Math.max(TH[i], TH[j], TH[k]), L2 = Math.max(q1, q2, q3);
+      if (lo - L2/(6*BODY_R) > 0 || lo - lip*Math.sqrt(L2)*0.6 > t) continue;      // (the middle is within 0.58 L of every corner)
+      I3[0] = i; I3[1] = j; I3[2] = k;
+      push(I3, U3, t);
+    }
+  });
+}
 const SHRINK_EASE = 60;
 C.clothStep = function (sim, dt) {
   if (sim.eT && sim.frames < SHRINK_EASE) {
@@ -1366,7 +1521,12 @@ C.clothStep = function (sim, dt) {
         // stopped, a larger one held back by kinetic times the push only. Off by default (null: the fabric's one coefficient for both,
         // as always): at the reference's 0.05 kinetic a garment still settling slides down the body. The floor keeps the fabric's.
         if (tl > 1e-9 && !open[i]) {
-          const onBody = !(o.ground && x[k+1] <= th + 1e-9 && g[1] === 1), held = sim.dragSlid && sim.dragSlid[i] && (sim.drag || sim.slideLeft > 0) ? o.dragSlide : 1;      // (Round r33b / 1) held by the pointer: it slides
+          // (Round r33b / 1) held by the pointer: it slides; (Round PULL-3, guess pull3/3) the rest of the cloth grips the body meanwhile,
+          // dragGrip times its friction (so firmly that it does not slide), and a pull deforms the garment there, never moving it as a whole
+          const onBody = !(o.ground && x[k+1] <= th + 1e-9 && g[1] === 1);
+          // (Round PULL-3c, guess pull3c/2) the hand's own friction (dragSlide) only while the pull is held: let go, the cloth has its whole
+          // friction at once, so what the hand slid stays where it was left
+          const pull = sim.dragSlid && (sim.drag || sim.slideLeft > 0), held = pull ? (sim.dragSlid[i] ? (sim.drag ? o.dragSlide : 1) : onBody ? o.dragGrip : 1) : 1;      // (the floor: as before)
           const ms = (onBody && o.bodyStatic != null ? o.bodyStatic : sim.fric[i])*held, mk = (onBody && o.bodyStatic != null ? o.bodyKinetic : sim.fric[i])*held;
           const q = tl <= ms*push ? 1 : Math.min(1, mk*push/tl); x[k] -= tx*q; x[k+1] -= ty*q; x[k+2] -= tz*q;
         }
@@ -1376,8 +1536,8 @@ C.clothStep = function (sim, dt) {
     for (let it = 0; it < o.seamIters; it++) { seamStep(sim, false, h2); holdStep(sim); }
     // (Round BETA8-1 / B, PULL-1) while the pointer pulls, the body has the last word: a seam pulled hard by the pull (the patterns on
     // the body held by its other side) must not drag cloth into the body; what the seams left inside is pushed back out (no friction:
-    // only the push). Not pulling, nothing here runs and the step is the same as before
-    if (f && sim.drag) for (let i = 0; i < n; i++) {
+    // only the push). Not pulling, nothing here runs and the step is the same as before. (Round PULL-3b: only with opt.dragBodyLast, off)
+    if (f && sim.drag && o.dragBodyLast) for (let i = 0; i < n; i++) {
       if (w[i] === 0 && !(PB && PB[i])) continue;
       const k = 3*i, th = sim.thick[i];
       if (o.sdfSkip && SD[i] - SDF_LIP*Math.sqrt((x[k] - SP[k])*(x[k] - SP[k]) + (x[k+1] - SP[k+1])*(x[k+1] - SP[k+1]) + (x[k+2] - SP[k+2])*(x[k+2] - SP[k+2])) > th + 0.5) continue;
@@ -1385,6 +1545,9 @@ C.clothStep = function (sim, dt) {
       SD[i] = d; SP[k] = x[k]; SP[k+1] = x[k+1]; SP[k+2] = x[k+2];
       if (d < th) { const q = th - d; x[k] += g[0]*q; x[k+1] += g[1]*q; x[k+2] += g[2]*q; }
     }
+    // (Round PULL-3) while a pull is held and while the cloth still slides after it, its edges and triangles meet the body too (bodyEdges())
+    // every EDGE_EVERY-th small step and always the frame's last, so every frame shown has been looked over (a point moves a few mm a step)
+    if (f && o.dragEdges && (sim.drag || sim.slideLeft > 0) && ((sub - 1 - s) % (sim.drag ? EDGE_EVERY : EDGE_SETTLE) === 0)) bodyEdges(sim);
     for (let i = 0; i < n; i++) {
       if (w[i] === 0) continue;
       const k = 3*i;
@@ -1604,7 +1767,7 @@ C.foldVerts = function (xy, c, folds, out) {
 };
 // folded cloth in the world: as placePoint, with w the height above the pattern's own surface
 C.placeLocal = function (uvw, p3, out) {
-  const n = Math.floor(uvw.length/3), o = [0, 0, 0], r = p3.r > 0 ? p3.r : 0;
+  const n = Math.floor(uvw.length/3), o = [0, 0, 0], r = Number.isFinite(p3.r) ? p3.r : 0;
   out = out || new Float32Array(3*n);
   for (let i = 0; i < n; i++) {
     const u = uvw[3*i], v = uvw[3*i+1], w = uvw[3*i+2];

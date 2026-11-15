@@ -36,7 +36,7 @@ const CLASS = {
   S: {
     // the document
     pieces: "file", seams: "file", stitches: "file", puckers: "file", guides: "file", measures: "file", grading: "file", lineLinks: "file", tacks: "file",
-    buttons: "file", pipings: "file", bindings: "file", glues: "file", lib: "file", layout: "file", notch: "file", images: "file", backdrop: "file",
+    buttons: "file", pipings: "file", bindings: "file", glues: "file", lacings: "file" /* (POST8 FIX-4b) */, colorways: "file" /* (Round CW-1 / B) */, lib: "file", layout: "file", notch: "file", images: "file", backdrop: "file",
     avedit: "file", lights: "file", render: "file", renderSet: "file", histOn: "file", cloth: "file", states3: "file", home3: "file", nextId: "file", nextSegId: "file", nextShapeId: "file",
     garMeas: "file", docPose: "file", docAv: "file", docAvFile: "file", avEmbed: "file", drapeIn: "file",
     // the history (in the file: history.json)
@@ -52,7 +52,7 @@ const CLASS = {
     selBtn: "session", selPunch: "session", selPucker: "session", selNotch: "session", selHandle: "session", selMore: "session", gradeSel: "session", blockSel: "session",
     drag: "session", draft: "session", mouse: "session", hover: "session", shift: "session", space: "session", marquee: "session", pivot: "session", place: "session",
     walk: "session", replace: "session", rotAxis: "session", pickPoly: "session", traceSel: "session", traceShapes: "session", traceMode: "session", traceOp: "session",
-    traceFold: "session", pleatPick: "session", subPick: "session" /* (Round FIX-3b / B: Set Sublayer's first click) */, ripFrom: "session", selRip: "session" /* (Round FIX-4 / A: a rip begun, the rip selected) */, pleatSet: "session", blockDraft: "session", sticker: "session", fastenFrom: "session", zipTarget: "session", noteLink: "session",
+    traceFold: "session", pleatPick: "session", subPick: "session" /* (Round FIX-3b / B: Set Sublayer's first click) */, ripFrom: "session", selRip: "session" /* (Round FIX-4 / A: a rip begun, the rip selected) */, pleatSet: "session", blockDraft: "session", laceDraft: "session" /* (POST8 FIX-4b: a lacing being threaded) */, sticker: "session", fastenFrom: "session", zipTarget: "session", noteLink: "session",
     dartCap: "session", only3: "session", added: "session", clip: "session", gradeClip: "session", btnClip: "session", tps: "session", snapG: "session", snapMark: "session",
     laySel: "session", layDrag: "session", layHover: "session", layManual: "session", layTape: "session", avPick: "session", btnPick: "session", spread: "session",
     lockCurve: "session", angKeep: "session", sewBad: "session", busyMin: "session", calcExpr: "session", graphicAt: "session", bgMode: "session", autoAt: "session",
@@ -68,22 +68,26 @@ const CLASS = {
   },
   // the 3D window's own state: all of it is the session's or rebuilt from the file (the cloth: from drape.bin)
   G3: { items: "derived", pool: "derived", poolLazy: "derived" /* (Round H1c / A: a file's Save States' cloth, read when wanted) */, redrape: "session" /* (Round H1: a step whose cloth was not kept is shown; the 3D window asks for a Re-drape) */, poolId: "derived", drapeNow: "derived", restBody: "derived", fresh: "derived", dirty: "derived", look: "session", sel: "session", giz: "session",
-    gizHot: "session", gizObj: "session", joint: "session", jointHot: "session", selPin: "session", selTack: "session", selMeas: "session", selVol: "session", isolate: "view",
+    gizHot: "session", gizObj: "session", joint: "session", jointHot: "session", avSel: "session" /* (POST8 FIX-8 / B: the avatar selected, its Property Editor) */, accSel: "session" /* (POST8 FIX-8 / C2: an avatar accessory selected, its Property Editor) */, bgImg: "view" /* (POST8 FIX-7 / B: Add Background Image, this session's) */, selPin: "session", selTack: "session", selMeas: "session", selVol: "session", isolate: "view",
     probe: "session", probeObj: "session", mapLeg: "view", strain: "derived", strainLeg: "view", strainTop: "view", ov: "derived", ovCache: "derived", ovExtra: "derived",
     hovKey: "session", hotLine: "session", hotPt: "session", garFrom: "session", tackFrom: "session", tackLive: "session", meshSel: "session" /* (Round FIX-4 / B: Select Mesh) */, suitPick: "session", suitLine: "session", ikSlot: "session", ikOpen: "view",
     arrBV: "session", arrPt: "session", blendSel: "session", blendSelOnly: "view", blendFavOnly: "view", sizeHot: "session", stayPid: "session", moved: "session", uid: "derived",
     unsewn: "derived", unsewnKey: "derived", zipKey: "derived", zips: "derived", dot: "derived", dotHot: "session", dotMat: "derived", dotPair: "session", dotSel: "session",
     btnScreen: "derived", tackScreen: "derived", thread: "derived", trimEdge: "derived", trimMats: "derived", tackMats: "derived", tackLiveMats: "derived", meshSelMat: "derived", glueMats: "derived", lineMat: "derived",
     measMat: "derived", measMats: "derived", pinMat: "derived", unsewnMat: "derived", ring: "derived", ringDark: "derived", ringLight: "derived", light: "derived",
-    q3: "derived", q3Env: "derived", q3Hemi: "derived", shadow3: "derived", schPanel: "view", schSig: "derived", schT: "derived" },
+    q3: "derived", q3Env: "derived", q3Hemi: "derived", shadow3: "derived", schPanel: "view", schSig: "derived", schT: "derived",
+    /* (run 14c, 1.T45: the lines drawn on the avatar) the line being drawn, the dot under the pointer, the line selected, whether a pen was in
+       hand: what a session is doing; the materials and the lines' shapes laid on the skin: worked out from the document */
+    penDraft: "session", penHover: "session", penSel: "session", penWas: "session", penMat: "derived", penCache: "derived",
+    pencil: "file" /* (the 3D Pencil's strokes not yet converted: since run 14d in the file, document.json's pencil; the maintainer's answer replacing guess t45/7) */, pencilCur: "session", flatSel: "session" /* (3.E4: the shapes picked for Flatten) */, attachFrom: "session" /* (3.A16: the line picked, waiting for its tape) */, pressFrom: "session" /* (3.E4: Press's first layer) */ },
 };
 // S.ui: its preferences are the app's own list (UI_PREFS); everything else in it is view state, named here
-CLASS.uiView = ["layout", "arrPts", "timeline", "render", "mesh2", "render3", "wire3", "joints3", "avOut", "avOutObj", "jointMode", "ikEdit", "quality3", "schem3", "bv3", "meas3", "suit3", "show3d", "strain3",
+CLASS.uiView = ["layout", "arrPts", "timeline", "render", "mesh2", "render3", "wire3", "joints3", "avOut", "avOutObj", "jointMode", "ikEdit", "quality3", "schem3", "bv3", "meas3", "pen3" /* (run 14c, 1.T45: Show 3D Pen (Avatar), as Show Avatar Measures) */, "suit3", "show3d", "strain3",
   "fit3", "stress3", "press3", "shadow3", "lights3", "lightsR", "split", "panelW", "obH", "obFold", "obFloat", "float2", "float3"];
 // S.avSet (pdraft:avatar): what is loaded is the session's; how it stands is the document's (the avatar record); how it is shown is view state; the collision detail is this machine's
 CLASS.avSet = { path: "session", name: "session", height: "file", pose: "file", base: "file", display: "view", showCol: "view", panel: "view", cell: "pref" };
 // stored keys (localStorage in the test page: the desktop store and IndexedDB hold the same)
-const STORE = { "pdraft:doc": "session", "pdraft:file": "session", "pdraft:prefs": "pref", "pdraft:ui": "pref", "pdraft:view": "pref", "pdraft:avatar": "pref", "pdraft:poses": "pref",
+const STORE = { "pdraft:doc": "session", "pdraft:file": "session", "pdraft:prefs": "pref", "pdraft:defproject": "pref" /* (POST8 FIX-7 / C: Default Files ▸ Project File, this computer's) */, "pdraft:ui": "pref", "pdraft:view": "pref", "pdraft:avatar": "pref", "pdraft:poses": "pref",
   "pdraft:sewcheck": "pref", "pdraft:library": "pref", "pdraft:flags": "pref", "pdraft:welcome": "pref", "pdraft:render": "pref", "pdraft:snapshot": "pref", "pdraft:ptfail": "pref",
   "pdraft:print": "pref", "pdraft:grainask": "pref", "pdraft:avsizes": "pref", "pdraft:docav": "session" /* (Round H1 / 1: one's own avatar beside the autosave) */ };
 

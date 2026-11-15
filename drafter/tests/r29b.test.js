@@ -32,7 +32,9 @@ test("r29b / 1: the default color mapping leaves the 3D window's gray background
   assert.ok(o.burn > o.bg*1.4, "Burn Value on top");
   const three = fs.readFileSync(path.join(__dirname, "..", "vendor", "three.min.js"), "utf8");
   assert.ok(three.includes(o.from), "three.js's custom mapping is what the program replaces: a new three.js must be checked here");
-  assert.ok(/^vec3 CustomToneMapping/.test(o.glsl) && o.glsl.includes("toneMappingExposure"));
+  // (POST8 FIX-6 / A: changed on purpose: the chunk now holds HSV Exponential under #ifdef PT_HSV and the default Reinhard after #else, so it
+  // no longer starts with the function; the default is still the one the #else gives)
+  assert.ok(/#else\nvec3 CustomToneMapping/.test(o.glsl) && o.glsl.includes("toneMappingExposure"));
 });
 
 test("r29b / 1: the schematic's lines: the avatar in front of the cloth gets no line, the cloth in front of the avatar keeps its own; without a depth to tell by, the line stays", () => {

@@ -44,20 +44,23 @@ test("FIX-4b / A G1: with default settings no menu-bar row says \"not built\" (a
     S.ui.unbuilt = true; ${AGAIN}
     return { off, on: rows.filter(([p]) => /not built/i.test(p) && !/Show Tools That Are Not Built Yet/.test(p)).length };` });
   assert.strictEqual(r.off, 0);
-  assert.ok(r.on > 150, "the switch on shows them: " + r.on);
+  // (POST8 FIX-7: 150 now, rows built since (Customize Tools, the Display lists'); the check is only that the switch shows them)
+  // (run 14d, FMT-1 / B and C: 92 now, the File menu's Open / Add / Save As rows built; the check is still only that the switch shows them)
+  assert.ok(r.on > 60, "the switch on shows them: " + r.on);
 });
 
 test("FIX-4b / A G2: the Keyboard Shortcuts box lists no not-built key with the switch off, and such a key then does nothing; with it on both are back", () => {
   const r = boot({ blank: true, freshUnbuilt: true, script: `
     const has = () => { const rows = app.shortcutsDialog(); app.ev("hideDlg")(); return rows.some(([k, n]) => /not built/.test(n)); };
-    const t0 = toasts.length; const kept = app.keyTable().find(x => x.id === "kept:O");
+    // (Round CW-1 / B: O is the Colorway Editor's now, built; Show Scene and Props' Shift+P is the kept key looked at)
+    const t0 = toasts.length; const kept = app.keyTable().find(x => x.id === "kept:Shift+P");
     const off = has(); kept.f(); const saidOff = toasts.length - t0;
     S.ui.unbuilt = true; const on = has(); kept.f(); const saidOn = toasts.slice(t0).join(" ");
     return { off, saidOff, on, saidOn, sec: app.ev("shortcutsMarkdown")().includes("Kept for what is not built yet") };` });
   assert.strictEqual(r.off, false, "not listed with the switch off");
   assert.strictEqual(r.saidOff, 0, "the key says nothing with the switch off");
   assert.strictEqual(r.on, true, "listed with the switch on");
-  assert.ok(/Colorway is not built yet/.test(r.saidOn), r.saidOn);
+  assert.ok(/Show Scene and Props is not built yet/.test(r.saidOn), r.saidOn);
   const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
   assert.ok(!/not built yet/.test(readme), "the README's key list is a fresh start's: none of them");
 });

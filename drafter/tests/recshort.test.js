@@ -153,13 +153,30 @@ test("recshort / B6 a strip hung by its top edge, its bottom middle pulled 300 m
   let c = 0; for (let i = 0; i < n; i++) if (Math.hypot(m.xy[2*i] - 100, m.xy[2*i+1] - 400) < Math.hypot(m.xy[2*c] - 100, m.xy[2*c+1] - 400)) c = i;
   const rest = [sim.x[3*c], sim.x[3*c+1], sim.x[3*c+2]], to = [rest[0], rest[1], rest[2] + 300];
   for (let k = 1; k <= 60; k++) { C.clothDrag(sim, { i: [c], w: [1], to: [rest[0], rest[1], rest[2] + 300*Math.min(1, k/30)] }); run(1); }
-  const err = Math.hypot(sim.x[3*c] - to[0], sim.x[3*c+1] - to[1], sim.x[3*c+2] - to[2]), strain = C.clothStrain(sim);
+  // (Round PULL-3b, changed on purpose: the maintainer's rule "garments behave like real clothes". No pin and no leash any more: the
+  // place is drawn to the pointer by a spring whose force is capped (dragMax, 5 N). Nothing holds this free strip back but its own
+  // hanging, so it follows the pointer the whole 300 mm, within 10 mm (it was pinned there exactly before PULL-3, held at the leash's
+  // 180 mm in PULL-3). The fabric's limit is no longer set aside while held, so "stretched past its 8 %" is no longer asked for)
+  const err = Math.hypot(sim.x[3*c] - to[0], sim.x[3*c+1] - to[1], sim.x[3*c+2] - to[2]);
   C.clothDrag(sim, null); run(600);
   const back = Math.hypot(sim.x[3*c] - rest[0], sim.x[3*c+1] - rest[1], sim.x[3*c+2] - rest[2]);
-  assert.ok(err < 0.5, "the place held is where the pointer is: " + err.toFixed(3) + " mm off");
-  assert.ok(strain > WOVEN.maxStretch, "stretched past its 8 % while held: " + strain.toFixed(3));
+  assert.ok(err < 10, "the free strip's place follows the pointer: " + err.toFixed(3) + " mm off");
   assert.ok(back < 30, "let go, it hangs where it hung (within 30 of the 300 mm): " + back.toFixed(1));
   assert.ok([...sim.w].some(v => v > 0) && sim.w[c] > 0, "the pinned place has its weight back");
+});
+// (Round PULL-3b: no leash and no pin now; a free strip's place still comes all the way to a pointer 150 mm away, within 0.5 mm, on the
+// capped spring alone)
+test("recshort / B6b (Round PULL-3, PULL-3b) a free strip's place held comes to the pointer: the strip's bottom pulled 150 mm away", () => {
+  const m = sheetMesh(200, 400, 10), n = m.xy.length/2, X = new Float32Array(3*n), pins = [];
+  for (let i = 0; i < n; i++) { X.set([m.xy[2*i], 1500 - m.xy[2*i+1], 0], 3*i); if (m.xy[2*i+1] < 1e-6) pins.push({ p: 0, v: i }); }
+  const sim = C.clothBuild({ pieces: [{ xy: m.xy, tri: m.tri, X, fab: WOVEN }], seams: [], pins, opt: { ground: false } });
+  const run = (k) => { for (let j = 0; j < k; j++) C.clothStep(sim, 1/60); };
+  run(200);
+  let c = 0; for (let i = 0; i < n; i++) if (Math.hypot(m.xy[2*i] - 100, m.xy[2*i+1] - 400) < Math.hypot(m.xy[2*c] - 100, m.xy[2*c+1] - 400)) c = i;
+  const rest = [sim.x[3*c], sim.x[3*c+1], sim.x[3*c+2]], to = [rest[0], rest[1], rest[2] + 150];
+  for (let k = 1; k <= 60; k++) { C.clothDrag(sim, { i: [c], w: [1], to: [rest[0], rest[1], rest[2] + 150*Math.min(1, k/30)] }); run(1); }
+  const err = Math.hypot(sim.x[3*c] - to[0], sim.x[3*c+1] - to[1], sim.x[3*c+2] - to[2]);
+  assert.ok(err < 0.5, "the place held is where the pointer is: " + err.toFixed(3) + " mm off");
 });
 test("recshort / B6 let go, the cloth that was held keeps sliding on the body for dragRelease frames (120), then has its whole friction again; dragRelease 0: at once, as r33b", () => {
   const m = sheetMesh(100, 100, 10), n = m.xy.length/2, X = new Float32Array(3*n);
@@ -174,8 +191,11 @@ test("recshort / B6 let go, the cloth that was held keeps sliding on the body fo
     for (let k = 0; k < 130; k++) C.clothStep(sim, 1/60);
     return { held, let0, after: sim.slideLeft };
   };
-  const now = go({}), r33b = go({ dragRelease: 0 });
-  assert.deepStrictEqual(now.held, [0, 0], "while held: pinned (weight 0), not counting down");
+  const now = go({}), r33b = go({ dragRelease: 0 }), pinned = go({ dragPin: true });
+  // (Round PULL-3b, changed on purpose: the place is no longer pinned while held, so it keeps its weight; the pin is still there as an
+  // option, dragPin)
+  assert.ok(now.held[0] === 0 && now.held[1] > 0, "while held: not pinned (its weight kept), not counting down: " + JSON.stringify(now));
+  assert.deepStrictEqual(pinned.held, [0, 0], "dragPin: pinned (weight 0)");
   assert.deepStrictEqual(now.let0, [120, true, true], "let go: 120 frames of sliding for the cloth that was held, its weight back");
   assert.strictEqual(now.after, 0, "then its whole friction again");
   assert.strictEqual(r33b.let0[0], 0, "dragRelease 0: at once");

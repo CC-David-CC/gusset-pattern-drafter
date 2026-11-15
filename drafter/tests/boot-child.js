@@ -169,7 +169,7 @@ if (opt.three) {
     render(scene) { if (!scene || !scene.traverse) return; const L = [], cast = []; let grid = false; scene.traverse((o) => { if (!o.visible) return; if (o.isLight) { L.push(o.type + ":" + o.intensity); if (o.castShadow) cast.push(o.type); } if (/^grid:/.test(o.name || "")) grid = true; });
       if (renders.length < 200) renders.push({ w: this.w, h: this.h, lights: L.sort(), shadows: !!this.shadowMap.enabled, grid, casters: cast }); } };
   ctx.__renders = renders;
-  ctx.THREE = TH; ctx.THREE_LOADERS = t.THREE_LOADERS;
+  ctx.THREE = TH; ctx.THREE_LOADERS = t.THREE_LOADERS; ctx.THREE_HDR = t.THREE_HDR;      // (POST8 batch 0k: as if vendor/three-hdr.js had been loaded)
 }
 try { vm.runInNewContext(src, ctx, { timeout: 5000 }); }
 catch (e) { errors.push(e.message); }

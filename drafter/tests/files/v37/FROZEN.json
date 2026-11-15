@@ -1,0 +1,15 @@
+{
+ "note": "The golden files of the frozen file format (FREEZE-1). Written once by scripts/make-golden.js; never written again: every build must open each and save it to the same bytes (drafter/tests/freeze1.test.js, release check rule 17).",
+ "version": 37,
+ "files": {
+  "2d.pdraft": "405f7b27ebbfeecf8b92d959abca0b9e0fa6d87c3700ee767f29944af23ff689",
+  "sewing.pdraft": "abe3758f8431ad4cd7188f00f080534b719d200ad00a95a334d622bfce36ce3f",
+  "3d.pdraft": "60da58faaca019f98566121e7c2a7e4224a9fbf15ad044606357b01371f8c44f",
+  "materials.pdraft": "0ce6f7cfdee8c37a1775955eed21f29c92fe125f6b1a0e1935460ce3db34d155",
+  "render.pdraft": "8e60788caeb4a0e72f690398f5938f7b647c79d8626471bfd6e72b4e81bb9dde",
+  "avatar.pdraft": "9ead3c2dc8dadfbec3dba2283e723a5e9d1d0b985180171f058a37e4bfc8839d",
+  "history.pdraft": "89a971feaec78665f9dfc319a2965f14ffd07360acf66b75fc7b86f1325e7cf2",
+  "trims.pdraft": "8a9633f8b2ff4f12cdf322ac1165ee240e025dea656feb58984f341a28d26a92",
+  "binding.pdraft": "8963752ac1f033f52aed9208f5a7d46a1764b8d08727d37ed4acf11421101712"
+ }
+}

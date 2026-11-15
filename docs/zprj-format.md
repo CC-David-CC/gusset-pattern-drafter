@@ -94,6 +94,81 @@ Each place is absolute, in the pattern's own coordinates (as `v2Position`), and 
 
 `listPattern[].mapFabricShape2D`: `.iFabricIndex` (an index into the root's `listFabric[]`: `.qsName`, `.fabricType` "Woven" / "Knit", `.fabricContent`), `.listGrainLineInfo[0]` (`.fAngle` in degrees, `.v2Translation`), `.m3LtoUV` (pattern to texture coordinates, not read). `fAngle` is measured from up the pattern (its own +y, y up), anticlockwise positive, in the pattern's own coordinates; the pattern's placement (`m3Matrix`) then turns and mirrors the line with the pattern. So a jacket's 270 on a pattern placed turned by 90° (and −270 on its mirrored twin) is a line straight up and down in the window, and 0.8 on an unturned pattern leans 0.8° with its top to the left. Checked against what the program that wrote the files shows, on three files.
 
+A fabric's colors, weight and thickness (read since Round IMP-1 / A; each may be missing):
+
+```
+listFabric[].mapColorwayInfo  .uiCurrentCoordinationIndex   the colorway in use
+                              .listColorwayInfo[that].listFaceMaterial[]   one per face:
+                                  .enMaterialFaceType       0 front, 1 back, 2 side (back and side: a guess, no file seen with them)
+                                  .v3BaseColor              red, green, blue, 0 to 1, as the color picker shows them (sRGB)
+listFabric[].mapPhysical      .fDensity                     g/mm² (× 10⁶ = g/m²)
+                              .fThickness                   mm
+```
+
+The stiffness rows of `mapPhysical` (read since run 16; checked on a fabric whose panel values were known). The panel's 0–99 sliders
+are not stored; the solver's own numbers are, through tables that are not linear (stretch 50 and 40 are 330000 and 230000; shear 9 and
+8 are 10000 and 9000; bending 14, 15, 17, 37 are 100, 111.4, 150, 600, times π in the `_v2` keys). The other rows are the slider
+exactly, scaled:
+
+```
+mapPhysical   .fSuK / .fSvK                              stretch weft / warp
+              .fRightShearK_v2 / .fLeftShearK_v2          shear right / left (older keys .fHK / .fLeftShearK: half as large)
+              .fBuK_v2 / .fBvK_v2                         bending weft / warp (older .fBuK / .fBvK: the same over π)
+              .fBRightShearK_v2 / .fBLeftShearK_v2        bending bias right / left (older .fBhK / .fBLeftShearK: over π)
+              .fFriction                                  the slider / 100 (3 is 0.03)
+              .fIDS                                       internal damping: the slider / 10 000
+              .fBuLR .fBvLR .fBhLR .fBLeftShearLR         buckling ratio weft, warp, bias right, bias left: the slider / 100
+              .fBucklingStiffnessU .V .H .LeftShear       buckling stiffness, the same order: the slider / 100
+              .fDensity                                   g/mm² (the test fabric: 0.0003, 300 g/m², where the panel was read as 27)
+```
+
+What this program takes: the ratios between the directions (weft against warp, right shear against left, the four bendings against
+each other) as the fabric's Detail shares, its preset keeping the overall stiffness; the friction × 10. Not taken: internal damping and
+the buckling rows (named in the import report), the non-linear lists.
+
+## What lies on the patterns (read since run 16)
+
+Each was read from one test file, so each is a first reading.
+
+```
+pattern.mapShape2D.listDecorStitch[]       a topstitch on that shape's outline:
+    .mapElement.qsName / .uiID              its name and id
+    .mapParamLine                           the stretch it runs along, as a seam's side: uiStartIndex .. uiEndIndex,
+                                            fRatioStart .. fRatioEnd, bDirection
+    .fThickOffset                           mm, added to its style's offset
+listTopStitchStyleProperty[]                the topstitch styles: .mapElement.uiID, .qsName,
+    .mapMultiStitch.fAddtionalOffset        mm off the line (an inch's sixteenth by default)
+    .mapMultiStitch.listStitch[]            its rows; those with bEnableFlag: fStitchLength (mm: 1.814 is 14 to the inch),
+                                            fThreadThickness (mm), fStitchDistance (mm between rows), the row's color
+mapColorWay.mapNewColorway.listColorway[0].mapAssign.listThickParametricLineToTopStitchStyle[]
+                                            uiItemID (a topstitch's id) -> uiStyleID (a style's id)
+pattern.listPrintTexture[] with bButtonHole a buttonhole: mapButtoneBase.listButtonSewingArea[0].mapCenter (uiPatternSelfIndex,
+                                            v2LocalPosition in that pattern's own frame), mapPrintTexture.v2TextureSize (length ×
+                                            width, mm), fAngle (degrees)
+listPattern[] with listButtonSewingArea     a button: a pattern of its own with no lines; its middle mapCenter as above,
+                                            uiButtonHeadStyleIndex its style
+listButtonHeadStyleMap[k].mapButtonStyleBase  fObjWidth, fThickness (mm); named by listButtonHeadStyle[k].qsName
+listFabric[].mapMaterial2D.listFaceMaterial[front].listTexture[0]
+                                            the front's picture: qsFileName (the archive may hold it as qsUniqueFileName),
+                                            v2Size (one repeat, mm), fSignedAngle; the next slots are its other maps
+mapPatternEditor.listZipper[]               qsName, uiStyleUID (a listZipperStyle[] entry's uiID: qsName, fTeethWidth, fTapeWidth)
+                                            its two tapes are patterns (mapNewTape) sewn to the garment edges and to each other
+                                            by ordinary seams
+mapPatternEditor.listPiping[]               qsName, fDiameter (mm), listParamLine[] (the edge: uiSelfIndex the pattern, a
+                                            stretch each), uiPipingPatternSelfIndex (its own tube pattern, π × the diameter
+                                            across), arrPipingSeamLinePairGroup (the seams that sew the tube on), bIsClosedStart / End
+mapPatternEditor.listInBinding[]            qsName, fBindingDiameter (its width, mm), listParamLine[] (the edge),
+                                            listBindingPatternSelfIndex[].uiBindingPatternSelfIndex (its strip pattern),
+                                            fBindingPatternLineLength, iBindingFoldAngle, iBindingFoldStrength, bBindingTurned,
+                                            listBindingTopSLPGroupSelfIndex / …Bottom… (the seams top and bottom)
+mapPatternEditor.listTrimObject[]           qsTrimName, fMass (g), bGlue, bCollision, mapTF3D (its place), uiTrimObjectStyleIndex
+```
+
+This program makes of them: topstitches of its own (offset, stitches per inch, thread, rows); buttons and buttonholes at their
+places (not fastened); the front picture as the fabric's texture; one zipper seam between the two garment edges the tapes were
+sewn to; piping and binding come in as their own patterns with their seams (as the file simulates them); trim objects are named
+only.
+
 ## Symmetric pairs and copies
 
 `mapPatternList.arrSymmetricIndex`: typed array (0x15) of int32, one per pattern: the index of its mirrored twin, or −1 (a pair names each other). `mapPatternList.listInstance[i].arrInstanceIndex`: the copies of pattern i (empty in the files known). The two of a pair have exactly the same points and curve points in their own coordinates (and the same places in every size); only their placements differ, by a mirror. `listPattern[].mapSymmetry` (`iSymmetryStatus`, `m3LocalSymmetricMatrix`) is not needed for that and not read. A pattern of one half unfolded (`mapShape2D.bHalfSymmetric`) is not in the files known and not read.
@@ -150,4 +225,4 @@ The importer takes a graphic's placement (its middle, size and turn, through the
 
 ## Known to be in the file, not read
 
-Notch types, seam allowance corner options, the fabrics' physical properties and colors, topstitches, zippers (`listZipper`: tape, teeth, slider, puller, stoppers), trims, arrangement (`mapArrange`: the arrangement point a pattern was put on, its height and arc length on it), the avatar, the rest of the 3D scene.
+Notch types, seam allowance corner options, the fabrics' stiffness and friction, topstitches, zippers (`listZipper`: tape, teeth, slider, puller, stoppers), trims, arrangement (`mapArrange`: the arrangement point a pattern was put on, its height and arc length on it), the avatar, the rest of the 3D scene.

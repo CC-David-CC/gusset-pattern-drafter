@@ -7,6 +7,7 @@ Third-party code the page loads. All of it is MIT licensed.
 | `three.min.js` | three.js r159, the classic (non-module) build | MIT, `three.LICENSE.txt` |
 | `three-pathtracer.js` | three-gpu-pathtracer 0.0.17 and three-mesh-bvh 0.7.0, with three.js r159's `FullScreenQuad`: the Render window's Quality mode (Round r23). Loaded only when Quality is chosen, never at the start | MIT (© Garrett Johnson), `three-pathtracer.LICENSE.txt` |
 | `three-loaders.js` | three.js r159 `FBXLoader` and `GLTFLoader` with what they import (`NURBSCurve`, `BufferGeometryUtils`, and fflate for unpacking FBX data) | MIT (three.js authors; fflate © Arjun Barrett) |
+| `three-hdr.js` | three.js r159 `RGBELoader` and `EXRLoader` with fflate: a high dynamic range environment map (POST8 batch 0k). Loaded only when such a map is used | MIT (three.js authors; fflate © Arjun Barrett) |
 
 ## Why `three-loaders.js` is a bundle
 
@@ -51,4 +52,16 @@ import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 globalThis.THREE_PATHTRACER = { PathTracingRenderer, PathTracingSceneGenerator, PhysicalPathTracingMaterial, GradientEquirectTexture, FullScreenQuad, version: "three-gpu-pathtracer 0.0.17, three-mesh-bvh 0.7.0" };
 ```
 
-Bundled as `three-loaders.js` is (`bundle: true, format: "iife", minify: true, target: "es2019"`, the bare `three` sent to `three-global.js`); three-mesh-bvh is bundled in. A one-line comment naming both libraries and their license file is put before it. It needs WebGL 2 with float render targets; the page checks that before loading it.
+Bundled as `three-loaders.js` is (`bundle: true, format: "iife", minify: true, target: "es2019"`, the bare `three` sent to `three-global.js`); three-mesh-bvh is bundled in.
+
+## How `three-hdr.js` was made (POST8 batch 0k)
+
+three.js r159's `RGBELoader` (Radiance `.hdr`) and `EXRLoader` (OpenEXR `.exr`, with the fflate it imports), for a high dynamic range environment map of the Render workspace's dome. Loaded only when such a map is used, never at the start. In an empty folder `npm install three@0.159.0 esbuild@0.19.12`; `three-global.js` as above, but its list from `Object.keys(require("three/build/three.cjs"))` (the package's `main`, the old UMD build, lacks exports such as `DataTextureLoader`, which esbuild then makes `void 0`); `entry.js`:
+
+```js
+import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
+import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
+globalThis.THREE_HDR = { RGBELoader, EXRLoader, version: "three.js r159" };
+```
+
+Bundled as `three-loaders.js` is, with a one-line comment before it naming what is inside and its license. A one-line comment naming both libraries and their license file is put before it. It needs WebGL 2 with float render targets; the page checks that before loading it.

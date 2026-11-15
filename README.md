@@ -149,6 +149,7 @@ Help ▸ Keyboard Shortcuts… lists the same keys in the program. On a Mac, Cmd
 |---|---|
 | F12 | Grid Properties (desktop app only) |
 | D | History panel |
+| O | Colorway Editor |
 | F | Zoom to the selection, or to fit (in 3D: Focus Zoom on the selected patterns) |
 | + | Zoom in |
 | − | Zoom out |
@@ -221,6 +222,7 @@ Help ▸ Keyboard Shortcuts… lists the same keys in the program. On a Mac, Cmd
 
 | Key | What it does |
 |---|---|
+| Arrow keys | UV Editor: move the selected UVs by the Distance |
 | F1 | Type the value instead of dragging |
 | Enter | Finish (a line, a seam side, a walk, Smooth Curve) |
 | Esc | Give up what is being done |
@@ -255,7 +257,7 @@ A document is saved as a `.pdraft` file. It is a ZIP container, so any ZIP tool 
 
 ## Importing project files
 
-**File → Import → Import .zprj / .zpac…** reads the 2D patterns (outlines, curves, internal lines, notches, seam allowances, grainlines, every size of a graded pattern, symmetric pairs as linked copies, the seams, and each pattern's fabric by name) out of a project file (`.zprj`) or a garment file (`.zpac`), so that you can go on working with your own files. File → Open and dropping the file on the window take them too. A pattern that cannot be read is skipped and named, and a value the file leaves out is given a default; the report after the import lists both. Not imported: the fabrics' physical properties and colors (a fabric comes in by its name, with a preset of ours by its kind), notch types, topstitches, zippers, trims and everything 3D. A file that is encrypted or protected is refused. The layout as far as it is known is described in [`docs/zprj-format.md`](docs/zprj-format.md).
+**File → Import → Import .zprj / .zpac…** reads the 2D patterns (outlines, curves, internal lines, notches, seam allowances, grainlines, every size of a graded pattern, symmetric pairs as linked copies, the seams, and each pattern's fabric by name, with its colors, weight, thickness, friction, how its stiffness differs by direction and its front texture; topstitches, buttons and buttonholes, and zippers as zippers between the two edges they join) out of a project file (`.zprj`) or a garment file (`.zpac`), so that you can go on working with your own files. File → Open and dropping the file on the window take them too. A pattern that cannot be read is skipped and named, and a value the file leaves out is given a default; the report after the import lists both. Not imported: the fabrics' overall stiffness (a fabric gets a preset of ours by its kind), damping and buckling, notch types, zipper sliders and pullers, trim objects and the rest of the 3D scene. Piping and binding come in as the patterns and seams the file builds them from. A file that is encrypted or protected is refused. The layout as far as it is known is described in [`docs/zprj-format.md`](docs/zprj-format.md).
 
 DXF files in the AAMA / ASTM style can be imported and exported as well.
 

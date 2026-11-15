@@ -22,6 +22,10 @@ const fresh = given && TD.inTemp(given) ? { dir: given, data: path.join(given, "
 fs.mkdirSync(fresh.data, { recursive: true });
 const tmp = fresh.dir, data = fresh.data;
 process.env.PDRAFT_USER_DATA = data;
+TD.testWindows(process.env);      // (POST8 batch 0o) its windows hidden, never taking the focus, unless PDRAFT_TEST_SHOW=1 or PDRAFT_TEST_WINDOWS says otherwise
+// (POST8 batch 0r) the shell's start log, in the check's own temp folder: what a check's start does (no splash shown, the page's window shown
+// only once the page is ready) is read from it
+const START_LOG = process.env.PDRAFT_STARTUP_LOG || (process.env.PDRAFT_STARTUP_LOG = path.join(tmp, "startup.json"));
 app.setPath("userData", data);
 // (Round rename-1) a stand-in for the data folder of the program's old name, with one file of the page's store in it: the
 // first start copies it over (desktop/migrate.js) and says so, and leaves the folder as it is
@@ -109,15 +113,39 @@ async function run(win) {
   const wc = win.webContents, js = (code) => wc.executeJavaScript(code, true);
   const key = async (keyCode, ...modifiers) => { wc.sendInputEvent({ type: "keyDown", keyCode, modifiers }); wc.sendInputEvent({ type: "keyUp", keyCode, modifiers }); await sleep(250); };
   const autosave = path.join(data, "autosave.json");
-  win.focus();
+  // (POST8 batch 0o) the keys reach the page by sendInputEvent without the window having the focus: it is never focused in a check's run
+  // (a webContents' focus() makes its window the foreground one on Windows, which took the focus from what the maintainer was doing)
+  if (process.env.PDRAFT_TEST_SHOW === "1" || !process.env.PDRAFT_TEST_WINDOWS) win.focus();
 
-  await check("the first start: the welcome box, with \"Don't show again\"; ticked, it stays away (the next start is checked at the end)", async () => {
+  await check("the first start: the welcome box, with \"Don't show again\"; ticked, it stays away (the next start is checked at the end)", welcome);
+  // (POST8 batch 0o) a check's windows never get in the way: shown without the focus, off every display, no taskbar entry; the splash never shown
+  if (process.env.PDRAFT_TEST_SHOW !== "1" && process.env.PDRAFT_TEST_WINDOWS === "hidden") await check("(0o) a check's window: shown without the focus, off every display, not on the taskbar; no splash shown, and no other window of the app on a screen", async () => {
+    await until("the page's window shown (off the screens)", () => Promise.resolve(win.isVisible()));
+    const { screen, BrowserWindow } = require("electron"), b = win.getBounds();
+    const meets = (r, d) => r.x < d.x + d.width && r.x + r.width > d.x && r.y < d.y + d.height && r.y + r.height > d.y;
+    assert.ok(win.isVisible() && !win.isFocused(), "shown, not focused: " + [win.isVisible(), win.isFocused()]);
+    assert.ok(!screen.getAllDisplays().some(d => meets(b, d.bounds)), "off every display: " + JSON.stringify(b));
+    const others = BrowserWindow.getAllWindows().filter(w => w !== win && w.isVisible() && screen.getAllDisplays().some(d => meets(w.getBounds(), d.bounds)));
+    assert.strictEqual(others.length, 0, "another window of the app on a screen");
+  });
+  /* (POST8 batch 0r) What a check's start does, in either test mode (hidden, inactive): the splash is never shown, the page is fully ready
+     (its mark "gusset-usable"), and its window is shown only after the page said so (the shell's "pageReady" before "mainShown"): never a
+     grey window. How long the splash stays when a person starts the app (SPLASH_MIN) is measured by hand: scripts/startup-time.js,
+     scripts/startup-built.js. */
+  if (process.env.PDRAFT_TEST_SHOW !== "1" && /^(hidden|inactive)$/.test(process.env.PDRAFT_TEST_WINDOWS || "")) await check("(0r) a check's start: no splash shown, the page fully ready, its window shown only once the page was ready (no grey window)", async () => {
+    const usable = await js("(performance.getEntriesByName('gusset-usable')[0] || {}).startTime || 0");
+    assert.ok(usable > 0, "the page's mark gusset-usable");
+    const m = await until("the shell's start log with the window shown", () => { try { const l = JSON.parse(fs.readFileSync(START_LOG, "utf8")); return l.mainShown != null && l; } catch (e) { return null; } });
+    assert.strictEqual(m.splashShown, undefined, "the splash was shown: " + JSON.stringify(m));
+    assert.ok(m.pageReady != null && m.mainShown >= m.pageReady, "shown before the page was ready: " + JSON.stringify(m));
+  });
+  async function welcome() {
     const w = await until("the welcome box", () => js("(() => { const m = document.getElementById('modal'); return m && [m.querySelector('.dt').textContent, [...m.querySelectorAll('.btn')].map(b => b.textContent), !!m.querySelector('#wl-off'), m.querySelectorAll('li').length, m.textContent]; })()"));
     assert.deepStrictEqual(w.slice(0, 4), ["Welcome to Gusset – Pattern Drafter", ["Start Drafting", "Open an Example"], true, 6]);
     assert.ok(/early test version/.test(w[4]) && /Save your work often/.test(w[4]) && !/\bclo\b/i.test(w[4]), w[4]);
     await js("document.getElementById('wl-off').click(); [...document.querySelectorAll('#modal .btn')].find(b => b.textContent === 'Start Drafting').click(); 0");
     assert.deepStrictEqual(await js("[!!document.getElementById('modal'), localStorage.getItem('pdraft:welcome')]"), [false, "off"]);
-  });
+  }
   await check("(Round rename-1) the first start copied the data folder of the program's old name over, once, and said so in one line; that folder is left as it was", async () => {
     let said = "";
     await until("the line about it", () => js("document.getElementById('toast').textContent").then(t => { said = t; return t === MIGRATE.NOTICE; })).catch((e) => { throw new Error(e.message + " (the toast said: " + JSON.stringify(said) + ")"); });
@@ -586,6 +614,24 @@ async function run(win) {
       assert.deepStrictEqual(shown, [out("shown.png"), out("shown.png")]);
     } finally { shell.showItemInFolder = was; await js("drafterDebug().rwinClose(); 0"); }
   });
+  await check3d("(POST8, 2.F1) File Path: a folder chosen through the shell, Save writes the render there without a dialog (a second one beside it with -2), only the folder's name reaches the page, Ask Each Time asks again", async () => {
+    const dir = out("renders"); fs.mkdirSync(dir, { recursive: true });
+    const wasOpen = openFrom; openFrom = dir;
+    try {
+      await js("(() => { const d = drafterDebug(); d.setLayout('both'); d.renderWindow(); d.RWIN.pane = 'image'; const o = d.loadRender(); Object.assign(o, { mode: 'quick', size: 'custom', w: 160, h: 120, nameKind: 'custom', customName: 'path-check', fmt: 'png' }); d.saveRender(o); d.run('rwinSide'); d.run('rwinRender'); return 0; })()");
+      await until("the row", () => js("!!document.querySelector('#rw-side [data-act=rw-dir]')"));
+      await js("document.querySelector('#rw-side [data-act=rw-dir]').click(); 0");
+      await until("the folder named", () => js("(drafterDebug().RWIN.dir || {}).name === 'renders' && /renders/.test(document.getElementById('rw-side').textContent)"));
+      const n0 = saveDialogs;
+      await js("document.querySelector('#rw-tools [data-act=save]').click(); 0"); await until("path-check.png", () => fs.existsSync(path.join(dir, "path-check.png")));
+      await js("document.querySelector('#rw-tools [data-act=save]').click(); 0"); await until("path-check-2.png", () => fs.existsSync(path.join(dir, "path-check-2.png")));
+      assert.strictEqual(saveDialogs, n0, "no save dialog");
+      assert.strictEqual(await js("JSON.stringify(drafterDebug().RWIN.dir)"), JSON.stringify({ name: "renders" }), "the page knows the name only");
+      await js("document.querySelector('#rw-side [data-act=rw-dir-clear]').click(); 0"); await until("asking again", () => js("drafterDebug().RWIN.dir === null"));
+      saveTo = out("asked.png"); await js("document.querySelector('#rw-tools [data-act=save]').click(); 0"); await until("asked.png", () => fs.existsSync(out("asked.png")));
+      assert.strictEqual(saveDialogs, n0 + 1, "asked where");
+    } finally { openFrom = wasOpen; await js("drafterDebug().rwinClose(); 0"); }
+  });
   await check3d("every app shortcut reaches the app: Ctrl+K / Ctrl+H / Ctrl+J on the selected pattern in 3D, Ctrl+Shift+C (Clone as Pattern, not the inspector of the developer tools), P (Zipper), Ctrl+C / Ctrl+V", async () => {
     await js("drafterDebug().setLayout('both'); 0"); await sleep(250);
     const over = async (sel) => { const p = await js("(() => { const b = document.querySelector(" + JSON.stringify(sel) + ").getBoundingClientRect(); return [Math.round(b.left + b.width*0.3), Math.round(b.top + b.height*0.3)]; })()"); wc.sendInputEvent({ type: "mouseMove", x: p[0], y: p[1] }); await sleep(80); return p; };
@@ -640,6 +686,40 @@ async function run(win) {
     assert.deepStrictEqual(lib.map(x => x.name), ["Desk smoke"]);
     assert.ok(/^Saved to the library as Desk smoke/.test(await toast()), await toast());
     assert.strictEqual((await js("drafterDebug().run('libraryDialog')")).mine, 1); await js("drafterDebug().run('hideDlg'); 0");
+  });
+  await check("(LIB-1 / C) + ▸ Add Folder… keeps a folder on disk in the library: the page gets its name and its files' names and kinds only, a garment of it opens the Open Garment box, a library item of it is added to the document; the folder is only read; Remove from Library leaves it as it is; one's own items go into store/libitems.json", async () => {
+    const dir = out("libdir"); fs.mkdirSync(dir, { recursive: true });
+    const d = docOf(A); d.pieces[0].name = "From disk"; fs.writeFileSync(path.join(dir, "disk garment.json"), JSON.stringify(d));
+    fs.writeFileSync(path.join(dir, "disk.button.json"), JSON.stringify({ gusset: "library-item", v: 1, kind: "button", item: { name: "Disk button", width: 18 } }));
+    fs.writeFileSync(path.join(dir, "notes.txt"), "not for the library");
+    const before = fs.readdirSync(dir).sort(), wasOpen = openFrom; openFrom = dir;
+    try {
+      await js("drafterDebug().run('libraryDialog'); drafterDebug().run('libAddFolder'); 0");
+      await until("the folder in the library", () => js("(() => { const L = drafterDebug().run('libFolders'); return L.some(f => f.disk && f.cat === 'garment') && L.some(f => f.disk && f.cat === 'trim'); })()"));
+      const seen = await js("JSON.stringify(drafterDebug().run('libFolders').filter(f => f.disk).map(f => [f.cat, f.name, f.items.map(i => [i.name, i.kind])]))");
+      assert.deepStrictEqual(JSON.parse(seen), [["garment", "libdir", [["disk garment", "garment"]]], ["trim", "libdir", [["disk", "button"]]]]);      // (a library item's file name without its ".<kind>.json")
+      assert.ok(!seen.includes(dir) && !(await js("JSON.stringify(window.desktop.libFolders ? 1 : 0)")).includes(dir), "no path in the page");
+      // a library item of the folder used: a button of the document (one step)
+      const n0 = await js("drafterDebug().S.lib.button.length");
+      await js("(() => { const it = drafterDebug().run('libFolders').flatMap(f => f.items).find(i => i.kind === 'button' && i.disk); drafterDebug().run('libUse', it); return 0; })()");
+      await until("the button added", () => js("drafterDebug().S.lib.button.length === " + (n0 + 1)));
+      assert.strictEqual(await js("drafterDebug().S.lib.button[drafterDebug().S.lib.button.length - 1].name"), "Disk button");
+      // a garment of the folder: the Open Garment box
+      await js("(() => { const it = drafterDebug().run('libFolders').flatMap(f => f.items).find(i => i.kind === 'garment' && i.disk); drafterDebug().run('libUse', it); return 0; })()");
+      await until("the Open Garment box", () => js("document.getElementById('dlg').style.display === 'block' && /Open Garment/.test(document.getElementById('dlg').textContent)"));
+      await js("document.getElementById('dlg-x').click(); drafterDebug().undo(); 0");
+      assert.deepStrictEqual(fs.readdirSync(dir).sort(), before, "nothing written into the folder");
+      assert.ok(fs.existsSync(path.join(data, "library-folders.json")));
+      // Remove from Library: gone from the library, the folder as it was
+      await js("(() => { const id = drafterDebug().run('libFolders').find(f => f.disk).id.slice(2); drafterDebug().run('libDiskRemove', id); return 0; })()");
+      await until("the folder out of the library", () => js("!drafterDebug().run('libFolders').some(f => f.disk)"));
+      assert.deepStrictEqual(fs.readdirSync(dir).sort(), before);
+      // one's own folder and item: in the data folder's store
+      await js("(() => { const d = drafterDebug(); d.run('libFolderNew', 'trim', 'Desk trims'); d.run('libStoreAdd', 'zipper', 'Desk zipper', d.run('libItemText', 'zipper', d.S.lib.zipper[0] || { name: 'z' })); return 0; })()");
+      const st = JSON.parse(fs.readFileSync(path.join(data, "store", "libitems.json"), "utf8"));
+      assert.deepStrictEqual([st.folders.map(f => f.name), st.items.map(i => i.name)], [["Desk trims"], ["Desk zipper"]]);
+      await js("drafterDebug().run('hideDlg'); 0");
+    } finally { openFrom = wasOpen; }
   });
   await check("Help ▸ Send Feedback puts the bug information on the system clipboard, says so, and opens the feedback link of config.js", async () => {
     await clipboard.writeText("before");
