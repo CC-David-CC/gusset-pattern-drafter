@@ -102,6 +102,9 @@ app.on("web-contents-created", (e, wc) => wc.on("console-message", (ev) => { if 
 // (Round desk-2) PDRAFT_NO_WEBGL=1: a machine that cannot give WebGL at all (the Intel Mac build machine: no graphics card,
 // and Chromium's software renderer needs Vulkan there). The checks that draw in the 3D window are listed as not checked
 const NOGL = process.env.PDRAFT_NO_WEBGL === "1";
+// (BETA9-FIX) and WebGL is then really switched off, so any machine starts as that one does: no graphics card and no software renderer, as
+// the Intel Mac build machine (Electron 45 ignores disable-3d-apis / disable-webgl; these two leave the page no WebGL and no WebGL 2)
+if (NOGL) { app.disableHardwareAcceleration(); app.commandLine.appendSwitch("disable-software-rasterizer"); }
 const check3d = (name, f) => (NOGL ? (checks.push("  --   " + name + "\n       not checked: no WebGL on this machine"), Promise.resolve()) : check(name, f));
 const check = async (name, f) => {
   pageErrors = [];
@@ -119,25 +122,48 @@ async function run(win) {
 
   await check("the first start: the welcome box, with \"Don't show again\"; ticked, it stays away (the next start is checked at the end)", welcome);
   // (POST8 batch 0o) a check's windows never get in the way: shown without the focus, off every display, no taskbar entry; the splash never shown
-  if (process.env.PDRAFT_TEST_SHOW !== "1" && process.env.PDRAFT_TEST_WINDOWS === "hidden") await check("(0o) a check's window: shown without the focus, off every display, not on the taskbar; no splash shown, and no other window of the app on a screen", async () => {
-    await until("the page's window shown (off the screens)", () => Promise.resolve(win.isVisible()));
+  /* (BETA9-FIX) per system: on Windows and Linux off every display and not on the taskbar; macOS keeps every window on a screen (the
+     release run's Mac: {"x":0,"y":25,…}), so there it is fully see-through with the app out of the Dock (desktop/main.js, testShowInactive()).
+     Either way shown, never focused, and no other window of the app seen. */
+  if (process.env.PDRAFT_TEST_SHOW !== "1" && process.env.PDRAFT_TEST_WINDOWS === "hidden") await check("(0o) a check's window: shown without the focus, unseen (Windows, Linux: off every display, not on the taskbar; a Mac: see-through, not in the Dock); no splash shown, and no other window of the app seen", async () => {
+    await until("the page's window shown (unseen)", () => Promise.resolve(win.isVisible()));
     const { screen, BrowserWindow } = require("electron"), b = win.getBounds();
     const meets = (r, d) => r.x < d.x + d.width && r.x + r.width > d.x && r.y < d.y + d.height && r.y + r.height > d.y;
+    const seen = (w) => w.isVisible() && (MAC ? w.getOpacity() > 0 : screen.getAllDisplays().some(d => meets(w.getBounds(), d.bounds)));
     assert.ok(win.isVisible() && !win.isFocused(), "shown, not focused: " + [win.isVisible(), win.isFocused()]);
-    assert.ok(!screen.getAllDisplays().some(d => meets(b, d.bounds)), "off every display: " + JSON.stringify(b));
-    const others = BrowserWindow.getAllWindows().filter(w => w !== win && w.isVisible() && screen.getAllDisplays().some(d => meets(w.getBounds(), d.bounds)));
-    assert.strictEqual(others.length, 0, "another window of the app on a screen");
+    if (MAC) {
+      await until("the window made see-through", () => Promise.resolve(win.getOpacity() === 0));
+      assert.ok(!app.dock || !app.dock.isVisible(), "the app is not in the Dock");
+    } else assert.ok(!screen.getAllDisplays().some(d => meets(b, d.bounds)), "off every display: " + JSON.stringify(b));
+    const others = BrowserWindow.getAllWindows().filter(w => w !== win && seen(w));
+    assert.strictEqual(others.length, 0, "another window of the app seen");
   });
   /* (POST8 batch 0r) What a check's start does, in either test mode (hidden, inactive): the splash is never shown, the page is fully ready
      (its mark "gusset-usable"), and its window is shown only after the page said so (the shell's "pageReady" before "mainShown"): never a
      grey window. How long the splash stays when a person starts the app (SPLASH_MIN) is measured by hand: scripts/startup-time.js,
      scripts/startup-built.js. */
   if (process.env.PDRAFT_TEST_SHOW !== "1" && /^(hidden|inactive)$/.test(process.env.PDRAFT_TEST_WINDOWS || "")) await check("(0r) a check's start: no splash shown, the page fully ready, its window shown only once the page was ready (no grey window)", async () => {
-    const usable = await js("(performance.getEntriesByName('gusset-usable')[0] || {}).startTime || 0");
+    const usable = await until("the page's mark gusset-usable", () => js("(performance.getEntriesByName('gusset-usable')[0] || {}).startTime || 0"));
     assert.ok(usable > 0, "the page's mark gusset-usable");
-    const m = await until("the shell's start log with the window shown", () => { try { const l = JSON.parse(fs.readFileSync(START_LOG, "utf8")); return l.mainShown != null && l; } catch (e) { return null; } });
+    const m = await until("the shell's start log with the window shown", () => { try { const l = JSON.parse(fs.readFileSync(START_LOG, "utf8")); return l.mainShown != null && l.pageReady != null && l; } catch (e) { return null; } });
     assert.strictEqual(m.splashShown, undefined, "the splash was shown: " + JSON.stringify(m));
     assert.ok(m.pageReady != null && m.mainShown >= m.pageReady, "shown before the page was ready: " + JSON.stringify(m));
+  });
+  /* (BETA9-FIX) The start without WebGL (PDRAFT_NO_WEBGL=1, where WebGL is really switched off above): the page is usable as soon as it has
+     loaded (the 3D window cannot draw, and the start no longer waits 30 s for it), the shell never had to show the window late, and the 3D
+     window says why it is empty. Where there is WebGL the same start drew the 3D window once: that is checked instead, never a silent pass. */
+  await check(NOGL ? "(beta9-fix) no WebGL: usable within seconds of loading, no \"took more than 30 s\", the 3D window says it has no WebGL, the 2D window drawn" : "(beta9-fix) with WebGL: usable once the 3D window was drawn, no \"took more than 30 s\"", async () => {
+    const t = await until("the page's marks", () => js("(() => { const g = (n) => (performance.getEntriesByName(n)[0] || {}).startTime || 0; return g('gusset-usable') && [g('gusset-ready'), g('gusset-usable')]; })()"));
+    const lag = t[1] - t[0], m = JSON.parse(fs.readFileSync(START_LOG, "utf8"));
+    assert.ok(lag < 3000*SLOW, "usable " + Math.round(lag) + " ms after the page loaded");
+    assert.ok(m.pageReady != null && m.mainShown != null, "the shell's log: " + JSON.stringify(m));
+    assert.ok(!/took more than/.test(await js("document.getElementById('toast').textContent")), "the late line");
+    const s = await js("(() => { const c = document.createElement('canvas'); let gl = false; try { gl = !!(c.getContext('webgl2') || c.getContext('webgl')); } catch (e) {} return { gl, failed: drafterDebug().view3d.failed(), drawn: !!drafterDebug().view3d.renderer(), note: (document.getElementById('note3d') || {}).textContent || '', w2: document.getElementById('c').width }; })()");
+    assert.ok(s.w2 > 0, "the 2D window drawn");
+    if (NOGL) {
+      assert.deepStrictEqual([s.gl, s.failed, s.drawn], [false, true, false], "no WebGL here: " + JSON.stringify(s));
+      assert.ok(/could not start: no WebGL here/.test(s.note), "the 3D window's line: " + s.note);
+    } else assert.deepStrictEqual([s.failed, s.drawn], [false, true], "the 3D window: " + JSON.stringify(s));
   });
   async function welcome() {
     const w = await until("the welcome box", () => js("(() => { const m = document.getElementById('modal'); return m && [m.querySelector('.dt').textContent, [...m.querySelectorAll('.btn')].map(b => b.textContent), !!m.querySelector('#wl-off'), m.querySelectorAll('li').length, m.textContent]; })()"));

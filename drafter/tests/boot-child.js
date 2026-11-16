@@ -168,6 +168,8 @@ if (opt.three) {
     setPixelRatio() {} getPixelRatio() { return 1; } setClearColor() {} getSize(v) { v.x = this.w; v.y = this.h; return v; } setSize(w, h) { this.w = w; this.h = h; }
     render(scene) { if (!scene || !scene.traverse) return; const L = [], cast = []; let grid = false; scene.traverse((o) => { if (!o.visible) return; if (o.isLight) { L.push(o.type + ":" + o.intensity); if (o.castShadow) cast.push(o.type); } if (/^grid:/.test(o.name || "")) grid = true; });
       if (renders.length < 200) renders.push({ w: this.w, h: this.h, lights: L.sort(), shadows: !!this.shadowMap.enabled, grid, casters: cast }); } };
+  // (BETA9-FIX) noGL: a machine with no WebGL, where three.js cannot make a renderer
+  if (opt.noGL) TH.WebGLRenderer = class { constructor() { throw new Error("Error creating WebGL context."); } };
   ctx.__renders = renders;
   ctx.THREE = TH; ctx.THREE_LOADERS = t.THREE_LOADERS; ctx.THREE_HDR = t.THREE_HDR;      // (POST8 batch 0k: as if vendor/three-hdr.js had been loaded)
 }

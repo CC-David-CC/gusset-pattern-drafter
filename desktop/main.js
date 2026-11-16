@@ -442,15 +442,23 @@ const TEST_WIN = (() => {
 const TEST_WEB = TEST_WIN ? { backgroundThrottling: false } : {};
 if (TEST_WIN) {
   // (0o) a test run only: a window off the screens or behind others still draws and runs its timers
-  app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+  // (BETA9-FIX: and a Mac's, MacWebContentsOcclusion, which would take its see-through window for covered; one value, as the last one given counts)
+  app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion,MacWebContentsOcclusion");
   for (const s of ["disable-renderer-backgrounding", "disable-background-timer-throttling", "disable-backgrounding-occluded-windows"]) app.commandLine.appendSwitch(s);
+  // (BETA9-FIX) a Mac's check run: no Dock icon and not in the app switcher (its window is see-through there, testShowInactive())
+  if (TEST_WIN === "hidden" && process.platform === "darwin") app.whenReady().then(() => { try { if (app.dock) app.dock.hide(); } catch (e) {} });
 }
 // a test window shown without the focus: "inactive" on the chosen display (its work area's top left, inset), "hidden" off every display
 function testShowInactive(w) {
   if (!w || w.isDestroyed()) return;
   try {
     const { screen } = require("electron"), all = screen.getAllDisplays(), b = w.getBounds();
-    if (TEST_WIN === "hidden") {
+    if (TEST_WIN === "hidden" && process.platform === "darwin") {
+      // (BETA9-FIX) macOS keeps every window on a screen (the release run's Mac put it back at 0, 25): there it is shown fully see-through
+      // instead, the mouse passing through it, and the app kept out of the Dock and the app switcher (TEST_WIN above); the page still draws
+      w.setOpacity(0);
+      w.setIgnoreMouseEvents(true);
+    } else if (TEST_WIN === "hidden") {
       const left = Math.min(...all.map(d => d.bounds.x)), top = Math.min(...all.map(d => d.bounds.y));
       w.setSkipTaskbar(true);
       w.setBounds({ x: left - b.width - 400, y: top, width: b.width, height: b.height });

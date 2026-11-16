@@ -30143,7 +30143,7 @@ const CAM_VIEWS = [["front", "Front"], ["left34", "3/4 Left"], ["back", "Back"],
 const view3d = (() => {
   const HOME = { az: -0.6, el: 0.5, dist: 5600, tx: 0, ty: 700, tz: 0 };        // millimetres, y up; looks at a point 700 above the floor        // millimetres, y up; looks at a point 700 above the floor
   const o = { ...HOME };
-  let R = null, scene = null, cam = null, host = null, raf = 0, tool = null, loop = null;
+  let R = null, scene = null, cam = null, host = null, raf = 0, tool = null, loop = null, noGL = false;
   const groups = {}, pre = [];
   const have = () => typeof THREE !== "undefined";
   function build() {
@@ -30287,7 +30287,9 @@ const view3d = (() => {
     if (!have()) { if (note) note.textContent = "The 3D window needs vendor/three.min.js next to the page."; return; }
     // (alpha: a snapshot's transparent background, Round r17b / 4; the scene's own background stays)
     // (POST8 FIX-7 / C: Graphic Options ▸ Antialiasing, read when the window starts)
-    try { R = new THREE.WebGLRenderer({ antialias: !(S.prefs && S.prefs.aa === "off"), alpha: true }); } catch (e) { R = null; if (note) note.textContent = "The 3D window could not start: no WebGL here."; return; }
+    // (BETA9-FIX) no WebGL (an old computer, a virtual machine, a blocked graphics card, the Mac build machine): the 3D window says so and stays
+    // empty, the 2D window works, and the start does not wait for a 3D picture that can never come (startReady(), failed())
+    try { R = new THREE.WebGLRenderer({ antialias: !(S.prefs && S.prefs.aa === "off"), alpha: true }); } catch (e) { R = null; noGL = true; if (note) note.textContent = NO_WEBGL_NOTE; return; }
     build();
     if (typeof renderLensApply === "function") renderLensApply();
     R.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -30445,7 +30447,8 @@ const view3d = (() => {
     Object.assign(o, keep);
     return c;
   }
-  return { start, cam: o, home: HOME, ready: () => !!R, renderer: () => R, render, ask, oneToOne, group, shot, shotShort: () => shotShort, camFor, shooting: () => shooting, mouse: { press, move, release, wheel, drive }, scene: () => build(), ray, project, projector, wpp, before: (f) => { pre.push(f); }, marksOnly: (f) => { marksOnly = f; }, view, camera: () => cam,
+  // (BETA9-FIX) failed(): the 3D window cannot draw on this machine (no WebGL), or three.js is still missing once the page has loaded
+  return { start, cam: o, home: HOME, ready: () => !!R, failed: () => !R && (noGL || (typeof document !== "undefined" && document.readyState === "complete" && !have())), renderer: () => R, render, ask, oneToOne, group, shot, shotShort: () => shotShort, camFor, shooting: () => shooting, mouse: { press, move, release, wheel, drive }, scene: () => build(), ray, project, projector, wpp, before: (f) => { pre.push(f); }, marksOnly: (f) => { marksOnly = f; }, view, camera: () => cam,
     tool: (t) => { if (tool && tool.off) tool.off(); tool = t || null; if (R) R.domElement.style.cursor = (t && t.cursor) || ""; ask(); }, toolNow: () => tool,
     loop: (f) => { loop = f || null; ask(); }, looping: () => !!loop, canvas: () => R && R.domElement };
 })();
@@ -30454,9 +30457,12 @@ const view3d = (() => {
 const ORBIT_POLE = 0.001;
 const orbitEl = (el) => Math.max(-Math.PI/2 + ORBIT_POLE, Math.min(Math.PI/2 - ORBIT_POLE, el));
 // the line of text at the bottom of the 3D window
+// (BETA9-FIX) the 3D window's one line where there is no WebGL: kept whatever else note3d() would say
+const NO_WEBGL_NOTE = "The 3D window could not start: no WebGL here (this computer or its graphics driver gives the page no 3D graphics). The 2D window works as usual.";
 function note3d(msg) {
   const n = document.getElementById("note3d");
   if (!n) return;
+  if (typeof view3d !== "undefined" && view3d.failed && view3d.failed() && !msg) { n.textContent = NO_WEBGL_NOTE; return; }
   const lk = typeof G3 !== "undefined" && G3.look && state3(G3.look.id);
   n.textContent = msg || (lk ? "Looking at " + lk.name + " (Back to Now in the history timeline) · " : "") + (typeof G3 !== "undefined" && G3.redrape ? "⟳ This step's cloth was not kept: Re-drape or Simulate · " : "") + (S.av ? S.av.name + " · " : S.avErr ? "⚠ " + S.avErr + " · " : "No avatar (Avatar → Load Avatar…) · ") + viewHelp();
 }
@@ -42490,7 +42496,10 @@ window.drafterDebug = () => ({ cardPx, pxLimitHint, layoutCmd, setMode, layoutFi
 const START_WAIT = 30000;
 function startReady(done) {
   const t0 = Date.now(), drawn3 = () => { const R = typeof view3d !== "undefined" && view3d.ready() && view3d.renderer(), i = R && R.info && R.info.render; return !!R && (!i || i.frame > 0); };
-  const ready = () => recoverPending !== "reading" && geomGen > 0 && cv.width > 0 && (S.ui.layout === "2d" || drawn3());
+  // (BETA9-FIX) a 3D window that cannot draw here (no WebGL: view3d.failed()) is as settled as one drawn once: without it every start waited
+  // START_WAIT (30 s) and the desktop app showed its "took more than 30 s" line
+  const settled3 = () => drawn3() || (typeof view3d !== "undefined" && !!view3d.failed && view3d.failed());
+  const ready = () => recoverPending !== "reading" && geomGen > 0 && cv.width > 0 && (S.ui.layout === "2d" || settled3());
   // (the next screen frame, or 100 ms where a hidden window gets none)
   const fin = () => { let once = false; const go = () => { if (!once) { once = true; done(); } }; if (typeof requestAnimationFrame === "function") requestAnimationFrame(go); setTimeout(go, 100); };
   const look = () => { if (ready() || Date.now() - t0 > START_WAIT) return fin(); setTimeout(look, 16); };
